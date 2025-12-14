@@ -11,7 +11,6 @@ from dotenv import load_dotenv
 class AngelOneConfig:
     api_key: str
     client_code: str
-    mpin: str
     totp_secret: str
     base_url: str
 
@@ -40,14 +39,9 @@ def load_config(dotenv_path: Optional[str] = None) -> AppConfig:
     cors_raw = os.getenv("CORS_ORIGINS", "http://localhost:5173")
     cors_origins = [o.strip() for o in cors_raw.split(",") if o.strip()]
 
-    mpin = os.getenv("ANGEL_MPIN")
-    if mpin is None or not mpin.strip():
-        mpin = _require_env("ANGEL_PASSWORD")
-
     angel = AngelOneConfig(
         api_key=_require_env("ANGEL_API_KEY"),
         client_code=_require_env("ANGEL_CLIENT_CODE"),
-        mpin=mpin.strip(),
         totp_secret=_require_env("ANGEL_TOTP_SECRET"),
         base_url=os.getenv("ANGEL_BASE_URL", "https://apiconnect.angelone.in").strip(),
     )

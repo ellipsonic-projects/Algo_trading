@@ -17,10 +17,9 @@ class AngelSession:
 
 
 class AngelClient:
-    def __init__(self, *, api_key: str, client_code: str, password: str, totp_secret: str) -> None:
+    def __init__(self, *, api_key: str, client_code: str, totp_secret: str) -> None:
         self._api_key = api_key
         self._client_code = client_code
-        self._password = password
         self._totp_secret = totp_secret
         self._smart = SmartConnect(api_key=self._api_key)
         self._session: Optional[AngelSession] = None
@@ -29,9 +28,9 @@ class AngelClient:
     def is_logged_in(self) -> bool:
         return self._session is not None
 
-    def login(self) -> Dict[str, Any]:
+    def login(self, mpin: str) -> Dict[str, Any]:
         totp = generate_totp(self._totp_secret)
-        data = self._smart.generateSession(self._client_code, self._password, totp)
+        data = self._smart.generateSession(self._client_code, mpin, totp)
 
         if not isinstance(data, dict):
             raise RuntimeError("Unexpected login response from SmartAPI")

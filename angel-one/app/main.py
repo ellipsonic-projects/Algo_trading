@@ -30,6 +30,10 @@ class SimpleOrderRequest(BaseModel):
     quantity: int
 
 
+class LoginRequest(BaseModel):
+    mpin: str
+
+
 app = FastAPI(title="Angel One Trading Backend", version="0.1.0")
 
 cfg = load_config(dotenv_path=str(BASE_DIR / ".env"))
@@ -44,7 +48,6 @@ app.add_middleware(
 angel = AngelClient(
     api_key=cfg.angel.api_key,
     client_code=cfg.angel.client_code,
-    password=cfg.angel.mpin,
     totp_secret=cfg.angel.totp_secret,
 )
 
@@ -58,9 +61,9 @@ def health() -> Dict[str, Any]:
 
 
 @app.post("/angel/login")
-def angel_login() -> Dict[str, Any]:
+def angel_login(req: LoginRequest) -> Dict[str, Any]:
     try:
-        return angel.login()
+        return angel.login(req.mpin)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(e))
 

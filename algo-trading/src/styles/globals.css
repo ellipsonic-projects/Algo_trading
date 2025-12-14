@@ -1,0 +1,38 @@
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  color: var(--color-text);
+  background: radial-gradient(1200px 600px at 15% 10%,
+      color-mix(in oklab, var(--color-primary) 16%, transparent),
+      transparent 55%),
+    radial-gradient(1000px 600px at 85% 0%,
+      color-mix(in oklab, var(--color-secondary) 14%, transparent),
+      transparent 55%),
+    var(--color-bg);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+a {
+  color: inherit;
+}
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+  border-radius: var(--radius-sm);
+}
+
+#root {
+  min-height: 100vh;
+}

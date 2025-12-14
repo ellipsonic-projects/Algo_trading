@@ -1,0 +1,59 @@
+:root {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji",
+    "Segoe UI Emoji";
+
+  --radius-sm: 10px;
+  --radius-md: 14px;
+
+  --shadow-1: 0 10px 30px rgba(0, 0, 0, 0.22);
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  --ring: 0 0 0 4px color-mix(in oklab, var(--color-primary) 22%, transparent);
+
+  --color-primary: #22d3ee;
+  --color-primary-hover: #06b6d4;
+  --color-primary-contrast: #001316;
+
+  --color-secondary: #a78bfa;
+
+  --color-danger: #fb7185;
+
+  --color-bg: #0b1220;
+  --color-surface: #0f1b2f;
+  --color-surface-2: #0b172a;
+
+  --color-border: rgba(255, 255, 255, 0.14);
+
+  --color-text: rgba(255, 255, 255, 0.92);
+  --color-text-muted: rgba(255, 255, 255, 0.68);
+
+  --color-input-bg: rgba(255, 255, 255, 0.06);
+  --color-input-bg-hover: rgba(255, 255, 255, 0.09);
+
+  --color-focus: var(--color-primary);
+}
+
+:root[data-theme='light'] {
+  --shadow-1: 0 10px 30px rgba(0, 0, 0, 0.12);
+
+  --color-bg: #f6f7fb;
+  --color-surface: #ffffff;
+  --color-surface-2: #fbfcff;
+
+  --color-border: rgba(15, 23, 42, 0.14);
+
+  --color-text: rgba(15, 23, 42, 0.92);
+  --color-text-muted: rgba(15, 23, 42, 0.64);
+
+  --color-input-bg: rgba(15, 23, 42, 0.05);
+  --color-input-bg-hover: rgba(15, 23, 42, 0.075);
+
+  --color-primary-contrast: #001316;
+}

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.core.config import load_config
 from app.services.angel_client import AngelClient
+from app.services.instrument_master import InstrumentMasterCache
 from app.services.order_store import OrderStore
 
 
@@ -48,6 +49,7 @@ angel = AngelClient(
 )
 
 store = OrderStore(db_path=str(BASE_DIR / "orders.sqlite"))
+instruments = InstrumentMasterCache()
 
 
 @app.get("/health")
@@ -76,7 +78,63 @@ def angel_search(query: str, exchange: str = "NSE") -> Dict[str, Any]:
     try:
         return angel.search(exchange=exchange, query=query)
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=str(e))
+        msg = str(e)
+        if "Not logged in" in msg:
+            raise HTTPException(status_code=401, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+
+
+@app.get("/instruments/index-options")
+def index_options(
+    exchange: str,
+    underlying: str,
+    expiry: Optional[str] = None,
+    strike: Optional[float] = None,
+    option_type: Optional[str] = None,
+) -> Dict[str, Any]:
+    try:
+        expiries, strikes, contracts = instruments.get_index_options(exchange=exchange, underlying=underlying, expiry=expiry)
+
+        filtered = contracts
+        if expiry is not None:
+            filtered = [c for c in filtered if c.expiry == expiry]
+        if strike is not None:
+            filtered = [c for c in filtered if c.strike == float(strike)]
+        if option_type is not None:
+            ot = option_type.strip().upper()
+            filtered = [c for c in filtered if c.option_type == ot]
+
+        return {
+            "expiries": expiries,
+            "strikes": strikes,
+            "contracts": [
+                {
+                    "exchange": c.exchange,
+                    "underlying": c.underlying,
+                    "expiry": c.expiry,
+                    "strike": c.strike,
+                    "lot_size": c.lot_size,
+                    "option_type": c.option_type,
+                    "tradingsymbol": c.tradingsymbol,
+                    "symboltoken": c.symboltoken,
+                }
+                for c in filtered
+            ],
+        }
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@app.get("/market/index-ltp")
+def index_ltp(underlying: str) -> Dict[str, Any]:
+    try:
+        tradingsymbol, symboltoken = instruments.get_index_spot(underlying=underlying)
+        return angel.get_ltp(exchange="NSE", tradingsymbol=tradingsymbol, symboltoken=symboltoken)
+    except Exception as e:  # noqa: BLE001
+        msg = str(e)
+        if "Not logged in" in msg:
+            raise HTTPException(status_code=401, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
 
 
 @app.get("/angel/orders")
@@ -115,6 +173,13 @@ def place_order(req: PlaceOrderRequest) -> Dict[str, Any]:
 def place_simple_order(req: SimpleOrderRequest) -> Dict[str, Any]:
     attempt_id = str(uuid4())
 
+    producttype = req.producttype
+    ex = req.exchange.strip().upper()
+    if ex in {"NFO", "BFO"}:
+        # Derivatives do not accept DELIVERY. Use carryforward for positional trades.
+        if producttype == "DELIVERY":
+            producttype = "CARRYFORWARD"
+
     payload: Dict[str, Any] = {
         "variety": "NORMAL",
         "tradingsymbol": req.tradingsymbol,
@@ -122,7 +187,7 @@ def place_simple_order(req: SimpleOrderRequest) -> Dict[str, Any]:
         "transactiontype": req.transactiontype,
         "exchange": req.exchange,
         "ordertype": "MARKET",
-        "producttype": req.producttype,
+        "producttype": producttype,
         "duration": "DAY",
         "price": "0",
         "squareoff": "0",

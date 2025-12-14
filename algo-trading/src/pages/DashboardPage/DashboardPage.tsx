@@ -23,16 +23,42 @@ type PlaceOrderResponse = {
     response: Record<string, unknown>
   }
 }
-
-type AngelSearchResponse = Record<string, unknown>
 type AngelProfileResponse = Record<string, unknown>
 
-type Exchange = 'NSE' | 'NFO'
+type Exchange = 'NFO' | 'BFO'
+type Underlying = 'NIFTY' | 'BANKNIFTY' | 'SENSEX'
+type OptionType = 'CE' | 'PE'
 type Side = 'BUY' | 'SELL'
 type Product = 'DELIVERY' | 'INTRADAY'
 
-type SearchItem = {
+type TradeTab = 'OPTIONS' | 'EQUITY'
+
+type IndexOptionContract = {
   exchange: Exchange
+  underlying: Underlying
+  expiry: string
+  strike: number
+  lot_size: number
+  option_type: OptionType
+  tradingsymbol: string
+  symboltoken: string
+}
+
+type IndexOptionsResponse = {
+  expiries: string[]
+  strikes: number[]
+  contracts: IndexOptionContract[]
+}
+
+type MarketIndexLtpResponse = {
+  underlying: Underlying
+  exchange: 'NSE'
+  tradingsymbol: string
+  symboltoken: string
+  ltp: number
+}
+
+type EquitySearchItem = {
   tradingsymbol: string
   symboltoken: string
   name?: string
@@ -150,12 +176,41 @@ export default function DashboardPage() {
 
   const [profile, setProfile] = useState<AngelProfileResponse | null>(null)
 
-  const [searchExchange, setSearchExchange] = useState<Exchange>('NFO')
-  const [searchQuery, setSearchQuery] = useState('')
-  const [searchResult, setSearchResult] = useState<AngelSearchResponse | null>(null)
-  const [searchError, setSearchError] = useState<string | null>(null)
+  const [tab, setTab] = useState<TradeTab>('OPTIONS')
 
-  const [selected, setSelected] = useState<SearchItem | null>(null)
+  const [exchange, setExchange] = useState<Exchange>('NFO')
+  const [underlying, setUnderlying] = useState<Underlying>('NIFTY')
+  const [expiry, setExpiry] = useState<string>('')
+  const [strike, setStrike] = useState<number | null>(null)
+  const [optionType, setOptionType] = useState<OptionType>('CE')
+  const [optionsError, setOptionsError] = useState<string | null>(null)
+  const [expiries, setExpiries] = useState<string[]>([])
+  const [strikes, setStrikes] = useState<number[]>([])
+  const [contracts, setContracts] = useState<IndexOptionContract[]>([])
+  const [strikeInput, setStrikeInput] = useState<string>('')
+  const [indexLtp, setIndexLtp] = useState<number | null>(null)
+  const [ltpError, setLtpError] = useState<string | null>(null)
+
+  const [equityQuery, setEquityQuery] = useState<string>('')
+  const [equityError, setEquityError] = useState<string | null>(null)
+  const [equityItems, setEquityItems] = useState<EquitySearchItem[]>([])
+  const [selectedEquity, setSelectedEquity] = useState<EquitySearchItem | null>(null)
+
+  const selected = useMemo<IndexOptionContract | null>(() => {
+    if (!expiry || strike === null) return null
+    const eps = 1e-6
+    const found = contracts.find(
+      (c) => c.expiry === expiry && Math.abs(c.strike - strike) < eps && c.option_type === optionType,
+    )
+    return found ?? null
+  }, [contracts, expiry, optionType, strike])
+
+  const selectedLotSize = useMemo<number | null>(() => {
+    if (tab !== 'OPTIONS') return null
+    if (!selected) return null
+    return Number.isFinite(selected.lot_size) && selected.lot_size > 0 ? selected.lot_size : null
+  }, [selected, tab])
+
   const [side, setSide] = useState<Side>('BUY')
   const [product, setProduct] = useState<Product>('INTRADAY')
   const [quantity, setQuantity] = useState<number>(50)
@@ -172,31 +227,142 @@ export default function DashboardPage() {
 
   const [orders, setOrders] = useState<OrdersResponse['items']>([])
 
-  const canSearch = useMemo(() => searchQuery.trim().length >= 1, [searchQuery])
+  const allowedUnderlyings = useMemo<Underlying[]>(() => {
+    return exchange === 'BFO' ? ['SENSEX'] : ['NIFTY', 'BANKNIFTY']
+  }, [exchange])
 
-  const searchItems = useMemo<SearchItem[]>(() => {
-    if (!searchResult) return []
-
-    const raw: unknown = (searchResult as { data?: unknown }).data ?? searchResult
-    if (!Array.isArray(raw)) return []
-
-    const items: SearchItem[] = []
-    for (const x of raw) {
-      if (!x || typeof x !== 'object') continue
-      const obj = x as Record<string, unknown>
-
-      const ts = (obj.tradingsymbol ?? obj.tradingSymbol ?? obj.symbolname ?? obj.symbol) as unknown
-      const token = (obj.symboltoken ?? obj.token ?? obj.symbolToken) as unknown
-      const ex = (obj.exchange ?? obj.exch_seg ?? obj.exchangeType) as unknown
-      const name = (obj.name ?? obj.companyname ?? obj.symbolname) as unknown
-
-      if (typeof ts !== 'string' || typeof token !== 'string') continue
-
-      const exchange = (typeof ex === 'string' && (ex === 'NSE' || ex === 'NFO') ? ex : searchExchange) as Exchange
-      items.push({ exchange, tradingsymbol: ts, symboltoken: token, name: typeof name === 'string' ? name : undefined })
+  const strikeStep = useMemo<number>(() => {
+    if (strikes.length < 2) return 1
+    const sorted = [...strikes].sort((a, b) => a - b)
+    let best = Number.POSITIVE_INFINITY
+    for (let i = 1; i < sorted.length; i++) {
+      const d = sorted[i] - sorted[i - 1]
+      if (d > 0 && d < best) best = d
     }
-    return items
-  }, [searchExchange, searchResult])
+    return Number.isFinite(best) ? best : 1
+  }, [strikes])
+
+  const filteredStrikes = useMemo<number[]>(() => {
+    const sorted = [...strikes].sort((a, b) => a - b)
+
+    let out = sorted
+    if (indexLtp !== null && Number.isFinite(indexLtp) && strikeStep > 0) {
+      const range = strikeStep * 20
+      out = out.filter((s) => Math.abs(s - indexLtp) <= range)
+    }
+
+    const q = strikeInput.trim()
+    if (q.length > 0) {
+      out = out.filter((s) => String(s).includes(q))
+    }
+
+    return out
+  }, [indexLtp, strikeInput, strikeStep, strikes])
+
+  function formatStrike(v: number): string {
+    if (!Number.isFinite(v)) return String(v)
+    if (Math.abs(v - Math.round(v)) < 1e-9) return String(Math.round(v))
+    return String(v)
+  }
+
+  async function loadExpiries(nextExchange: Exchange, nextUnderlying: Underlying) {
+    setOptionsError(null)
+    setExpiry('')
+    setStrike(null)
+    setStrikeInput('')
+    setExpiries([])
+    setStrikes([])
+    setContracts([])
+
+    try {
+      const data = await apiGet<IndexOptionsResponse>(
+        `/instruments/index-options?exchange=${encodeURIComponent(nextExchange)}&underlying=${encodeURIComponent(nextUnderlying)}`,
+      )
+
+      setExpiries(data.expiries)
+      const firstExpiry = data.expiries[0] ?? ''
+      setExpiry(firstExpiry)
+    } catch (e) {
+      setOptionsError(e instanceof Error ? e.message : 'Failed to load options list')
+    }
+  }
+
+  async function loadStrikes(nextExchange: Exchange, nextUnderlying: Underlying, nextExpiry: string) {
+    setOptionsError(null)
+    setStrike(null)
+    setStrikeInput('')
+    setStrikes([])
+    setContracts([])
+
+    if (!nextExpiry) return
+
+    try {
+      const data = await apiGet<IndexOptionsResponse>(
+        `/instruments/index-options?exchange=${encodeURIComponent(nextExchange)}&underlying=${encodeURIComponent(
+          nextUnderlying,
+        )}&expiry=${encodeURIComponent(nextExpiry)}`,
+      )
+
+      setStrikes(data.strikes)
+      setContracts(data.contracts)
+      const firstStrike = data.strikes[0]
+      const nextStrike = typeof firstStrike === 'number' ? firstStrike : null
+      setStrike(nextStrike)
+      setStrikeInput(nextStrike === null ? '' : formatStrike(nextStrike))
+    } catch (e) {
+      setOptionsError(e instanceof Error ? e.message : 'Failed to load strikes')
+    }
+  }
+
+  async function loadIndexLtp(nextUnderlying: Underlying) {
+    setLtpError(null)
+    setIndexLtp(null)
+
+    try {
+      const data = await apiGet<MarketIndexLtpResponse>(`/market/index-ltp?underlying=${encodeURIComponent(nextUnderlying)}`)
+      setIndexLtp(data.ltp)
+    } catch (e) {
+      setLtpError(e instanceof Error ? e.message : 'Failed to load index price')
+    }
+  }
+
+  async function searchEquity() {
+    setEquityError(null)
+    setEquityItems([])
+
+    const q = equityQuery.trim()
+    if (q.length < 1) return
+
+    try {
+      const data = await apiGet<Record<string, unknown>>(
+        `/angel/search?exchange=${encodeURIComponent('NSE')}&query=${encodeURIComponent(q)}`,
+      )
+
+      const raw: unknown = (data as { data?: unknown }).data ?? data
+      if (!Array.isArray(raw)) {
+        setEquityItems([])
+        return
+      }
+
+      const items: EquitySearchItem[] = []
+      for (const x of raw) {
+        if (!x || typeof x !== 'object') continue
+        const obj = x as Record<string, unknown>
+
+        const ts = (obj.tradingsymbol ?? obj.tradingSymbol ?? obj.symbolname ?? obj.symbol) as unknown
+        const token = (obj.symboltoken ?? obj.token ?? obj.symbolToken) as unknown
+        const name = (obj.name ?? obj.companyname ?? obj.symbolname) as unknown
+
+        if (typeof ts !== 'string' || typeof token !== 'string') continue
+
+        items.push({ tradingsymbol: ts, symboltoken: token, name: typeof name === 'string' ? name : undefined })
+      }
+
+      setEquityItems(items.slice(0, 50))
+    } catch (e) {
+      setEquityError(e instanceof Error ? e.message : 'Search failed')
+    }
+  }
 
   async function refreshOrders() {
     const data = await apiGet<OrdersResponse>('/angel/orders')
@@ -257,26 +423,50 @@ export default function DashboardPage() {
     })
   }
 
-  async function onSearch() {
-    setSearchError(null)
-    setSearchResult(null)
-    setSelected(null)
-
-    try {
-      const data = await apiGet<AngelSearchResponse>(
-        `/angel/search?exchange=${encodeURIComponent(searchExchange)}&query=${encodeURIComponent(searchQuery.trim())}`,
-      )
-      setSearchResult(data)
-    } catch (e) {
-      setSearchError(e instanceof Error ? e.message : 'Search failed')
-    }
-  }
-
   async function onPlaceOrder() {
     setPlaceOrderError(null)
 
+    if (tab === 'EQUITY') {
+      if (!selectedEquity) {
+        setPlaceOrderError('Please search and select a stock first.')
+        return
+      }
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        setPlaceOrderError('Quantity must be greater than 0.')
+        return
+      }
+
+      setConfirm({
+        open: true,
+        title: 'Confirm order',
+        message: `${side} ${quantity} ${selectedEquity.tradingsymbol}\nExchange: NSE\nProduct: ${
+          product === 'DELIVERY' ? 'Regular' : 'Intraday'
+        }`,
+        confirmText: 'Place order',
+        cancelText: 'Cancel',
+        onConfirm: async () => {
+          try {
+            await apiPost<PlaceOrderResponse>('/angel/orders/simple', {
+              exchange: 'NSE',
+              tradingsymbol: selectedEquity.tradingsymbol,
+              symboltoken: selectedEquity.symboltoken,
+              transactiontype: side,
+              producttype: product,
+              quantity,
+            })
+            await refreshOrders()
+          } catch (e) {
+            setPlaceOrderError(e instanceof Error ? e.message : 'Place order failed')
+            await refreshOrders()
+          }
+        },
+      })
+
+      return
+    }
+
     if (!selected) {
-      setPlaceOrderError('Please search and select a symbol first.')
+      setPlaceOrderError('Please select an option contract first.')
       return
     }
     if (!Number.isFinite(quantity) || quantity <= 0) {
@@ -284,10 +474,15 @@ export default function DashboardPage() {
       return
     }
 
+    if (selectedLotSize !== null && quantity % selectedLotSize !== 0) {
+      setPlaceOrderError(`Options quantity must be a multiple of lot size (${selectedLotSize}).`)
+      return
+    }
+
     setConfirm({
       open: true,
       title: 'Confirm order',
-      message: `${side} ${quantity} ${selected.tradingsymbol} (${selected.exchange})\nProduct: ${
+      message: `${side} ${quantity} ${selected.tradingsymbol}\nExchange: ${selected.exchange}\nProduct: ${
         product === 'DELIVERY' ? 'Regular' : 'Intraday'
       }`,
       confirmText: 'Place order',
@@ -315,6 +510,43 @@ export default function DashboardPage() {
     void refreshOrders().catch(() => undefined)
   }, [])
 
+  useEffect(() => {
+    if (exchange === 'BFO' && underlying !== 'SENSEX') {
+      setUnderlying('SENSEX')
+      return
+    }
+    if (exchange === 'NFO' && underlying === 'SENSEX') {
+      setUnderlying('NIFTY')
+    }
+  }, [exchange, underlying])
+
+  useEffect(() => {
+    // Ensure strike input always reflects current strike.
+    setStrikeInput(strike === null ? '' : formatStrike(strike))
+  }, [strike])
+
+  useEffect(() => {
+    void loadExpiries(exchange, underlying)
+  }, [exchange, underlying])
+
+  useEffect(() => {
+    void loadStrikes(exchange, underlying, expiry)
+  }, [exchange, expiry, underlying])
+
+  useEffect(() => {
+    if (tab !== 'OPTIONS') return
+    void loadIndexLtp(underlying)
+  }, [tab, underlying])
+
+  useEffect(() => {
+    if (tab !== 'OPTIONS') return
+    const lot = selectedLotSize
+    if (lot === null) return
+    if (!Number.isFinite(quantity) || quantity <= 0 || quantity % lot !== 0) {
+      setQuantity(lot)
+    }
+  }, [quantity, selectedLotSize, tab])
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-50">
       <div className="mx-auto max-w-5xl px-4 py-8">
@@ -322,7 +554,7 @@ export default function DashboardPage() {
           <div>
             <h1 className="text-2xl font-semibold">Angel One Dashboard</h1>
             <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-              Connect, search symbols, and place options orders.
+              Connect, place equity orders, and trade index options.
             </p>
           </div>
         </div>
@@ -362,80 +594,237 @@ export default function DashboardPage() {
         </section>
 
         <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-white/10 dark:bg-slate-900">
-          <h2 className="text-lg font-semibold">Search</h2>
-          <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center">
-            <select
-              value={searchExchange}
-              onChange={(e) => setSearchExchange(e.target.value as Exchange)}
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none transition-colors hover:bg-slate-100 focus:ring-4 focus:ring-cyan-200 dark:border-white/10 dark:bg-white/5 dark:text-slate-50 dark:hover:bg-white/10 dark:focus:ring-cyan-400/20 sm:w-[130px]"
-              aria-label="Exchange"
-            >
-              <option value="NFO">NFO (Options)</option>
-              <option value="NSE">NSE (Stocks)</option>
-            </select>
-            <input
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Type a stock name or symbol"
-              className="w-full flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none transition-colors hover:bg-slate-100 focus:ring-4 focus:ring-cyan-200 dark:border-white/10 dark:bg-white/5 dark:text-slate-50 dark:hover:bg-white/10 dark:focus:ring-cyan-400/20"
-            />
-            <button
-              type="button"
-              onClick={() => void onSearch()}
-              disabled={!canSearch}
-              className="rounded-xl border border-slate-200 bg-transparent px-4 py-2 text-sm font-semibold transition-colors hover:bg-slate-100 disabled:opacity-60 dark:border-white/10 dark:hover:bg-white/10"
-            >
-              Search
-            </button>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold">Trading</h2>
+              <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Choose Equity (NSE) or Index Options (NFO/BFO).</p>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setTab('OPTIONS')}
+                className={[
+                  'rounded-xl px-4 py-2 text-sm font-semibold transition-colors',
+                  tab === 'OPTIONS'
+                    ? 'bg-cyan-400 text-slate-950 hover:bg-cyan-300'
+                    : 'border border-slate-200 hover:bg-slate-100 dark:border-white/10 dark:hover:bg-white/10',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+              >
+                Options
+              </button>
+              <button
+                type="button"
+                onClick={() => setTab('EQUITY')}
+                className={[
+                  'rounded-xl px-4 py-2 text-sm font-semibold transition-colors',
+                  tab === 'EQUITY'
+                    ? 'bg-violet-400 text-slate-950 hover:bg-violet-300'
+                    : 'border border-slate-200 hover:bg-slate-100 dark:border-white/10 dark:hover:bg-white/10',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+              >
+                Equity
+              </button>
+            </div>
           </div>
 
-          {searchError ? <p className="mt-3 text-sm text-rose-600">{searchError}</p> : null}
+          {tab === 'OPTIONS' ? (
+            <div className="mt-5">
+              <h3 className="text-base font-semibold">Index Options</h3>
+              <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                NFO: NIFTY, BANKNIFTY. BFO: SENSEX.
+              </p>
 
-          {searchItems.length > 0 ? (
-            <div className="mt-4">
-              <p className="text-sm text-slate-600 dark:text-slate-300">Select a symbol:</p>
-              <div className="mt-2 max-h-64 overflow-auto rounded-xl border border-slate-200 dark:border-white/10">
-                {searchItems.slice(0, 50).map((it) => {
-                  const active = selected?.symboltoken === it.symboltoken && selected?.exchange === it.exchange
-                  return (
-                    <button
-                      key={`${it.exchange}-${it.symboltoken}`}
-                      type="button"
-                      onClick={() => {
-                        setSelected(it)
-                        setSearchQuery('')
-                        setSearchResult(null)
-                      }}
-                      className={[
-                        'flex w-full items-start justify-between gap-3 px-3 py-2 text-left text-sm',
-                        'border-b border-slate-200 last:border-b-0 hover:bg-slate-100 dark:border-white/10 dark:hover:bg-white/10',
-                        active ? 'bg-cyan-100 dark:bg-cyan-400/10' : '',
-                      ]
-                        .filter(Boolean)
-                        .join(' ')}
-                    >
-                      <span>
-                        <span className="font-semibold">{it.tradingsymbol}</span>
-                        {it.name ? <span className="ml-2 text-xs text-slate-600 dark:text-slate-300">{it.name}</span> : null}
-                      </span>
-                      <span className="font-mono text-xs text-slate-600 dark:text-slate-300">
-                        {it.exchange} / {it.symboltoken}
-                      </span>
-                    </button>
-                  )
-                })}
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="text-sm font-semibold" htmlFor="exchange">
+                    Exchange
+                  </label>
+                  <select
+                    id="exchange"
+                    value={exchange}
+                    onChange={(e) => setExchange(e.target.value as Exchange)}
+                    className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none transition-colors hover:bg-slate-100 focus:ring-4 focus:ring-cyan-200 dark:border-white/10 dark:bg-white/5 dark:text-slate-50 dark:hover:bg-white/10 dark:focus:ring-cyan-400/20"
+                  >
+                    <option value="NFO">NFO</option>
+                    <option value="BFO">BFO</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-sm font-semibold" htmlFor="underlying">
+                    Underlying
+                  </label>
+                  <select
+                    id="underlying"
+                    value={underlying}
+                    onChange={(e) => setUnderlying(e.target.value as Underlying)}
+                    className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none transition-colors hover:bg-slate-100 focus:ring-4 focus:ring-cyan-200 dark:border-white/10 dark:bg-white/5 dark:text-slate-50 dark:hover:bg-white/10 dark:focus:ring-cyan-400/20"
+                  >
+                    {allowedUnderlyings.map((u) => (
+                      <option key={u} value={u}>
+                        {u}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-sm font-semibold" htmlFor="expiry">
+                    Expiry
+                  </label>
+                  <select
+                    id="expiry"
+                    value={expiry}
+                    onChange={(e) => setExpiry(e.target.value)}
+                    className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none transition-colors hover:bg-slate-100 focus:ring-4 focus:ring-cyan-200 dark:border-white/10 dark:bg-white/5 dark:text-slate-50 dark:hover:bg-white/10 dark:focus:ring-cyan-400/20"
+                  >
+                    {expiries.length === 0 ? <option value="">No expiries</option> : null}
+                    {expiries.map((e) => (
+                      <option key={e} value={e}>
+                        {e}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-sm font-semibold" htmlFor="strike">
+                    Strike
+                  </label>
+                  <input
+                    id="strike"
+                    list="strike-list"
+                    value={strikeInput}
+                    onChange={(e) => {
+                      const v = e.target.value
+                      setStrikeInput(v)
+                      const parsed = Number(v)
+                      if (!Number.isFinite(parsed)) {
+                        setStrike(null)
+                        return
+                      }
+
+                      const eps = 1e-6
+                      const found = strikes.find((s) => Math.abs(s - parsed) < eps)
+                      setStrike(found ?? null)
+                    }}
+                    className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none transition-colors hover:bg-slate-100 focus:ring-4 focus:ring-cyan-200 dark:border-white/10 dark:bg-white/5 dark:text-slate-50 dark:hover:bg-white/10 dark:focus:ring-cyan-400/20"
+                  />
+
+                  <datalist id="strike-list">
+                    {filteredStrikes.map((s) => (
+                      <option key={s} value={formatStrike(s)} />
+                    ))}
+                  </datalist>
+
+                  {indexLtp !== null ? (
+                    <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">ATM filter using index price: {indexLtp}</p>
+                  ) : null}
+                  {ltpError ? <p className="mt-2 text-xs text-rose-600">{ltpError}</p> : null}
+                </div>
               </div>
-            </div>
-          ) : null}
 
-          {searchResult ? (
-            <details className="mt-4">
-              <summary className="cursor-pointer text-sm font-semibold">Search response</summary>
-              <pre className="mt-2 overflow-auto rounded-xl bg-slate-950 p-3 text-xs text-slate-50">
-                {JSON.stringify(searchResult, null, 2)}
-              </pre>
-            </details>
-          ) : null}
+              <div className="mt-4">
+                <p className="text-sm font-semibold">Option type</p>
+                <div className="mt-2 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setOptionType('CE')}
+                    className={[
+                      'rounded-xl px-4 py-2 text-sm font-semibold transition-colors',
+                      optionType === 'CE'
+                        ? 'bg-cyan-400 text-slate-950 hover:bg-cyan-300'
+                        : 'border border-slate-200 hover:bg-slate-100 dark:border-white/10 dark:hover:bg-white/10',
+                    ]
+                      .filter(Boolean)
+                      .join(' ')}
+                  >
+                    CALL (CE)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOptionType('PE')}
+                    className={[
+                      'rounded-xl px-4 py-2 text-sm font-semibold transition-colors',
+                      optionType === 'PE'
+                        ? 'bg-violet-400 text-slate-950 hover:bg-violet-300'
+                        : 'border border-slate-200 hover:bg-slate-100 dark:border-white/10 dark:hover:bg-white/10',
+                    ]
+                      .filter(Boolean)
+                      .join(' ')}
+                  >
+                    PUT (PE)
+                  </button>
+                </div>
+              </div>
+
+              {optionsError ? <p className="mt-3 text-sm text-rose-600">{optionsError}</p> : null}
+            </div>
+          ) : (
+            <div className="mt-5">
+              <h3 className="text-base font-semibold">Equity (NSE)</h3>
+              <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Search and select a stock, then place an order.</p>
+
+              <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center">
+                <input
+                  value={equityQuery}
+                  onChange={(e) => setEquityQuery(e.target.value)}
+                  placeholder="Type a stock name or symbol"
+                  className="w-full flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none transition-colors hover:bg-slate-100 focus:ring-4 focus:ring-cyan-200 dark:border-white/10 dark:bg-white/5 dark:text-slate-50 dark:hover:bg-white/10 dark:focus:ring-cyan-400/20"
+                />
+                <button
+                  type="button"
+                  onClick={() => void searchEquity()}
+                  disabled={equityQuery.trim().length < 1}
+                  className="rounded-xl border border-slate-200 bg-transparent px-4 py-2 text-sm font-semibold transition-colors hover:bg-slate-100 disabled:opacity-60 dark:border-white/10 dark:hover:bg-white/10"
+                >
+                  Search
+                </button>
+              </div>
+
+              {equityError ? <p className="mt-3 text-sm text-rose-600">{equityError}</p> : null}
+
+              {equityItems.length > 0 ? (
+                <div className="mt-4">
+                  <p className="text-sm text-slate-600 dark:text-slate-300">Select a stock:</p>
+                  <div className="mt-2 max-h-64 overflow-auto rounded-xl border border-slate-200 dark:border-white/10">
+                    {equityItems.map((it) => {
+                      const active = selectedEquity?.symboltoken === it.symboltoken
+                      return (
+                        <button
+                          key={it.symboltoken}
+                          type="button"
+                          onClick={() => {
+                            setSelectedEquity(it)
+                            setEquityQuery('')
+                            setEquityItems([])
+                          }}
+                          className={[
+                            'flex w-full items-start justify-between gap-3 px-3 py-2 text-left text-sm',
+                            'border-b border-slate-200 last:border-b-0 hover:bg-slate-100 dark:border-white/10 dark:hover:bg-white/10',
+                            active ? 'bg-cyan-100 dark:bg-cyan-400/10' : '',
+                          ]
+                            .filter(Boolean)
+                            .join(' ')}
+                        >
+                          <span>
+                            <span className="font-semibold">{it.tradingsymbol}</span>
+                            {it.name ? <span className="ml-2 text-xs text-slate-600 dark:text-slate-300">{it.name}</span> : null}
+                          </span>
+                          <span className="text-xs text-slate-600 dark:text-slate-300">NSE</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          )}
         </section>
 
         <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-white/10 dark:bg-slate-900">
@@ -448,10 +837,21 @@ export default function DashboardPage() {
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-white/10 dark:bg-white/5">
               <p className="text-xs text-slate-600 dark:text-slate-300">Selected symbol</p>
               <p className="mt-1 text-sm font-semibold">
-                {selected ? `${selected.tradingsymbol} (${selected.exchange})` : 'None'}
+                {tab === 'OPTIONS'
+                  ? selected
+                    ? selected.tradingsymbol
+                    : 'None'
+                  : selectedEquity
+                    ? selectedEquity.tradingsymbol
+                    : 'None'}
               </p>
-              {selected ? (
-                <p className="mt-1 font-mono text-xs text-slate-600 dark:text-slate-300">token: {selected.symboltoken}</p>
+              {tab === 'OPTIONS' && selected ? (
+                <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                  {selected.exchange} · {selected.underlying} · {selected.expiry} · {selected.strike} {selected.option_type}
+                </p>
+              ) : null}
+              {tab === 'EQUITY' && selectedEquity ? (
+                <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">NSE · Equity</p>
               ) : null}
             </div>
 
@@ -462,11 +862,15 @@ export default function DashboardPage() {
               <input
                 id="qty"
                 type="number"
-                min={1}
+                min={tab === 'OPTIONS' && selectedLotSize !== null ? selectedLotSize : 1}
+                step={tab === 'OPTIONS' && selectedLotSize !== null ? selectedLotSize : 1}
                 value={Number.isFinite(quantity) ? quantity : ''}
                 onChange={(e) => setQuantity(Number(e.target.value))}
                 className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none transition-colors hover:bg-slate-100 focus:ring-4 focus:ring-cyan-200 dark:border-white/10 dark:bg-white/5 dark:text-slate-50 dark:hover:bg-white/10 dark:focus:ring-cyan-400/20"
               />
+              {tab === 'OPTIONS' && selectedLotSize !== null ? (
+                <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">Lot size: {selectedLotSize}</p>
+              ) : null}
             </div>
 
             <div>

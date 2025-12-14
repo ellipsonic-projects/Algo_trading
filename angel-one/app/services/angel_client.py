@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from SmartApi import SmartConnect  # type: ignore
 
@@ -116,6 +116,101 @@ class AngelClient:
         if result is None:
             return {"status": False, "message": "SmartAPI returned empty response"}
         return {"status": True, "data": {"orderid": str(result)}}
+
+    def get_ltp(self, *, exchange: str, tradingsymbol: str, symboltoken: str) -> Dict[str, Any]:
+        self._require_session()
+
+        ex = exchange.strip().upper()
+        ts = tradingsymbol.strip()
+        token = symboltoken.strip()
+        if not ex or not ts or not token:
+            raise RuntimeError("Invalid ltp request")
+
+        fn = getattr(self._smart, "ltpData", None)
+        if fn is None:
+            raise RuntimeError("ltpData is not supported by the installed SmartAPI client")
+
+        result = fn(exchange=ex, tradingsymbol=ts, symboltoken=token)
+        if not isinstance(result, dict):
+            raise RuntimeError("Unexpected ltp response")
+
+        data: Any = result.get("data")
+        ltp: Optional[float] = None
+        if isinstance(data, dict):
+            v = data.get("ltp")
+            if isinstance(v, (int, float)):
+                ltp = float(v)
+            elif isinstance(v, str):
+                try:
+                    ltp = float(v)
+                except ValueError:
+                    ltp = None
+        if ltp is None:
+            raise RuntimeError("LTP was missing")
+
+        return {"exchange": ex, "tradingsymbol": ts, "symboltoken": token, "ltp": ltp}
+
+    def get_index_ltp(self, *, underlying: str) -> Dict[str, Any]:
+        self._require_session()
+
+        und = underlying.strip().upper()
+        if und not in {"NIFTY", "BANKNIFTY", "SENSEX"}:
+            raise RuntimeError("Unsupported underlying")
+
+        search = self.search(exchange="NSE", query=und)
+        raw: Any = search.get("data")
+        if not isinstance(raw, list):
+            raw = []
+
+        candidates: List[Dict[str, Any]] = [x for x in raw if isinstance(x, dict)]
+
+        def score(x: Dict[str, Any]) -> int:
+            ts = str(x.get("tradingsymbol") or x.get("tradingSymbol") or x.get("symbol") or "").upper()
+            name = str(x.get("name") or x.get("companyname") or x.get("symbolname") or "").upper()
+            s = 0
+            if und in ts:
+                s += 3
+            if und in name:
+                s += 2
+            if "INDEX" in ts or "INDEX" in name:
+                s += 3
+            if ts.endswith("-INDEX"):
+                s += 3
+            return s
+
+        candidates = sorted(candidates, key=score, reverse=True)
+        if not candidates:
+            raise RuntimeError("Unable to find index symbol")
+
+        best = candidates[0]
+        tradingsymbol = str(best.get("tradingsymbol") or best.get("tradingSymbol") or best.get("symbol") or "")
+        symboltoken = str(best.get("symboltoken") or best.get("token") or best.get("symbolToken") or "")
+        if not tradingsymbol or not symboltoken:
+            raise RuntimeError("Unable to find index token")
+
+        fn = getattr(self._smart, "ltpData", None)
+        if fn is None:
+            raise RuntimeError("ltpData is not supported by the installed SmartAPI client")
+
+        result = fn(exchange="NSE", tradingsymbol=tradingsymbol, symboltoken=symboltoken)
+        if not isinstance(result, dict):
+            raise RuntimeError("Unexpected ltp response")
+
+        data: Any = result.get("data")
+        ltp: Optional[float] = None
+        if isinstance(data, dict):
+            v = data.get("ltp")
+            if isinstance(v, (int, float)):
+                ltp = float(v)
+            elif isinstance(v, str):
+                try:
+                    ltp = float(v)
+                except ValueError:
+                    ltp = None
+        if ltp is None:
+            raise RuntimeError("LTP was missing")
+
+        return {"underlying": und, "exchange": "NSE", "tradingsymbol": tradingsymbol, "symboltoken": symboltoken, "ltp": ltp}
 
     def _require_session(self) -> None:
         if self._session is None:

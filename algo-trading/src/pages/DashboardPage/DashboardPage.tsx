@@ -161,8 +161,11 @@ type Underlying = 'NIFTY' | 'BANKNIFTY' | 'SENSEX'
 type OptionType = 'CE' | 'PE'
 type Side = 'BUY' | 'SELL'
 type Product = 'DELIVERY' | 'INTRADAY'
+type OrderType = 'MARKET' | 'LIMIT' | 'SL' | 'SL-L'
 
-type TradeTab = 'EQUITY' | 'OPTIONS' | 'ORDERS'
+type TradeTab = 'EQUITY' | 'OPTIONS' | 'ORDERS' | 'POSITIONS'
+
+type OrdersSubTab = 'PENDING' | 'EXECUTED' | 'CANCELLED' | 'REJECTED'
 
 type Theme = 'dark' | 'light'
 
@@ -265,6 +268,106 @@ type EquitySearchItem = {
   tradingsymbol: string
   symboltoken: string
   name?: string
+}
+
+type BrokerOrder = {
+  orderid: string
+  tradingsymbol: string
+  exchange: string
+  transactiontype: string
+  producttype?: string
+  ordertype?: string
+  price?: string
+  triggerprice?: string
+  quantity?: string
+  filledshares?: string
+  status?: string
+  orderstatus?: string
+  updatetime?: string
+  exchorderupdatetime?: string
+  variety?: string
+}
+
+type BrokerOrderBookResponse = {
+  status?: boolean
+  message?: string
+  data?: BrokerOrder[]
+}
+
+type PositionRow = {
+  exch_seg?: string
+  exchange?: string
+  tradingsymbol?: string
+  tradingSymbol?: string
+  symboltoken?: string
+  symbolToken?: string
+  netqty?: string
+  netQty?: string
+  buyqty?: string
+  sellqty?: string
+  buyavgprice?: string
+  sellavgprice?: string
+  pnl?: string
+}
+
+type PositionsResponse = {
+  status?: boolean
+  message?: string
+  data?: PositionRow[]
+}
+
+function normalizeVariety(v: unknown): 'NORMAL' | 'STOPLOSS' | 'ROBO' {
+  const raw = typeof v === 'string' ? v.trim().toUpperCase() : ''
+  if (raw === 'STOPLOSS' || raw === 'ROBO' || raw === 'NORMAL') return raw
+  return 'NORMAL'
+}
+
+function normalizeOrderGroup(order: BrokerOrder): OrdersSubTab {
+  const raw = String(order.orderstatus ?? order.status ?? '').trim().toUpperCase()
+  if (
+    raw.includes('COMPLETE') ||
+    raw.includes('EXECUTED') ||
+    raw.includes('TRADED') ||
+    raw.includes('FILLED')
+  ) {
+    return 'EXECUTED'
+  }
+  if (raw.includes('CANCEL')) return 'CANCELLED'
+  if (raw.includes('REJECT')) return 'REJECTED'
+  if (raw.includes('OPEN') || raw.includes('TRIGGER') || raw.includes('PENDING') || raw.includes('PLACED')) {
+    return 'PENDING'
+  }
+  // Safe default: show unknowns in Pending so user can act/see them.
+  return 'PENDING'
+}
+
+function parseNumber(v: unknown): number {
+  if (typeof v === 'number') return v
+  if (typeof v === 'string') {
+    const n = Number(v)
+    return Number.isFinite(n) ? n : 0
+  }
+  return 0
+}
+
+function getPositionSymbol(p: PositionRow): string {
+  return String(p.tradingsymbol ?? p.tradingSymbol ?? '').trim()
+}
+
+function getPositionToken(p: PositionRow): string {
+  return String(p.symboltoken ?? p.symbolToken ?? '').trim()
+}
+
+function getPositionExchange(p: PositionRow): string {
+  return String(p.exchange ?? p.exch_seg ?? '').trim().toUpperCase()
+}
+
+function getPositionNetQty(p: PositionRow): number {
+  if (p.netqty != null) return parseNumber(p.netqty)
+  if (p.netQty != null) return parseNumber(p.netQty)
+  const buy = parseNumber(p.buyqty)
+  const sell = parseNumber(p.sellqty)
+  return buy - sell
 }
 
 function isSuccessResponse(resp: Record<string, unknown> | null | undefined): boolean {
@@ -416,6 +519,9 @@ export default function DashboardPage() {
   const [connectMessage, setConnectMessage] = useState<string>('')
 
   const [tab, setTab] = useState<TradeTab>('EQUITY')
+  const [ordersSubTab, setOrdersSubTab] = useState<OrdersSubTab>('PENDING')
+  const [ordersPage, setOrdersPage] = useState<number>(1)
+  const [ordersRowsPerPage, setOrdersRowsPerPage] = useState<number>(25)
 
   const [exchange, setExchange] = useState<Exchange>('NFO')
   const [underlying, setUnderlying] = useState<Underlying>('NIFTY')
@@ -450,6 +556,9 @@ export default function DashboardPage() {
   const [side, setSide] = useState<Side>('BUY')
   const [product, setProduct] = useState<Product>('INTRADAY')
   const [quantity, setQuantity] = useState<number>(50)
+  const [orderType, setOrderType] = useState<OrderType>('MARKET')
+  const [limitPrice, setLimitPrice] = useState<number | null>(null)
+  const [triggerPrice, setTriggerPrice] = useState<number | null>(null)
 
   const [confirm, setConfirm] = useState<ConfirmState>({
     open: false,
@@ -461,6 +570,108 @@ export default function DashboardPage() {
   })
 
   const [orders, setOrders] = useState<OrdersResponse['items']>([])
+
+  const [brokerOrders, setBrokerOrders] = useState<BrokerOrder[]>([])
+  const [positions, setPositions] = useState<PositionRow[]>([])
+
+  async function refreshBrokerOrders() {
+    try {
+      const data = await apiGet<BrokerOrderBookResponse>('/angel/orderbook')
+      setBrokerOrders(Array.isArray(data.data) ? data.data : [])
+    } catch (e) {
+      pushToast('error', 'Orderbook unavailable', cleanErrorMessage(e))
+    }
+  }
+
+  async function cancelBrokerOrder(order: BrokerOrder) {
+    const oid = String(order.orderid || '').trim()
+    const variety = normalizeVariety(order.variety)
+    if (!oid) {
+      pushToast('error', 'Cancel failed', 'Order id is missing.')
+      return
+    }
+
+    setConfirm({
+      open: true,
+      title: 'Cancel order',
+      message: `Cancel ${order.tradingsymbol} (${oid})?`,
+      confirmText: 'Cancel order',
+      cancelText: 'Back',
+      destructive: true,
+      onConfirm: async () => {
+        try {
+          const resp = await apiPost<Record<string, unknown>>(`/angel/orders/${encodeURIComponent(oid)}/cancel`, { variety })
+          const ok = typeof resp.status === 'boolean' ? resp.status : true
+          if (ok) {
+            pushToast('success', 'Order cancelled')
+          } else {
+            pushToast('error', 'Cancel failed', asString(resp.message) || 'Broker rejected cancel request.')
+          }
+        } catch (e) {
+          pushToast('error', 'Cancel failed', cleanErrorMessage(e))
+        }
+        await refreshBrokerOrders()
+      },
+    })
+  }
+
+  async function refreshPositions() {
+    try {
+      const data = await apiGet<PositionsResponse>('/angel/positions')
+      setPositions(Array.isArray(data.data) ? data.data : [])
+    } catch (e) {
+      pushToast('error', 'Positions unavailable', cleanErrorMessage(e))
+    }
+  }
+
+  async function exitPosition(p: PositionRow) {
+    const symbol = getPositionSymbol(p)
+    const token = getPositionToken(p)
+    const exchange = getPositionExchange(p)
+    const net = getPositionNetQty(p)
+    if (!symbol || !token || !exchange) {
+      pushToast('error', 'Exit unavailable', 'Position is missing symbol/token/exchange from broker response.')
+      return
+    }
+    if (!Number.isFinite(net) || net === 0) {
+      pushToast('info', 'No open quantity', 'This position has no net quantity.')
+      return
+    }
+
+    const qty = Math.abs(net)
+    const tx: Side = net > 0 ? 'SELL' : 'BUY'
+
+    setConfirm({
+      open: true,
+      title: 'Exit position',
+      message: `Exit ${symbol}\nSide: ${tx}\nQty: ${qty}\nExchange: ${exchange}`,
+      confirmText: 'Exit',
+      cancelText: 'Cancel',
+      destructive: true,
+      onConfirm: async () => {
+        try {
+          const placed = await apiPost<PlaceOrderResponse>('/angel/positions/exit', {
+            exchange,
+            tradingsymbol: symbol,
+            symboltoken: token,
+            quantity: qty,
+            producttype: product,
+            transactiontype: tx,
+          })
+          const ok = isSuccessResponse(placed.item.response)
+          if (ok) {
+            pushToast('success', 'Exit placed', 'Exit order placed successfully.')
+          } else {
+            pushToast('error', 'Exit failed', getOrderOutcomeMessage(placed.item.response))
+          }
+          await refreshOrders()
+          await refreshPositions()
+        } catch (e) {
+          pushToast('error', 'Exit failed', cleanErrorMessage(e))
+        }
+      },
+    })
+  }
 
   const allowedUnderlyings = useMemo<Underlying[]>(() => {
     return exchange === 'BFO' ? ['SENSEX'] : ['NIFTY', 'BANKNIFTY']
@@ -661,6 +872,9 @@ export default function DashboardPage() {
               transactiontype: side,
               producttype: product,
               quantity,
+              ordertype: orderType,
+              price: orderType === 'LIMIT' || orderType === 'SL-L' ? limitPrice : undefined,
+              triggerprice: orderType === 'SL' || orderType === 'SL-L' ? triggerPrice : undefined,
             })
 
             const ok = isSuccessResponse(placed.item.response)
@@ -668,6 +882,9 @@ export default function DashboardPage() {
               pushToast('success', 'Order placed', 'Your equity order was placed successfully.')
               setSide('BUY')
               setProduct('INTRADAY')
+              setOrderType('MARKET')
+              setLimitPrice(null)
+              setTriggerPrice(null)
               setQuantity(1)
               setSelectedEquity(null)
               setEquityItems([])
@@ -718,6 +935,9 @@ export default function DashboardPage() {
             transactiontype: side,
             producttype: product,
             quantity,
+            ordertype: orderType,
+            price: orderType === 'LIMIT' || orderType === 'SL-L' ? limitPrice : undefined,
+            triggerprice: orderType === 'SL' || orderType === 'SL-L' ? triggerPrice : undefined,
           })
 
           const ok = isSuccessResponse(placed.item.response)
@@ -725,6 +945,9 @@ export default function DashboardPage() {
             pushToast('success', 'Order placed', 'Your options order was placed successfully.')
             setSide('BUY')
             setProduct('INTRADAY')
+            setOrderType('MARKET')
+            setLimitPrice(null)
+            setTriggerPrice(null)
             setOptionType('CE')
             setStrike(null)
             setStrikeInput('')
@@ -747,6 +970,19 @@ export default function DashboardPage() {
   useEffect(() => {
     void refreshOrders().catch(() => undefined)
   }, [])
+
+  useEffect(() => {
+    if (tab === 'ORDERS') {
+      void refreshBrokerOrders()
+    }
+    if (tab === 'POSITIONS') {
+      void refreshPositions()
+    }
+  }, [tab])
+
+  useEffect(() => {
+    setOrdersPage(1)
+  }, [ordersSubTab])
 
   useEffect(() => {
     if (exchange === 'BFO' && underlying !== 'SENSEX') {
@@ -790,6 +1026,33 @@ export default function DashboardPage() {
   const tabButtonInactive =
     'border border-slate-200 bg-transparent text-slate-700 hover:bg-slate-100 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/10'
   const tabButtonActive = 'bg-cyan-400 text-slate-950 hover:bg-cyan-300'
+
+  const brokerOrdersByGroup = useMemo(() => {
+    const grouped: Record<OrdersSubTab, BrokerOrder[]> = {
+      PENDING: [],
+      EXECUTED: [],
+      CANCELLED: [],
+      REJECTED: [],
+    }
+    for (const o of brokerOrders) {
+      grouped[normalizeOrderGroup(o)].push(o)
+    }
+    return grouped
+  }, [brokerOrders])
+
+  const activeBrokerOrders = brokerOrdersByGroup[ordersSubTab]
+
+  const ordersTotalPages = useMemo(() => {
+    const per = Math.max(1, ordersRowsPerPage)
+    return Math.max(1, Math.ceil(activeBrokerOrders.length / per))
+  }, [activeBrokerOrders.length, ordersRowsPerPage])
+
+  const pagedBrokerOrders = useMemo(() => {
+    const per = Math.max(1, ordersRowsPerPage)
+    const page = Math.min(Math.max(1, ordersPage), ordersTotalPages)
+    const start = (page - 1) * per
+    return activeBrokerOrders.slice(start, start + per)
+  }, [activeBrokerOrders, ordersPage, ordersRowsPerPage, ordersTotalPages])
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-50">
@@ -875,6 +1138,15 @@ export default function DashboardPage() {
                 className={[tabButtonBase, tab === 'ORDERS' ? tabButtonActive : tabButtonInactive].join(' ')}
               >
                 Orders
+              </button>
+              <button
+                role="tab"
+                aria-selected={tab === 'POSITIONS'}
+                type="button"
+                onClick={() => setTab('POSITIONS')}
+                className={[tabButtonBase, tab === 'POSITIONS' ? tabButtonActive : tabButtonInactive].join(' ')}
+              >
+                Positions
               </button>
             </div>
           </div>
@@ -1068,12 +1340,7 @@ export default function DashboardPage() {
                 </div>
               ) : null}
               </div>
-            ) : (
-              <div className="mt-5">
-                <h3 className="text-base font-semibold">Order attempts</h3>
-                <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Review order history and clear old attempts.</p>
-              </div>
-            )
+            ) : null
           )}
         </section>
 
@@ -1203,41 +1470,78 @@ export default function DashboardPage() {
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="text-lg font-semibold">Orders</h2>
-                <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">All order attempts are stored locally.</p>
+                <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Live orderbook from broker.</p>
               </div>
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => void refreshOrders()}
+                  onClick={() => void refreshBrokerOrders()}
                   className="rounded-xl border border-slate-200 bg-transparent px-4 py-2 text-sm font-semibold transition-colors hover:bg-slate-100 dark:border-white/10 dark:hover:bg-white/10"
                 >
                   Refresh
                 </button>
+              </div>
+            </div>
+
+            <div className="mt-4 inline-flex rounded-2xl border border-slate-200 bg-slate-50 p-1 dark:border-white/10 dark:bg-white/5" role="tablist" aria-label="Order status tabs">
+              {(['PENDING', 'EXECUTED', 'CANCELLED', 'REJECTED'] as OrdersSubTab[]).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  role="tab"
+                  aria-selected={ordersSubTab === t}
+                  onClick={() => setOrdersSubTab(t)}
+                  className={[tabButtonBase, ordersSubTab === t ? tabButtonActive : tabButtonInactive].join(' ')}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+
+            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-slate-600 dark:text-slate-300">Rows per page</span>
+                <select
+                  value={ordersRowsPerPage}
+                  onChange={(e) => {
+                    setOrdersRowsPerPage(Number(e.target.value))
+                    setOrdersPage(1)
+                  }}
+                  className="rounded-xl border border-slate-200 bg-transparent px-3 py-2 text-sm font-semibold transition-colors hover:bg-slate-100 dark:border-white/10 dark:hover:bg-white/10"
+                >
+                  {[10, 25, 50, 100].map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex items-center justify-between gap-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    setConfirm({
-                      open: true,
-                      title: 'Clear order history',
-                      message: 'This will permanently delete all stored order history.\n\nThis action cannot be undone.',
-                      confirmText: 'Clear',
-                      cancelText: 'Cancel',
-                      destructive: true,
-                      onConfirm: async () => {
-                        await clearOrders()
-                        pushToast('success', 'History cleared')
-                      },
-                    })
-                  }}
-                  className="rounded-xl border border-rose-300 bg-transparent px-4 py-2 text-sm font-semibold text-rose-700 transition-colors hover:bg-rose-50 dark:border-rose-400/30 dark:text-rose-300 dark:hover:bg-rose-400/10"
+                  onClick={() => setOrdersPage((p) => Math.max(1, p - 1))}
+                  disabled={ordersPage <= 1}
+                  className="rounded-xl border border-slate-200 bg-transparent px-3 py-2 text-sm font-semibold transition-colors hover:bg-slate-100 disabled:opacity-60 dark:border-white/10 dark:hover:bg-white/10"
                 >
-                  Clear
+                  Prev
+                </button>
+                <span className="text-sm text-slate-600 dark:text-slate-300">
+                  Page {Math.min(Math.max(1, ordersPage), ordersTotalPages)} / {ordersTotalPages}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setOrdersPage((p) => Math.min(ordersTotalPages, p + 1))}
+                  disabled={ordersPage >= ordersTotalPages}
+                  className="rounded-xl border border-slate-200 bg-transparent px-3 py-2 text-sm font-semibold transition-colors hover:bg-slate-100 disabled:opacity-60 dark:border-white/10 dark:hover:bg-white/10"
+                >
+                  Next
                 </button>
               </div>
             </div>
 
-            {orders.length === 0 ? (
-              <p className="mt-4 text-sm text-slate-600 dark:text-slate-300">No orders yet.</p>
+            {activeBrokerOrders.length === 0 ? (
+              <p className="mt-4 text-sm text-slate-600 dark:text-slate-300">No orders in this category.</p>
             ) : (
               <div className="mt-4 overflow-auto rounded-xl border border-slate-200 dark:border-white/10">
                 <table className="w-full min-w-[820px] text-left text-sm">
@@ -1248,41 +1552,108 @@ export default function DashboardPage() {
                       <th className="py-3 pr-3">Qty</th>
                       <th className="py-3 pr-3">Side</th>
                       <th className="py-3 pr-3">Product</th>
-                      <th className="py-3 pr-3">Result</th>
+                      <th className="py-3 pr-3">Type</th>
+                      <th className="py-3 pr-3">Status</th>
+                      <th className="py-3 pr-3">Action</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {orders.map((o) => {
-                      const req = o.request
-                      const resp = o.response
-                      const symbol = asString(req.tradingsymbol)
-                      const qty = asString(req.quantity)
-                      const sideText = asString(req.transactiontype)
-                      const productType = asString(req.producttype)
-                      const typeText =
-                        productType === 'INTRADAY' ? 'Intraday' : productType === 'DELIVERY' ? 'Regular' : productType
-                      const ok = isSuccessResponse(resp)
+                    {pagedBrokerOrders.map((o) => {
+                      const symbol = String(o.tradingsymbol || '').trim()
+                      const qty = String(o.quantity || '').trim()
+                      const filled = String(o.filledshares || '').trim()
+                      const sideText = String(o.transactiontype || '').trim()
+                      const productType = String(o.producttype || '').trim()
+                      const typeText = String(o.ordertype || '').trim()
+                      const rawStatus = String(o.orderstatus ?? o.status ?? '').trim()
+                      const time = String(o.exchorderupdatetime || o.updatetime || '').trim()
+                      const canCancel = normalizeOrderGroup(o) === 'PENDING'
 
                       return (
-                        <tr key={o.id} className="border-t border-slate-200 dark:border-white/10">
-                          <td className="py-2 pl-3 pr-3 align-top font-mono text-xs">{formatLocalTime(o.created_at)}</td>
+                        <tr key={String(o.orderid || symbol)} className="border-t border-slate-200 dark:border-white/10">
+                          <td className="py-2 pl-3 pr-3 align-top font-mono text-xs">{time ? time : '-'}</td>
                           <td className="py-2 pr-3 align-top font-mono text-xs">{symbol || '-'}</td>
-                          <td className="py-2 pr-3 align-top font-mono text-xs">{qty || '-'}</td>
+                          <td className="py-2 pr-3 align-top font-mono text-xs">{qty || '-'}{filled ? ` / ${filled}` : ''}</td>
                           <td className="py-2 pr-3 align-top font-mono text-xs">{sideText || '-'}</td>
+                          <td className="py-2 pr-3 align-top">{productType || '-'}</td>
                           <td className="py-2 pr-3 align-top">{typeText || '-'}</td>
+                          <td className="py-2 pr-3 align-top">{rawStatus || '-'}</td>
                           <td className="py-2 pr-3 align-top">
-                            <span
-                              className={[
-                                'inline-flex rounded-lg px-2 py-1 text-xs font-semibold',
-                                ok
-                                  ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-400/10 dark:text-emerald-300'
-                                  : 'bg-rose-100 text-rose-800 dark:bg-rose-400/10 dark:text-rose-300',
-                              ]
-                                .filter(Boolean)
-                                .join(' ')}
+                            {canCancel ? (
+                              <button
+                                type="button"
+                                onClick={() => void cancelBrokerOrder(o)}
+                                className="rounded-xl border border-rose-300 bg-transparent px-3 py-1.5 text-xs font-semibold text-rose-700 transition-colors hover:bg-rose-50 dark:border-rose-400/30 dark:text-rose-300 dark:hover:bg-rose-400/10"
+                              >
+                                Cancel
+                              </button>
+                            ) : (
+                              <span className="text-xs text-slate-500 dark:text-slate-400">-</span>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        ) : null}
+
+        {tab === 'POSITIONS' ? (
+          <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-white/10 dark:bg-slate-900">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-lg font-semibold">Positions</h2>
+                <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Live positions from broker.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void refreshPositions()}
+                className="rounded-xl border border-slate-200 bg-transparent px-4 py-2 text-sm font-semibold transition-colors hover:bg-slate-100 dark:border-white/10 dark:hover:bg-white/10"
+              >
+                Refresh
+              </button>
+            </div>
+
+            {positions.length === 0 ? (
+              <p className="mt-4 text-sm text-slate-600 dark:text-slate-300">No active positions.</p>
+            ) : (
+              <div className="mt-4 overflow-auto rounded-xl border border-slate-200 dark:border-white/10">
+                <table className="w-full min-w-[860px] text-left text-sm">
+                  <thead className="bg-slate-50 text-xs text-slate-600 dark:bg-white/5 dark:text-slate-300">
+                    <tr>
+                      <th className="py-3 pl-3 pr-3">Symbol</th>
+                      <th className="py-3 pr-3">Exchange</th>
+                      <th className="py-3 pr-3">Net Qty</th>
+                      <th className="py-3 pr-3">P&L</th>
+                      <th className="py-3 pr-3">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {positions.map((p, idx) => {
+                      const symbol = getPositionSymbol(p)
+                      const exchange = getPositionExchange(p)
+                      const net = getPositionNetQty(p)
+                      const pnl = parseNumber(p.pnl)
+                      const canExit = Boolean(symbol) && Boolean(exchange) && Boolean(getPositionToken(p)) && net !== 0
+
+                      return (
+                        <tr key={`${symbol}-${idx}`} className="border-t border-slate-200 dark:border-white/10">
+                          <td className="py-2 pl-3 pr-3 align-top font-mono text-xs">{symbol || '-'}</td>
+                          <td className="py-2 pr-3 align-top font-mono text-xs">{exchange || '-'}</td>
+                          <td className="py-2 pr-3 align-top font-mono text-xs">{net}</td>
+                          <td className="py-2 pr-3 align-top font-mono text-xs">{Number.isFinite(pnl) ? pnl.toFixed(2) : '-'}</td>
+                          <td className="py-2 pr-3 align-top">
+                            <button
+                              type="button"
+                              disabled={!canExit}
+                              onClick={() => void exitPosition(p)}
+                              className="rounded-xl border border-rose-300 bg-transparent px-3 py-1.5 text-xs font-semibold text-rose-700 transition-colors hover:bg-rose-50 disabled:opacity-60 dark:border-rose-400/30 dark:text-rose-300 dark:hover:bg-rose-400/10"
                             >
-                              {ok ? 'Success' : 'Failed'}
-                            </span>
+                              Exit
+                            </button>
                           </td>
                         </tr>
                       )

@@ -28,6 +28,23 @@ class SimpleOrderRequest(BaseModel):
     transactiontype: str
     producttype: str
     quantity: int
+    ordertype: str = "MARKET"
+    price: Optional[float] = None
+    triggerprice: Optional[float] = None
+    variety: str = "NORMAL"
+
+
+class CancelOrderRequest(BaseModel):
+    variety: str = "NORMAL"
+
+
+class ExitPositionRequest(BaseModel):
+    exchange: str
+    tradingsymbol: str
+    symboltoken: str
+    quantity: int
+    producttype: str = "INTRADAY"
+    transactiontype: str
 
 
 class LoginRequest(BaseModel):
@@ -85,6 +102,76 @@ def angel_search(query: str, exchange: str = "NSE") -> Dict[str, Any]:
         if "Not logged in" in msg:
             raise HTTPException(status_code=401, detail=msg)
         raise HTTPException(status_code=400, detail=msg)
+
+
+@app.get("/angel/orderbook")
+def angel_orderbook() -> Dict[str, Any]:
+    try:
+        return angel.order_book()
+    except Exception as e:  # noqa: BLE001
+        msg = str(e)
+        if "Not logged in" in msg:
+            raise HTTPException(status_code=401, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+
+
+@app.post("/angel/orders/{order_id}/cancel")
+def angel_cancel_order(order_id: str, req: CancelOrderRequest = CancelOrderRequest()) -> Dict[str, Any]:
+    try:
+        return angel.cancel_order(order_id=order_id, variety=req.variety)
+    except Exception as e:  # noqa: BLE001
+        msg = str(e)
+        if "Not logged in" in msg:
+            raise HTTPException(status_code=401, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+
+
+@app.get("/angel/positions")
+def angel_positions() -> Dict[str, Any]:
+    try:
+        return angel.positions()
+    except Exception as e:  # noqa: BLE001
+        msg = str(e)
+        if "Not logged in" in msg:
+            raise HTTPException(status_code=401, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+
+
+@app.post("/angel/positions/exit")
+def angel_exit_position(req: ExitPositionRequest) -> Dict[str, Any]:
+    tx = req.transactiontype.strip().upper()
+    if tx not in {"BUY", "SELL"}:
+        raise HTTPException(status_code=400, detail="Invalid transactiontype")
+    qty = int(req.quantity)
+    if qty <= 0:
+        raise HTTPException(status_code=400, detail="Quantity must be > 0")
+
+    # Exit is implemented as MARKET order in opposite direction.
+    payload: Dict[str, Any] = {
+        "variety": "NORMAL",
+        "tradingsymbol": req.tradingsymbol,
+        "symboltoken": req.symboltoken,
+        "transactiontype": tx,
+        "exchange": req.exchange,
+        "ordertype": "MARKET",
+        "producttype": req.producttype,
+        "duration": "DAY",
+        "price": "0",
+        "squareoff": "0",
+        "stoploss": "0",
+        "quantity": str(qty),
+    }
+
+    # If this is a short position, the client should pass BUY; we also support that via a suffix in symbol.
+    # For safety, allow caller to include transactiontype as part of tradingsymbol is not supported here.
+    # Frontend will decide side based on net quantity.
+    try:
+        response = angel.place_order(payload)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(e))
+
+    attempt = store.add(id=str(uuid4()), request=payload, response=response)
+    return {"item": store.to_dict(attempt)}
 
 
 @app.get("/instruments/index-options")
@@ -183,16 +270,40 @@ def place_simple_order(req: SimpleOrderRequest) -> Dict[str, Any]:
         if producttype == "DELIVERY":
             producttype = "CARRYFORWARD"
 
+    ordertype = req.ordertype.strip().upper()
+    if ordertype not in {"MARKET", "LIMIT", "SL", "SL-L"}:
+        raise HTTPException(status_code=400, detail="Unsupported order type")
+
+    price: Optional[float] = req.price
+    trigger: Optional[float] = req.triggerprice
+    if ordertype == "MARKET":
+        price = 0.0
+        trigger = None
+    elif ordertype == "LIMIT":
+        if price is None or price <= 0:
+            raise HTTPException(status_code=400, detail="LIMIT requires price")
+        trigger = None
+    elif ordertype == "SL":
+        if trigger is None or trigger <= 0:
+            raise HTTPException(status_code=400, detail="SL requires triggerprice")
+        price = 0.0
+    elif ordertype == "SL-L":
+        if trigger is None or trigger <= 0:
+            raise HTTPException(status_code=400, detail="SL-L requires triggerprice")
+        if price is None or price <= 0:
+            raise HTTPException(status_code=400, detail="SL-L requires price")
+
     payload: Dict[str, Any] = {
-        "variety": "NORMAL",
+        "variety": req.variety,
         "tradingsymbol": req.tradingsymbol,
         "symboltoken": req.symboltoken,
         "transactiontype": req.transactiontype,
         "exchange": req.exchange,
-        "ordertype": "MARKET",
+        "ordertype": ordertype,
         "producttype": producttype,
         "duration": "DAY",
-        "price": "0",
+        "price": str(price if price is not None else 0),
+        "triggerprice": str(trigger) if trigger is not None else None,
         "squareoff": "0",
         "stoploss": "0",
         "quantity": str(req.quantity),

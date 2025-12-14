@@ -116,6 +116,70 @@ class AngelClient:
             return {"status": False, "message": "SmartAPI returned empty response"}
         return {"status": True, "data": {"orderid": str(result)}}
 
+    def order_book(self) -> Dict[str, Any]:
+        self._require_session()
+
+        fn = getattr(self._smart, "orderBook", None)
+        if callable(fn):
+            result = fn()
+            if not isinstance(result, dict):
+                raise RuntimeError("Unexpected order book response from SmartAPI")
+            return result
+
+        raw_post = getattr(self._smart, "_postRequest", None)
+        if callable(raw_post):
+            result = raw_post("api.order.book", {})
+            if not isinstance(result, dict):
+                raise RuntimeError("Unexpected order book response from SmartAPI")
+            return result
+
+        raise RuntimeError("orderBook is not supported by the installed SmartAPI client")
+
+    def cancel_order(self, *, order_id: str, variety: str = "NORMAL") -> Dict[str, Any]:
+        self._require_session()
+        oid = order_id.strip()
+        if not oid:
+            raise RuntimeError("Invalid order id")
+
+        fn = getattr(self._smart, "cancelOrder", None)
+        if callable(fn):
+            try:
+                result = fn(order_id=oid, variety=variety)
+            except TypeError:
+                result = fn(oid, variety)
+            if not isinstance(result, dict):
+                raise RuntimeError("Unexpected cancel order response from SmartAPI")
+            return result
+
+        raw_post = getattr(self._smart, "_postRequest", None)
+        if callable(raw_post):
+            result = raw_post("api.order.cancel", {"orderid": oid, "variety": variety})
+            if not isinstance(result, dict):
+                raise RuntimeError("Unexpected cancel order response from SmartAPI")
+            return result
+
+        raise RuntimeError("cancelOrder is not supported by the installed SmartAPI client")
+
+    def positions(self) -> Dict[str, Any]:
+        self._require_session()
+
+        for name in ("position", "positions", "getPosition"):
+            fn = getattr(self._smart, name, None)
+            if callable(fn):
+                result = fn()
+                if not isinstance(result, dict):
+                    raise RuntimeError("Unexpected positions response from SmartAPI")
+                return result
+
+        raw_post = getattr(self._smart, "_postRequest", None)
+        if callable(raw_post):
+            result = raw_post("api.position", {})
+            if not isinstance(result, dict):
+                raise RuntimeError("Unexpected positions response from SmartAPI")
+            return result
+
+        raise RuntimeError("positions are not supported by the installed SmartAPI client")
+
     def get_ltp(self, *, exchange: str, tradingsymbol: str, symboltoken: str) -> Dict[str, Any]:
         self._require_session()
 

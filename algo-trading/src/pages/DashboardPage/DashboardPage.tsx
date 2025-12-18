@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Moon, Sun, X } from 'lucide-react'
 
+import { coerceProductForSide, getPositionExitProductType } from '../../trading/rules'
+
 type AngelLoginResponse = {
   status: boolean
   message?: string
@@ -301,6 +303,10 @@ type PositionRow = {
   tradingSymbol?: string
   symboltoken?: string
   symbolToken?: string
+  producttype?: string
+  productType?: string
+  product?: string
+  posType?: string
   netqty?: string
   netQty?: string
   buyqty?: string
@@ -629,12 +635,18 @@ export default function DashboardPage() {
     const token = getPositionToken(p)
     const exchange = getPositionExchange(p)
     const net = getPositionNetQty(p)
+    const posProduct = getPositionExitProductType(p)
     if (!symbol || !token || !exchange) {
       pushToast('error', 'Exit unavailable', 'Position is missing symbol/token/exchange from broker response.')
       return
     }
     if (!Number.isFinite(net) || net === 0) {
       pushToast('info', 'No open quantity', 'This position has no net quantity.')
+      return
+    }
+
+    if (posProduct === null) {
+      pushToast('error', 'Exit unavailable', 'Unable to determine position product type (DELIVERY/INTRADAY) from broker response.')
       return
     }
 
@@ -655,7 +667,7 @@ export default function DashboardPage() {
             tradingsymbol: symbol,
             symboltoken: token,
             quantity: qty,
-            producttype: product,
+            producttype: posProduct,
             transactiontype: tx,
           })
           const ok = isSuccessResponse(placed.item.response)
@@ -1405,7 +1417,10 @@ export default function DashboardPage() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => setSide('SELL')}
+                      onClick={() => {
+                        setSide('SELL')
+                        setProduct(coerceProductForSide('SELL', product))
+                      }}
                       className={[
                         tabButtonBase,
                         side === 'SELL' ? 'bg-rose-400 text-slate-950 hover:bg-rose-300' : tabButtonInactive,
@@ -1421,8 +1436,13 @@ export default function DashboardPage() {
                   <div className="mt-2 inline-flex rounded-2xl border border-slate-200 bg-slate-50 p-1 dark:border-white/10 dark:bg-white/5">
                     <button
                       type="button"
+                      disabled={side === 'SELL'}
                       onClick={() => setProduct('DELIVERY')}
-                      className={[tabButtonBase, product === 'DELIVERY' ? tabButtonActive : tabButtonInactive].join(' ')}
+                      className={[
+                        tabButtonBase,
+                        product === 'DELIVERY' ? tabButtonActive : tabButtonInactive,
+                        side === 'SELL' ? 'opacity-60 cursor-not-allowed' : '',
+                      ].join(' ')}
                     >
                       Regular
                     </button>

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Moon, Sun, X } from 'lucide-react'
 
 import { coerceProductForSide, getPositionExitProductType } from '../../trading/rules'
+import { formatINR, pickFirstNumber } from '../../trading/money'
 
 type AngelLoginResponse = {
   status: boolean
@@ -402,12 +403,6 @@ function getOrderOutcomeMessage(resp: Record<string, unknown> | null | undefined
   return 'Order was rejected by broker.'
 }
 
-function formatLocalTime(iso: string): string {
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return iso
-  return d.toLocaleString()
-}
-
 function asString(v: unknown): string {
   return typeof v === 'string' ? v : ''
 }
@@ -575,10 +570,141 @@ export default function DashboardPage() {
     onConfirm: () => undefined,
   })
 
-  const [orders, setOrders] = useState<OrdersResponse['items']>([])
-
   const [brokerOrders, setBrokerOrders] = useState<BrokerOrder[]>([])
   const [positions, setPositions] = useState<PositionRow[]>([])
+
+  const [selectedLtp, setSelectedLtp] = useState<number | null>(null)
+  const [ltpStatus, setLtpStatus] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle')
+
+  const [marginsRaw, setMarginsRaw] = useState<Record<string, unknown> | null>(null)
+  const [marginsStatus, setMarginsStatus] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle')
+
+  const [requiredMargin, setRequiredMargin] = useState<number | null>(null)
+  const [requiredMarginSupported, setRequiredMarginSupported] = useState<boolean>(true)
+  const [requiredMarginStatus, setRequiredMarginStatus] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle')
+
+  const selectedInstrument = useMemo<
+    | {
+        exchange: string
+        tradingsymbol: string
+        symboltoken: string
+      }
+    | null
+  >(() => {
+    if (tab === 'EQUITY') {
+      if (!selectedEquity) return null
+      return {
+        exchange: 'NSE',
+        tradingsymbol: selectedEquity.tradingsymbol,
+        symboltoken: selectedEquity.symboltoken,
+      }
+    }
+    if (tab === 'OPTIONS') {
+      if (!selected) return null
+      return {
+        exchange: selected.exchange,
+        tradingsymbol: selected.tradingsymbol,
+        symboltoken: selected.symboltoken,
+      }
+    }
+    return null
+  }, [selected, selectedEquity, tab])
+
+  const availableMargin = useMemo<number | null>(() => {
+    if (!marginsRaw) return null
+
+    const root = marginsRaw
+    const data = (root.data && typeof root.data === 'object' ? (root.data as Record<string, unknown>) : root) as Record<
+      string,
+      unknown
+    >
+
+    return pickFirstNumber(data, [
+      'availablecash',
+      'availableCash',
+      'available',
+      'cashAvailable',
+      'net',
+      'availableMargin',
+      'availablemargin',
+    ])
+  }, [marginsRaw])
+
+  const remainingMargin = useMemo<number | null>(() => {
+    if (availableMargin === null) return null
+    if (requiredMargin === null) return null
+    return availableMargin - requiredMargin
+  }, [availableMargin, requiredMargin])
+
+  async function refreshMargins() {
+    setMarginsStatus('loading')
+    try {
+      const data = await apiGet<Record<string, unknown>>('/angel/margins')
+      setMarginsRaw(data)
+      setMarginsStatus('ok')
+    } catch (e) {
+      setMarginsRaw(null)
+      setMarginsStatus('error')
+      if (connectStatus === 'connected') {
+        pushToast('error', 'Funds unavailable', cleanErrorMessage(e))
+      }
+    }
+  }
+
+  async function refreshLtp() {
+    if (!selectedInstrument) {
+      setSelectedLtp(null)
+      setLtpStatus('idle')
+      return
+    }
+
+    setLtpStatus('loading')
+    try {
+      const q = new URLSearchParams({
+        exchange: selectedInstrument.exchange,
+        tradingsymbol: selectedInstrument.tradingsymbol,
+        symboltoken: selectedInstrument.symboltoken,
+      })
+      const data = await apiGet<{ ltp: number }>(`/market/ltp?${q.toString()}`)
+      setSelectedLtp(typeof data.ltp === 'number' && Number.isFinite(data.ltp) ? data.ltp : null)
+      setLtpStatus('ok')
+    } catch {
+      setSelectedLtp(null)
+      setLtpStatus('error')
+    }
+  }
+
+  async function refreshRequiredMargin() {
+    if (!selectedInstrument) {
+      setRequiredMargin(null)
+      setRequiredMarginStatus('idle')
+      return
+    }
+
+    const qty = Number(quantity)
+    if (!Number.isFinite(qty) || qty <= 0) {
+      setRequiredMargin(null)
+      setRequiredMarginStatus('idle')
+      return
+    }
+
+    setRequiredMarginSupported(true)
+
+    if (ltpStatus === 'loading' || ltpStatus === 'idle') {
+      setRequiredMargin(null)
+      setRequiredMarginStatus('loading')
+      return
+    }
+
+    if (selectedLtp === null || !Number.isFinite(selectedLtp)) {
+      setRequiredMargin(null)
+      setRequiredMarginStatus('error')
+      return
+    }
+
+    setRequiredMargin(qty * selectedLtp)
+    setRequiredMarginStatus('ok')
+  }
 
   async function refreshBrokerOrders() {
     try {
@@ -820,16 +946,10 @@ export default function DashboardPage() {
 
   async function refreshOrders() {
     try {
-      const data = await apiGet<OrdersResponse>('/angel/orders')
-      setOrders(data.items)
+      await apiGet<OrdersResponse>('/angel/orders')
     } catch {
       // ignore
     }
-  }
-
-  async function clearOrders() {
-    await fetch(`${API_BASE}/angel/orders`, { method: 'DELETE' })
-    await refreshOrders()
   }
 
   async function onConnect() {
@@ -980,8 +1100,47 @@ export default function DashboardPage() {
   }
 
   useEffect(() => {
-    void refreshOrders().catch(() => undefined)
+    // initial fetch is not required for ticket UI
   }, [])
+
+  useEffect(() => {
+    if (connectStatus !== 'connected') {
+      setMarginsRaw(null)
+      setMarginsStatus('idle')
+      setRequiredMargin(null)
+      setRequiredMarginStatus('idle')
+      setRequiredMarginSupported(true)
+      return
+    }
+
+    void refreshMargins()
+  }, [connectStatus])
+
+  useEffect(() => {
+    if (connectStatus !== 'connected') {
+      setSelectedLtp(null)
+      setLtpStatus('idle')
+      return
+    }
+
+    void refreshLtp()
+  }, [connectStatus, selectedInstrument])
+
+  useEffect(() => {
+    if (connectStatus !== 'connected') {
+      setRequiredMargin(null)
+      setRequiredMarginStatus('idle')
+      return
+    }
+
+    const t = window.setTimeout(() => {
+      void refreshRequiredMargin()
+    }, 450)
+
+    return () => {
+      window.clearTimeout(t)
+    }
+  }, [connectStatus, limitPrice, orderType, product, quantity, selectedInstrument, side])
 
   useEffect(() => {
     if (tab === 'ORDERS') {
@@ -1384,6 +1543,58 @@ export default function DashboardPage() {
                   ) : null}
                 </div>
 
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-white/10 dark:bg-white/5">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <p className="text-xs text-slate-600 dark:text-slate-300">Price (LTP)</p>
+                      <p className="mt-1 text-sm font-semibold">
+                        {selectedLtp !== null ? selectedLtp.toFixed(2) : '—'}
+                        {ltpStatus === 'loading' ? <span className="ml-2 text-xs text-slate-500">Loading…</span> : null}
+                        {ltpStatus === 'error' ? <span className="ml-2 text-xs text-rose-600">Unavailable</span> : null}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void refreshLtp()}
+                      disabled={connectStatus !== 'connected' || !selectedInstrument || ltpStatus === 'loading'}
+                      className="rounded-xl border border-slate-200 bg-transparent px-3 py-1.5 text-xs font-semibold transition-colors hover:bg-slate-100 disabled:opacity-60 dark:border-white/10 dark:hover:bg-white/10"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+
+                  <div className="mt-3 border-t border-slate-200 pt-3 text-xs text-slate-600 dark:border-white/10 dark:text-slate-300">
+                    <div className="flex items-center justify-between gap-2">
+                      <span>Available funds</span>
+                      <span className="font-mono">{formatINR(availableMargin)}</span>
+                    </div>
+                    <div className="mt-1 flex items-center justify-between gap-2">
+                      <span>Required (est.)</span>
+                      <span className="font-mono">
+                        {requiredMarginSupported ? formatINR(requiredMargin) : 'Not supported'}
+                        {requiredMarginStatus === 'loading' ? <span className="ml-2 text-[11px] text-slate-500">…</span> : null}
+                      </span>
+                    </div>
+                    <div className="mt-1 flex items-center justify-between gap-2">
+                      <span>Remaining</span>
+                      <span
+                        className={[
+                          'font-mono',
+                          remainingMargin !== null && remainingMargin < 0 ? 'text-rose-600 dark:text-rose-300' : '',
+                        ].join(' ')}
+                      >
+                        {requiredMarginSupported ? formatINR(remainingMargin) : '—'}
+                      </span>
+                    </div>
+
+                    {connectStatus !== 'connected' ? (
+                      <p className="mt-2 text-[11px] text-slate-500">Connect to Angel One to view funds and margin.</p>
+                    ) : marginsStatus === 'error' ? (
+                      <p className="mt-2 text-[11px] text-rose-600">Funds endpoint unavailable.</p>
+                    ) : null}
+                  </div>
+                </div>
+
                 <div>
                   <label className="text-sm font-semibold" htmlFor="qty">
                     Quantity
@@ -1706,7 +1917,6 @@ export default function DashboardPage() {
               const login = await apiPost<AngelLoginResponse>('/angel/login', { mpin })
               setConnectStatus('connected')
               setConnectMessage(login.message ?? 'Connected')
-              await refreshOrders()
               pushToast('success', 'Connected', 'Angel One connection is active.')
               setMpinModal({ open: false })
             } catch (e) {

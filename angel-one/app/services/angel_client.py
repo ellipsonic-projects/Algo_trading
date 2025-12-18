@@ -213,6 +213,78 @@ class AngelClient:
 
         return {"exchange": ex, "tradingsymbol": ts, "symboltoken": token, "ltp": ltp}
 
+    def margins(self) -> Dict[str, Any]:
+        self._require_session()
+
+        for name in (
+            "rmsLimit",
+            "getRMS",
+            "getRmsLimit",
+            "getrmsLimit",
+            "getMargin",
+        ):
+            fn = getattr(self._smart, name, None)
+            if callable(fn):
+                result = fn()
+                if not isinstance(result, dict):
+                    raise RuntimeError("Unexpected margins response from SmartAPI")
+                return result
+
+        raw_post = getattr(self._smart, "_postRequest", None)
+        if callable(raw_post):
+            # Endpoint key differs between versions; try a small set.
+            for key in (
+                "api.rms.limit",
+                "api.user.rms",
+                "api.margin.rms",
+            ):
+                try:
+                    result = raw_post(key, {})
+                except Exception:
+                    continue
+                if isinstance(result, dict):
+                    return result
+
+        raise RuntimeError("margins are not supported by the installed SmartAPI client")
+
+    def required_margin(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        self._require_session()
+
+        clean_payload: Dict[str, Any] = {k: v for k, v in payload.items() if v is not None}
+
+        for name in (
+            "marginCalculator",
+            "getMarginCalculator",
+            "marginRequired",
+            "marginRequiredV2",
+            "getMarginRequired",
+        ):
+            fn = getattr(self._smart, name, None)
+            if callable(fn):
+                try:
+                    result = fn(clean_payload)
+                except TypeError:
+                    result = fn(**clean_payload)
+                if not isinstance(result, dict):
+                    raise RuntimeError("Unexpected required margin response from SmartAPI")
+                return result
+
+        raw_post = getattr(self._smart, "_postRequest", None)
+        if callable(raw_post):
+            for key in (
+                "api.margin.required",
+                "api.order.margin",
+                "api.margin.calculator",
+            ):
+                try:
+                    result = raw_post(key, clean_payload)
+                except Exception:
+                    continue
+                if isinstance(result, dict):
+                    return result
+
+        return {"supported": False, "message": "Required margin is not supported by the installed SmartAPI client"}
+
     def get_index_ltp(self, *, underlying: str) -> Dict[str, Any]:
         self._require_session()
 

@@ -51,6 +51,23 @@ class LoginRequest(BaseModel):
     mpin: str
 
 
+class LtpRequest(BaseModel):
+    exchange: str
+    tradingsymbol: str
+    symboltoken: str
+
+
+class RequiredMarginRequest(BaseModel):
+    exchange: str
+    tradingsymbol: str
+    symboltoken: str
+    transactiontype: str
+    producttype: str
+    quantity: int
+    ordertype: str = "MARKET"
+    price: Optional[float] = None
+
+
 app = FastAPI(title="Angel One Trading Backend", version="0.1.0")
 
 cfg = load_config(dotenv_path=str(BASE_DIR / ".env"))
@@ -97,6 +114,68 @@ def angel_profile() -> Dict[str, Any]:
 def angel_search(query: str, exchange: str = "NSE") -> Dict[str, Any]:
     try:
         return angel.search(exchange=exchange, query=query)
+    except Exception as e:  # noqa: BLE001
+        msg = str(e)
+        if "Not logged in" in msg:
+            raise HTTPException(status_code=401, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+
+
+@app.get("/market/ltp")
+def market_ltp(exchange: str, tradingsymbol: str, symboltoken: str) -> Dict[str, Any]:
+    try:
+        return angel.get_ltp(exchange=exchange, tradingsymbol=tradingsymbol, symboltoken=symboltoken)
+    except Exception as e:  # noqa: BLE001
+        msg = str(e)
+        if "Not logged in" in msg:
+            raise HTTPException(status_code=401, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+
+
+@app.get("/angel/margins")
+def angel_margins() -> Dict[str, Any]:
+    try:
+        return angel.margins()
+    except Exception as e:  # noqa: BLE001
+        msg = str(e)
+        if "Not logged in" in msg:
+            raise HTTPException(status_code=401, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+
+
+@app.post("/angel/margins/required")
+def required_margin(req: RequiredMarginRequest) -> Dict[str, Any]:
+    qty = int(req.quantity)
+    if qty <= 0:
+        raise HTTPException(status_code=400, detail="Quantity must be > 0")
+
+    tx = req.transactiontype.strip().upper()
+    if tx not in {"BUY", "SELL"}:
+        raise HTTPException(status_code=400, detail="Invalid transactiontype")
+
+    ordertype = req.ordertype.strip().upper()
+    if ordertype not in {"MARKET", "LIMIT", "SL", "SL-L"}:
+        raise HTTPException(status_code=400, detail="Unsupported order type")
+
+    price: Optional[float] = req.price
+    if ordertype in {"MARKET", "SL"}:
+        price = 0.0
+    if ordertype in {"LIMIT", "SL-L"} and (price is None or price <= 0):
+        raise HTTPException(status_code=400, detail="This order type requires a valid price")
+
+    payload: Dict[str, Any] = {
+        "exchange": req.exchange,
+        "tradingsymbol": req.tradingsymbol,
+        "symboltoken": req.symboltoken,
+        "transactiontype": tx,
+        "producttype": req.producttype,
+        "quantity": str(qty),
+        "ordertype": ordertype,
+        "price": str(price if price is not None else 0),
+    }
+
+    try:
+        return angel.required_margin(payload)
     except Exception as e:  # noqa: BLE001
         msg = str(e)
         if "Not logged in" in msg:

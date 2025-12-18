@@ -1,190 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Moon, Sun, X } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { X } from 'lucide-react'
 
 import { coerceProductForSide, getPositionExitProductType } from '../../trading/rules'
 import { formatINR, pickFirstNumber } from '../../trading/money'
-
-type AngelLoginResponse = {
-  status: boolean
-  message?: string
-  client_code?: string
-}
-
-function cleanErrorMessage(err: unknown): string {
-  if (!(err instanceof Error)) return 'Something went wrong. Please try again.'
-  const msg = err.message || ''
-  if (msg.includes('401') || msg.includes('Not logged in')) {
-    return 'Please connect to Angel One first.'
-  }
-  if (msg.length > 200) return msg.slice(0, 200)
-  return msg
-}
-
-type MpinModalState = {
-  open: boolean
-}
-
-function MpinModal({
-  open,
-  onCancel,
-  onSubmit,
-}: {
-  open: boolean
-  onCancel: () => void
-  onSubmit: (mpin: string) => Promise<void> | void
-}) {
-  const [digits, setDigits] = useState<string[]>(['', '', '', ''])
-  const [isWorking, setIsWorking] = useState(false)
-  const inputs = [useRef<HTMLInputElement | null>(null), useRef<HTMLInputElement | null>(null), useRef<HTMLInputElement | null>(null), useRef<HTMLInputElement | null>(null)]
-
-  useEffect(() => {
-    if (!open) return
-    setDigits(['', '', '', ''])
-    setIsWorking(false)
-    setTimeout(() => inputs[0].current?.focus(), 0)
-  }, [open])
-
-  const mpin = digits.join('')
-  const canSubmit = mpin.length === 4 && digits.every((d) => d.length === 1)
-
-  async function handleSubmit() {
-    if (!canSubmit || isWorking) return
-    setIsWorking(true)
-    try {
-      await onSubmit(mpin)
-    } finally {
-      setIsWorking(false)
-    }
-  }
-
-  if (!open) return null
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4" role="dialog" aria-modal="true" aria-label="Enter MPIN">
-      <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-xl dark:border-white/10 dark:bg-slate-900">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h3 className="text-base font-semibold">Connect to Angel One</h3>
-            <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Enter your 4-digit MPIN to continue.</p>
-          </div>
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={isWorking}
-            className="rounded-xl p-1 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 disabled:opacity-60 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-slate-50"
-            aria-label="Close"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-
-        <div className="mt-5 flex items-center justify-center gap-3">
-          {digits.map((d, idx) => (
-            <input
-              key={idx}
-              ref={inputs[idx]}
-              value={d}
-              inputMode="numeric"
-              pattern="[0-9]*"
-              maxLength={1}
-              autoComplete="one-time-code"
-              aria-label={`MPIN digit ${idx + 1}`}
-              onChange={(e) => {
-                const v = e.target.value.replace(/\D/g, '').slice(0, 1)
-                setDigits((prev) => {
-                  const next = [...prev]
-                  next[idx] = v
-                  return next
-                })
-                if (v && idx < 3) inputs[idx + 1].current?.focus()
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Backspace' && !digits[idx] && idx > 0) {
-                  inputs[idx - 1].current?.focus()
-                }
-                if (e.key === 'Enter') {
-                  void handleSubmit()
-                }
-              }}
-              className={[
-                'h-12 w-12 rounded-xl border text-center text-lg font-semibold outline-none transition-colors',
-                'border-slate-200 bg-slate-50 text-slate-900',
-                'hover:bg-slate-100 focus:ring-4 focus:ring-cyan-200',
-                'dark:border-white/10 dark:bg-white/5 dark:text-slate-50 dark:hover:bg-white/10 dark:focus:ring-cyan-400/20',
-              ]
-                .filter(Boolean)
-                .join(' ')}
-            />
-          ))}
-        </div>
-
-        <div className="mt-6 flex items-center justify-end gap-2">
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={isWorking}
-            className="rounded-xl border border-slate-200 bg-transparent px-4 py-2 text-sm font-semibold transition-colors hover:bg-slate-100 disabled:opacity-70 dark:border-white/10 dark:hover:bg-white/10"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => void handleSubmit()}
-            disabled={!canSubmit || isWorking}
-            className="rounded-xl bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 transition-colors hover:bg-cyan-300 disabled:opacity-70"
-          >
-            {isWorking ? 'Connecting…' : 'Connect'}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-type OrdersResponse = {
-  items: Array<{
-    id: string
-    created_at: string
-    request: Record<string, unknown>
-    response: Record<string, unknown>
-  }>
-}
-
-type PlaceOrderResponse = {
-  item: {
-    id: string
-    created_at: string
-    request: Record<string, unknown>
-    response: Record<string, unknown>
-  }
-}
-
-type Exchange = 'NFO' | 'BFO'
-type Underlying = 'NIFTY' | 'BANKNIFTY' | 'SENSEX'
-type OptionType = 'CE' | 'PE'
-type Side = 'BUY' | 'SELL'
-type Product = 'DELIVERY' | 'INTRADAY'
-type OrderType = 'MARKET' | 'LIMIT' | 'SL' | 'SL-L'
-
-type TradeTab = 'EQUITY' | 'OPTIONS' | 'ORDERS' | 'POSITIONS'
-
-type OrdersSubTab = 'PENDING' | 'EXECUTED' | 'CANCELLED' | 'REJECTED'
-
-type Theme = 'dark' | 'light'
-
-function getInitialTheme(): Theme {
-  const stored = localStorage.getItem('theme')
-  if (stored === 'light' || stored === 'dark') return stored
-  return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
-}
-
-function setDocumentTheme(theme: Theme) {
-  if (theme === 'dark') {
-    document.documentElement.classList.add('dark')
-  } else {
-    document.documentElement.classList.remove('dark')
-  }
-}
+import { useAngelConnection } from '../../shared/angel/AngelConnectionProvider'
 
 type ToastKind = 'success' | 'error' | 'info'
 
@@ -241,6 +60,45 @@ function Toasts({ items, onDismiss }: { items: ToastItem[]; onDismiss: (id: stri
     </div>
   )
 }
+
+function cleanErrorMessage(err: unknown): string {
+  if (!(err instanceof Error)) return 'Something went wrong. Please try again.'
+  const msg = err.message || ''
+  if (msg.includes('401') || msg.includes('Not logged in')) {
+    return 'Please connect to Angel One first.'
+  }
+  if (msg.length > 200) return msg.slice(0, 200)
+  return msg
+}
+
+type OrdersResponse = {
+  items: Array<{
+    id: string
+    created_at: string
+    request: Record<string, unknown>
+    response: Record<string, unknown>
+  }>
+}
+
+type PlaceOrderResponse = {
+  item: {
+    id: string
+    created_at: string
+    request: Record<string, unknown>
+    response: Record<string, unknown>
+  }
+}
+
+type Exchange = 'NFO' | 'BFO'
+type Underlying = 'NIFTY' | 'BANKNIFTY' | 'SENSEX'
+type OptionType = 'CE' | 'PE'
+type Side = 'BUY' | 'SELL'
+type Product = 'DELIVERY' | 'INTRADAY'
+type OrderType = 'MARKET' | 'LIMIT' | 'SL' | 'SL-L'
+
+type TradeTab = 'EQUITY' | 'OPTIONS' | 'ORDERS' | 'POSITIONS'
+
+type OrdersSubTab = 'PENDING' | 'EXECUTED' | 'CANCELLED' | 'REJECTED'
 
 type IndexOptionContract = {
   exchange: Exchange
@@ -491,19 +349,8 @@ async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   return (await res.json()) as T
 }
 
-export default function DashboardPage() {
-  const [theme, setTheme] = useState<Theme>(() => {
-    const t = getInitialTheme()
-    setDocumentTheme(t)
-    return t
-  })
-
-  function toggleTheme() {
-    const next: Theme = theme === 'dark' ? 'light' : 'dark'
-    setTheme(next)
-    setDocumentTheme(next)
-    localStorage.setItem('theme', next)
-  }
+export default function DashboardPage({ hideHeader = false }: { hideHeader?: boolean }) {
+  const { connectStatus, connectMessage, openConnect, disconnect } = useAngelConnection()
 
   const [toasts, setToasts] = useState<ToastItem[]>([])
   function pushToast(kind: ToastKind, title: string, message?: string) {
@@ -513,11 +360,6 @@ export default function DashboardPage() {
       setToasts((prev) => prev.filter((t) => t.id !== id))
     }, 4500)
   }
-
-  const [mpinModal, setMpinModal] = useState<MpinModalState>({ open: false })
-
-  const [connectStatus, setConnectStatus] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle')
-  const [connectMessage, setConnectMessage] = useState<string>('')
 
   const [tab, setTab] = useState<TradeTab>('EQUITY')
   const [ordersSubTab, setOrdersSubTab] = useState<OrdersSubTab>('PENDING')
@@ -952,10 +794,6 @@ export default function DashboardPage() {
     }
   }
 
-  async function onConnect() {
-    setMpinModal({ open: true })
-  }
-
   async function onDisconnect() {
     setConfirm({
       open: true,
@@ -965,13 +803,7 @@ export default function DashboardPage() {
       cancelText: 'Cancel',
       destructive: true,
       onConfirm: async () => {
-        try {
-          await apiPost<Record<string, unknown>>('/angel/logout')
-        } catch {
-          // ignore
-        }
-        setConnectStatus('idle')
-        setConnectMessage('Disconnected')
+        await disconnect()
       },
     })
   }
@@ -1229,54 +1061,49 @@ export default function DashboardPage() {
     <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-50">
       <Toasts items={toasts} onDismiss={(id) => setToasts((prev) => prev.filter((t) => t.id !== id))} />
       <div className="mx-auto max-w-6xl px-4 py-8">
-        <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Trading Dashboard</h1>
-            <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-              Equity orders, index options, and order history.
-            </p>
-          </div>
+        {hideHeader ? null : (
+          <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h1 className="text-2xl font-semibold tracking-tight">Trading Dashboard</h1>
+              <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                Equity orders, index options, and order history.
+              </p>
+            </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={toggleTheme}
-              aria-label="Toggle theme"
-              className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-transparent transition-colors hover:bg-slate-100 dark:border-white/10 dark:hover:bg-white/10"
-            >
-              {theme === 'dark' ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
-            </button>
-
-            {connectStatus === 'connected' ? (
-              <button
-                type="button"
-                onClick={() => void onDisconnect()}
-                className="rounded-xl border border-slate-200 bg-transparent px-4 py-2 text-sm font-semibold transition-colors hover:bg-slate-100 dark:border-white/10 dark:hover:bg-white/10"
-              >
-                Disconnect
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => void onConnect()}
-                disabled={connectStatus === 'connecting'}
-                className="rounded-xl bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 transition-colors hover:bg-cyan-300 disabled:opacity-70"
-              >
-                {connectStatus === 'connecting' ? 'Connecting…' : 'Connect'}
-              </button>
-            )}
-          </div>
-        </header>
+            <div className="flex items-center gap-2">
+              {connectStatus === 'connected' ? (
+                <button
+                  type="button"
+                  onClick={() => void onDisconnect()}
+                  className="rounded-xl border border-slate-200 bg-transparent px-4 py-2 text-sm font-semibold transition-colors hover:bg-slate-100 dark:border-white/10 dark:hover:bg-white/10"
+                >
+                  Disconnect
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={openConnect}
+                  disabled={connectStatus === 'connecting'}
+                  className="rounded-xl bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 transition-colors hover:bg-cyan-300 disabled:opacity-70"
+                >
+                  {connectStatus === 'connecting' ? 'Connecting…' : 'Connect'}
+                </button>
+              )}
+            </div>
+          </header>
+        )}
 
         <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-white/10 dark:bg-slate-900">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="text-sm font-semibold">Connection</p>
-              <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-                Status: <span className="font-medium">{connectStatus}</span>
-              </p>
-              {connectMessage ? <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{connectMessage}</p> : null}
-            </div>
+            {hideHeader ? null : (
+              <div>
+                <p className="text-sm font-semibold">Connection</p>
+                <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                  Status: <span className="font-medium">{connectStatus}</span>
+                </p>
+                {connectMessage ? <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{connectMessage}</p> : null}
+              </div>
+            )}
 
             <div
               className="inline-flex rounded-2xl border border-slate-200 bg-slate-50 p-1 dark:border-white/10 dark:bg-white/5"
@@ -1906,27 +1733,7 @@ export default function DashboardPage() {
           }
         />
 
-        <MpinModal
-          open={mpinModal.open}
-          onCancel={() => setMpinModal({ open: false })}
-          onSubmit={async (mpin) => {
-            setConnectStatus('connecting')
-            setConnectMessage('')
-
-            try {
-              const login = await apiPost<AngelLoginResponse>('/angel/login', { mpin })
-              setConnectStatus('connected')
-              setConnectMessage(login.message ?? 'Connected')
-              pushToast('success', 'Connected', 'Angel One connection is active.')
-              setMpinModal({ open: false })
-            } catch (e) {
-              const msg = e instanceof Error ? e.message : 'Connect failed'
-              setConnectStatus('error')
-              setConnectMessage('')
-              pushToast('error', 'Connection failed', msg)
-            }
-          }}
-        />
+        
       </div>
     </div>
   )

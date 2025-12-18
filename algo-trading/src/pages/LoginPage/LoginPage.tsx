@@ -1,34 +1,13 @@
 import { useMemo, useState } from 'react'
+import type { FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Sun, Moon } from "lucide-react";
+import { Moon, Sun } from 'lucide-react'
 
-type Theme = 'dark' | 'light'
-
-function getInitialTheme(): Theme {
-  const stored = localStorage.getItem('theme')
-  if (stored === 'light' || stored === 'dark') return stored
-  return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
-}
-
-function setDocumentTheme(theme: Theme) {
-  if (theme === 'dark') {
-    document.documentElement.classList.add('dark')
-  } else {
-    document.documentElement.classList.remove('dark')
-  }
-}
-
-function isValidEmail(value: string) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
-}
+import { useTheme } from '../../shared/theme/ThemeProvider'
 
 export default function LoginPage() {
   const navigate = useNavigate()
-  const [theme, setTheme] = useState<Theme>(() => {
-    const t = getInitialTheme()
-    setDocumentTheme(t)
-    return t
-  })
+  const { theme, toggleTheme } = useTheme()
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -41,25 +20,16 @@ export default function LoginPage() {
   const errors = useMemo(() => {
     const next: { email?: string; password?: string } = {}
 
-    if (!email.trim()) next.email = 'Email is required.'
-    else if (!isValidEmail(email)) next.email = 'Enter a valid email address.'
+    if (!email.trim()) next.email = 'Username is required.'
 
     if (!password) next.password = 'Password is required.'
-    else if (password.length < 8) next.password = 'Use at least 8 characters.'
 
     return next
   }, [email, password])
 
   const canSubmit = !errors.email && !errors.password
 
-  function toggleTheme() {
-    const next: Theme = theme === 'dark' ? 'light' : 'dark'
-    setTheme(next)
-    setDocumentTheme(next)
-    localStorage.setItem('theme', next)
-  }
-
-  async function onSubmit(e: React.FormEvent) {
+  async function onSubmit(e: FormEvent) {
     e.preventDefault()
     setTouched({ email: true, password: true })
 
@@ -68,7 +38,7 @@ export default function LoginPage() {
     setIsSubmitting(true)
     try {
       await new Promise((r) => setTimeout(r, 500))
-      navigate('/dashboard')
+      navigate('/strategies')
     } finally {
       setIsSubmitting(false)
     }
@@ -88,7 +58,7 @@ export default function LoginPage() {
                 <div>
                   <h2 className="text-lg font-semibold">Sign in</h2>
                   <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-                    Use your email and password to continue.
+                    Use your username and password to continue.
                   </p>
                 </div>
                 <button
@@ -108,13 +78,13 @@ export default function LoginPage() {
               <form className="flex flex-col gap-4" onSubmit={onSubmit} noValidate>
                 <div className="flex flex-col gap-2">
                   <label className="text-sm font-semibold" htmlFor="email">
-                    Email
+                    Username
                   </label>
                   <input
                     id="email"
-                    type="email"
-                    autoComplete="email"
-                    placeholder="you@domain.com"
+                    type="text"
+                    autoComplete="username"
+                    placeholder="Enter your username"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     onBlur={() => setTouched((t) => ({ ...t, email: true }))}

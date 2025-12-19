@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Sequence
 
 from SmartApi import SmartConnect  # type: ignore
 
@@ -212,6 +213,84 @@ class AngelClient:
             raise RuntimeError("LTP was missing")
 
         return {"exchange": ex, "tradingsymbol": ts, "symboltoken": token, "ltp": ltp}
+
+    def get_candles(
+        self,
+        *,
+        exchange: str,
+        symboltoken: str,
+        interval: str,
+        from_dt: datetime,
+        to_dt: datetime,
+    ) -> List[Dict[str, Any]]:
+        self._require_session()
+
+        ex = exchange.strip().upper()
+        token = symboltoken.strip()
+        iv = interval.strip().upper()
+        if not ex or not token or not iv:
+            raise RuntimeError("Invalid candle request")
+        if from_dt >= to_dt:
+            raise RuntimeError("Invalid candle window")
+
+        # SmartAPI typically expects: YYYY-MM-DD HH:MM
+        def fmt(dt: datetime) -> str:
+            ist = timezone(timedelta(hours=5, minutes=30))
+            local = dt.astimezone(ist) if dt.tzinfo is not None else dt.replace(tzinfo=ist)
+            # SmartAPI expects local market time string; tz suffix must not be included.
+            return local.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M")
+
+        payload: Dict[str, Any] = {
+            "exchange": ex,
+            "symboltoken": token,
+            "interval": iv,
+            "fromdate": fmt(from_dt),
+            "todate": fmt(to_dt),
+        }
+
+        raw: Any = None
+        for name in ("getCandleData", "candleData", "getCandleDataV2"):
+            fn = getattr(self._smart, name, None)
+            if callable(fn):
+                try:
+                    raw = fn(payload)
+                except TypeError:
+                    raw = fn(**payload)
+                break
+
+        if raw is None:
+            raw_post = getattr(self._smart, "_postRequest", None)
+            if callable(raw_post):
+                raw = raw_post("api.candle.data", payload)
+
+        if not isinstance(raw, dict):
+            raise RuntimeError("Unexpected candle response from SmartAPI")
+
+        data: Any = raw.get("data")
+        if not isinstance(data, list):
+            data = []
+
+        candles: List[Dict[str, Any]] = []
+        for row in data:
+            if not isinstance(row, Sequence) or len(row) < 5:
+                continue
+            ts = row[0]
+            o = row[1]
+            h = row[2]
+            l = row[3]
+            c = row[4]
+            if not isinstance(ts, str):
+                continue
+            try:
+                o_f = float(o)
+                h_f = float(h)
+                l_f = float(l)
+                c_f = float(c)
+            except Exception:
+                continue
+            candles.append({"ts": ts, "open": o_f, "high": h_f, "low": l_f, "close": c_f})
+
+        return candles
 
     def margins(self) -> Dict[str, Any]:
         self._require_session()

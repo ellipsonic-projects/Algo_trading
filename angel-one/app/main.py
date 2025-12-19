@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 from uuid import uuid4
@@ -114,6 +115,38 @@ def angel_profile() -> Dict[str, Any]:
 def angel_search(query: str, exchange: str = "NSE") -> Dict[str, Any]:
     try:
         return angel.search(exchange=exchange, query=query)
+    except Exception as e:  # noqa: BLE001
+        msg = str(e)
+        if "Not logged in" in msg:
+            raise HTTPException(status_code=401, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+
+
+@app.get("/market/candles")
+def market_candles(
+    exchange: str,
+    symboltoken: str,
+    interval: str = "ONE_MINUTE",
+    lookback_minutes: int = 30,
+) -> Dict[str, Any]:
+    try:
+        lb = int(lookback_minutes)
+        if lb <= 0 or lb > 24 * 60:
+            raise HTTPException(status_code=400, detail="Invalid lookback_minutes")
+
+        now = datetime.now(timezone.utc)
+        from_dt = now - timedelta(minutes=lb)
+
+        candles = angel.get_candles(
+            exchange=exchange,
+            symboltoken=symboltoken,
+            interval=interval,
+            from_dt=from_dt,
+            to_dt=now,
+        )
+        return {"items": candles}
+    except HTTPException:
+        raise
     except Exception as e:  # noqa: BLE001
         msg = str(e)
         if "Not logged in" in msg:
@@ -296,9 +329,58 @@ def index_options(
 
 @app.get("/market/index-ltp")
 def index_ltp(underlying: str) -> Dict[str, Any]:
+    und = underlying.strip().upper()
+    # NIFTY/BANKNIFTY are NSE indices, SENSEX is BSE.
+    primary_ex = "BSE" if und == "SENSEX" else "NSE"
+    search_ex = primary_ex
+
     try:
-        tradingsymbol, symboltoken = instruments.get_index_spot(underlying=underlying)
-        return angel.get_ltp(exchange="NSE", tradingsymbol=tradingsymbol, symboltoken=symboltoken)
+        tradingsymbol, symboltoken = instruments.get_index_spot(underlying=und)
+        try:
+            return angel.get_ltp(exchange=primary_ex, tradingsymbol=tradingsymbol, symboltoken=symboltoken)
+        except Exception:
+            # Fall back to search-based lookup when instrument-master entry is not queryable.
+            # Some SmartAPI environments return missing LTP for certain index tokens.
+            pass
+
+        search = angel.search(exchange=search_ex, query=und)
+        raw: Any = search.get("data")
+        if not isinstance(raw, list):
+            raw = []
+
+        candidates = [x for x in raw if isinstance(x, dict)]
+        if not candidates:
+            raise RuntimeError("Unable to find index symbol")
+
+        def pick(d: Dict[str, Any], *keys: str) -> str:
+            for k in keys:
+                v = d.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+            return ""
+
+        # Prefer entries that contain INDEX and end with -INDEX.
+        def score(x: Dict[str, Any]) -> int:
+            ts = pick(x, "tradingsymbol", "tradingSymbol", "symbol").upper()
+            name = pick(x, "name", "companyname", "symbolname").upper()
+            s = 0
+            if und in ts:
+                s += 3
+            if und in name:
+                s += 2
+            if "INDEX" in ts or "INDEX" in name:
+                s += 3
+            if ts.endswith("-INDEX"):
+                s += 4
+            return s
+
+        best = sorted(candidates, key=score, reverse=True)[0]
+        best_ts = pick(best, "tradingsymbol", "tradingSymbol", "symbol")
+        best_token = pick(best, "symboltoken", "symbolToken", "token")
+        if not best_ts or not best_token:
+            raise RuntimeError("Unable to find index token")
+
+        return angel.get_ltp(exchange=primary_ex, tradingsymbol=best_ts, symboltoken=best_token)
     except Exception as e:  # noqa: BLE001
         msg = str(e)
         if "Not logged in" in msg:

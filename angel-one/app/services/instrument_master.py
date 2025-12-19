@@ -248,13 +248,18 @@ class InstrumentMasterCache:
                 if c is not None:
                     contracts.append(c)
 
-                exch = str(r.get("exch_seg") or "").strip().upper()
-                if exch != "NSE":
-                    continue
-
                 und = str(r.get("name") or "").strip().upper()
                 if und not in {"NIFTY", "BANKNIFTY", "SENSEX"}:
                     continue
+
+                exch = str(r.get("exch_seg") or "").strip().upper()
+                # NIFTY/BANKNIFTY spot are on NSE, SENSEX spot is on BSE.
+                if und == "SENSEX":
+                    if exch != "BSE":
+                        continue
+                else:
+                    if exch != "NSE":
+                        continue
 
                 tradingsymbol = str(r.get("symbol") or "").strip()
                 symboltoken = str(r.get("token") or "").strip()

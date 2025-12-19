@@ -364,11 +364,8 @@ export default function FiveMinBreakoutPage() {
         }
         lastProcessedCandleTsRef.current = nextTs
 
-        const ceBreak = detectBreakoutCloseOnly({ candleClose: ceWindow.breakoutCandle.close, range: ceRange })
-        const peBreak = detectBreakoutCloseOnly({ candleClose: peWindow.breakoutCandle.close, range: peRange })
-
-        const ceBreakout = ceBreak === 'CE'
-        const peBreakout = peBreak === 'PE'
+        const ceBreakout = detectBreakoutCloseOnly({ candleClose: ceWindow.breakoutCandle.close, range: ceRange })
+        const peBreakout = detectBreakoutCloseOnly({ candleClose: peWindow.breakoutCandle.close, range: peRange })
 
         const usedKey = usedRangeKey
         const ceKey = `SENSEX|${ceContract.expiry}|${ceContract.strike}|CE|${ceRange.rangeLow}|${ceRange.rangeHigh}`
@@ -730,9 +727,9 @@ export default function FiveMinBreakoutPage() {
         </div>
       </div>
 
-      <div className="mt-6">
+      {/* <div className="mt-6">
         <DashboardPage hideHeader />
-      </div>
+      </div> */}
     </StrategiesLayout>
   )
 }

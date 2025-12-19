@@ -19,37 +19,45 @@ export function computePremiumRange(candles: Candle[], lookback: 4 | 5): RangeSn
   if (!Array.isArray(candles) || candles.length < lookback) return null
 
   const slice = candles.slice(-lookback)
-  let rangeHigh = Number.NEGATIVE_INFINITY
-  let rangeLow = Number.POSITIVE_INFINITY
+  const mother = slice[0]
+  if (!Number.isFinite(mother?.high) || !Number.isFinite(mother?.low)) return null
 
-  for (const c of slice) {
-    if (!Number.isFinite(c.high) || !Number.isFinite(c.low)) return null
-    rangeHigh = Math.max(rangeHigh, c.high)
-    rangeLow = Math.min(rangeLow, c.low)
-  }
-
+  const rangeHigh = mother.high
+  const rangeLow = mother.low
   if (!Number.isFinite(rangeHigh) || !Number.isFinite(rangeLow)) return null
+
+  let insideRuleOk = true
+  for (let i = 1; i < slice.length; i += 1) {
+    const c = slice[i]
+    if (!Number.isFinite(c.open) || !Number.isFinite(c.close)) {
+      insideRuleOk = false
+      break
+    }
+    if (c.open < rangeLow || c.open > rangeHigh) {
+      insideRuleOk = false
+      break
+    }
+    if (c.close < rangeLow || c.close > rangeHigh) {
+      insideRuleOk = false
+      break
+    }
+  }
 
   const size = rangeHigh - rangeLow
   return {
     rangeHigh,
     rangeLow,
     size,
-    isValid: Number.isFinite(size) && size <= 30,
+    isValid: insideRuleOk && Number.isFinite(size) && size <= 30,
   }
 }
 
-export function detectBreakoutCloseOnly(params: {
-  candleClose: number
-  range: RangeSnapshot
-}): BreakoutSide | null {
+export function detectBreakoutCloseOnly(params: { candleClose: number; range: RangeSnapshot }): boolean {
   const { candleClose, range } = params
-  if (!Number.isFinite(candleClose)) return null
-  if (!range.isValid) return null
+  if (!Number.isFinite(candleClose)) return false
+  if (!range.isValid) return false
 
-  if (candleClose > range.rangeHigh) return 'CE'
-  if (candleClose < range.rangeLow) return 'PE'
-  return null
+  return candleClose > range.rangeHigh
 }
 
 export function computeStopLossAndTarget(params: {
@@ -63,7 +71,7 @@ export function computeStopLossAndTarget(params: {
   const maxDistanceSL = entryPrice - 35
   const stopLoss = Math.max(maxDistanceSL, rawSL)
   const riskPoints = entryPrice - stopLoss
-  if (!Number.isFinite(riskPoints) || riskPoints <= 0) return null
+  if (!Number.isFinite(riskPoints) || riskPoints < 10) return null
   const target = entryPrice + riskPoints
 
   return { stopLoss, target }

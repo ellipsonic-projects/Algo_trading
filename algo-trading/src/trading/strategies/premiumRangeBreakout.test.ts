@@ -13,20 +13,20 @@ function c(ts: string, o: number, h: number, l: number, cl: number): Candle {
 }
 
 describe('computePremiumRange', () => {
-  it('computes range from high/low only', () => {
+  it('uses mother candle high/low and requires child open/close inside', () => {
     const candles: Candle[] = [
       c('t1', 10, 20, 9, 19),
-      c('t2', 19, 21, 11, 12),
-      c('t3', 12, 18, 10, 11),
-      c('t4', 11, 17, 8, 16),
-      c('t5', 16, 19, 7, 18),
+      c('t2', 12, 30, 8, 18),
+      c('t3', 11, 25, 7, 10),
+      c('t4', 15, 22, 6, 16),
+      c('t5', 18, 21, 5, 12),
     ]
 
     const range = computePremiumRange(candles, 5)
     expect(range).not.toBeNull()
-    expect(range?.rangeHigh).toBe(21)
-    expect(range?.rangeLow).toBe(7)
-    expect(range?.size).toBe(14)
+    expect(range?.rangeHigh).toBe(20)
+    expect(range?.rangeLow).toBe(9)
+    expect(range?.size).toBe(11)
     expect(range?.isValid).toBe(true)
   })
 
@@ -42,23 +42,30 @@ describe('computePremiumRange', () => {
     const range = computePremiumRange(candles, 5)
     expect(range?.isValid).toBe(false)
   })
+
+  it('marks invalid when a child candle open/close is outside mother candle', () => {
+    const candles: Candle[] = [
+      c('t1', 100, 120, 90, 110),
+      c('t2', 95, 130, 80, 111),
+      c('t3', 105, 125, 85, 89),
+      c('t4', 100, 122, 88, 109),
+    ]
+
+    const range = computePremiumRange(candles, 4)
+    expect(range).not.toBeNull()
+    expect(range?.rangeHigh).toBe(120)
+    expect(range?.rangeLow).toBe(90)
+    expect(range?.isValid).toBe(false)
+  })
 })
 
 describe('detectBreakoutCloseOnly', () => {
-  it('signals CE only when close > rangeHigh', () => {
+  it('signals breakout only when close > rangeHigh', () => {
     const range = computePremiumRange([c('t1', 0, 10, 5, 9), c('t2', 0, 11, 6, 10), c('t3', 0, 12, 7, 11), c('t4', 0, 13, 8, 12), c('t5', 0, 14, 9, 13)], 5)
     expect(range).not.toBeNull()
 
-    expect(detectBreakoutCloseOnly({ candleClose: 14, range: range! })).toBeNull()
-    expect(detectBreakoutCloseOnly({ candleClose: 14.01, range: range! })).toBe('CE')
-  })
-
-  it('signals PE only when close < rangeLow', () => {
-    const range = computePremiumRange([c('t1', 0, 10, 5, 9), c('t2', 0, 11, 6, 10), c('t3', 0, 12, 7, 11), c('t4', 0, 13, 8, 12), c('t5', 0, 14, 9, 13)], 5)
-    expect(range).not.toBeNull()
-
-    expect(detectBreakoutCloseOnly({ candleClose: 5, range: range! })).toBeNull()
-    expect(detectBreakoutCloseOnly({ candleClose: 4.99, range: range! })).toBe('PE')
+    expect(detectBreakoutCloseOnly({ candleClose: 9.99, range: range! })).toBe(false)
+    expect(detectBreakoutCloseOnly({ candleClose: 10.01, range: range! })).toBe(true)
   })
 })
 
@@ -78,6 +85,12 @@ describe('computeStopLossAndTarget', () => {
     expect(res?.stopLoss).toBe(108)
     // risk = 12 -> 1:1 target = entry + 12
     expect(res?.target).toBe(132)
+  })
+
+  it('returns null when risk is below 10 points', () => {
+    const res = computeStopLossAndTarget({ entryPrice: 120, rangeLow: 119 })
+    // rawSL = 117, entry-35 = 85 -> stopLoss = 117, risk = 3 (< 10)
+    expect(res).toBeNull()
   })
 })
 

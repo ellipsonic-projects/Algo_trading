@@ -3,9 +3,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAngelConnection } from '../../shared/angel/AngelConnectionProvider'
 import StrategiesLayout from './StrategiesLayout'
 import { ENABLE_LIVE_TRADING } from '../../config/env'
-// import { computeHeikenAshi, detectHeikenAshiTrend } from '../../trading/strategies/heikenAshi'
+import { analyzeHeikenAshiStrategy, computeHeikenAshi, type HeikenAshiTrend } from '../../trading/strategies/heikenAshi'
+import type { Candle } from '../../trading/strategies/premiumRangeBreakout'
 
-type HeikenAshiTrend = 'BULLISH' | 'BEARISH' | 'NEUTRAL'
+type CandlesResponse = {
+    items: Candle[]
+}
 
 type Underlying = 'SENSEX' | 'NIFTY' | 'BANKNIFTY'
 type Exchange = 'BFO' | 'NFO'
@@ -142,7 +145,10 @@ export default function HeikenashiPage() {
     const [trend, setTrend] = useState<HeikenAshiTrend>('NEUTRAL')
     const [lastHaClose, setLastHaClose] = useState<number | null>(null)
     const [currentLtp, setCurrentLtp] = useState<number | null>(null)
+    const [indexToken, setIndexToken] = useState<string | null>(null)
     const [activeSignal, setActiveSignal] = useState<'CE' | 'PE' | null>(null)
+    const [emaValue, setEmaValue] = useState<number | null>(null)
+    const [jmaValue, setJmaValue] = useState<number | null>(null)
 
     const inFlightRef = useRef(false)
     const stopRequestedRef = useRef(false)
@@ -176,10 +182,11 @@ export default function HeikenashiPage() {
     }, [])
 
     const startStrategy = useCallback(() => {
+        if (connectStatus !== 'connected') return
         stopRequestedRef.current = false
         setIsRunning(true)
         resetForNextRun('WAITING')
-    }, [resetForNextRun])
+    }, [connectStatus, resetForNextRun])
 
     // Contract Resolution logic
     useEffect(() => {
@@ -203,6 +210,7 @@ export default function HeikenashiPage() {
 
                 if (disposed) return
                 setAtmStrike(atm)
+                setIndexToken(indexResponse.symboltoken)
 
                 const ceStrike = resolveStrikeForSide({ strikes: opt.strikes, atmStrike: atm, mode: strikeMode, depth: strikeDepth, side: 'CE' })
                 const peStrike = resolveStrikeForSide({ strikes: opt.strikes, atmStrike: atm, mode: strikeMode, depth: strikeDepth, side: 'PE' })
@@ -224,35 +232,88 @@ export default function HeikenashiPage() {
         return () => { disposed = true }
     }, [connectStatus, isRunning, strikeDepth, strikeMode, underlying])
 
-    // Scanning loop (Placeholder for logic)
+    // Scanning loop
     useEffect(() => {
-        if (!isRunning || connectStatus !== 'connected' || state !== 'WAITING') return
-        if (!ceContract || !peContract) return
+        if (!isRunning || connectStatus !== 'connected' || !ceContract || !peContract) return
 
         let cancelled = false
         const intervalMs = 10000
 
         async function tick() {
             if (cancelled || stopRequestedRef.current || inFlightRef.current) return
-            inFlightRef.current = true
-            try {
-                // Signal logic goes here
-                setMessage('Scanning... Strategy logic formulation in progress.')
-                // Using declared variables to satisfy lint
-                if (activeSignal && lastHaClose) {
-                    console.log('Context:', activeSignal, lastHaClose)
+
+            // Only search for new trades if we are WAITING
+            if (state === 'WAITING') {
+                inFlightRef.current = true
+                try {
+                    const lb = 100 // Enough for EMA 20 and JMA 7
+
+                    // 1. Fetch Base Timeframe Candles
+                    const baseRes = await apiGet<CandlesResponse>(
+                        `/market/candles?exchange=${encodeURIComponent(underlying === 'SENSEX' ? 'BFO' : 'NFO')}&symboltoken=${encodeURIComponent(indexToken || '')}&interval=${baseTimeframe}&lookback_minutes=${lb}`
+                    )
+                    const baseHa = computeHeikenAshi(baseRes.items)
+                    const baseAnalysis = analyzeHeikenAshiStrategy(baseHa)
+
+                    let canEnter = baseAnalysis.isEntry
+
+                    // 2. Fetch Confirmation Timeframe if needed
+                    if (canEnter && needConfirmation) {
+                        const confRes = await apiGet<CandlesResponse>(
+                            `/market/candles?exchange=${encodeURIComponent(underlying === 'SENSEX' ? 'BFO' : 'NFO')}&symboltoken=${encodeURIComponent(indexToken || '')}&interval=${confirmationTimeframe}&lookback_minutes=${lb}`
+                        )
+                        const confHa = computeHeikenAshi(confRes.items)
+                        const confAnalysis = analyzeHeikenAshiStrategy(confHa)
+                        canEnter = confAnalysis.isEntry
+                    }
+
+                    setTrend(baseAnalysis.trend)
+                    setEmaValue(baseAnalysis.ema)
+                    setJmaValue(baseAnalysis.jma)
+                    setLastHaClose(baseAnalysis.haClose)
+
+                    if (canEnter) {
+                        setActiveSignal('CE') // Strategy as defined is bullish only for now
+                        setState('SIGNAL')
+                        setMessage('Bullish signal detected! Preparing entry...')
+                    } else {
+                        setMessage('Scanning for entry pattern...')
+                    }
+                } catch (e) {
+                    setMessage(e instanceof Error ? e.message : 'Scan failed')
+                } finally {
+                    inFlightRef.current = false
                 }
-            } catch (e) {
-                setMessage(e instanceof Error ? e.message : 'Scan failed')
-            } finally {
-                inFlightRef.current = false
+            }
+
+            // If IN_POSITION, monitor for exit
+            if (state === 'IN_POSITION') {
+                inFlightRef.current = true
+                try {
+                    const lb = 50
+                    const baseRes = await apiGet<CandlesResponse>(
+                        `/market/candles?exchange=${encodeURIComponent(underlying === 'SENSEX' ? 'BFO' : 'NFO')}&symboltoken=${encodeURIComponent(indexToken || '')}&interval=${baseTimeframe}&lookback_minutes=${lb}`
+                    )
+                    const baseHa = computeHeikenAshi(baseRes.items)
+                    const baseAnalysis = analyzeHeikenAshiStrategy(baseHa)
+
+                    if (baseAnalysis.isExit) {
+                        setMessage('Exit signal detected (2 red HA candles). Exiting position...')
+                        setState('EXITED')
+                        // Here you would call an apiPost to exit positions if live trading
+                    }
+                } catch (e) {
+                    setMessage(e instanceof Error ? e.message : 'Exit scan failed')
+                } finally {
+                    inFlightRef.current = false
+                }
             }
         }
 
         const t = window.setInterval(tick, intervalMs)
         void tick()
         return () => { cancelled = true; window.clearInterval(t) }
-    }, [activeSignal, ceContract, connectStatus, isRunning, lastHaClose, peContract, state])
+    }, [baseTimeframe, ceContract, confirmationTimeframe, connectStatus, indexToken, isRunning, needConfirmation, peContract, state, underlying])
 
     return (
         <StrategiesLayout
@@ -505,6 +566,14 @@ export default function HeikenashiPage() {
                                             <div className="flex justify-between text-xs font-medium">
                                                 <span className="text-slate-500">HA Close</span>
                                                 <span className="text-slate-900 dark:text-slate-100">{lastHaClose?.toFixed(2) || '---'}</span>
+                                            </div>
+                                            <div className="flex justify-between text-xs font-medium">
+                                                <span className="text-slate-500">EMA 20</span>
+                                                <span className="text-slate-900 dark:text-slate-100">{emaValue?.toFixed(2) || '---'}</span>
+                                            </div>
+                                            <div className="flex justify-between text-xs font-medium">
+                                                <span className="text-slate-500">JMA 7</span>
+                                                <span className="text-slate-900 dark:text-slate-100">{jmaValue?.toFixed(2) || '---'}</span>
                                             </div>
                                             <div className="flex justify-between text-xs font-medium pt-1 border-t border-cyan-100 dark:border-white/5">
                                                 <span className="text-slate-500">LTP</span>

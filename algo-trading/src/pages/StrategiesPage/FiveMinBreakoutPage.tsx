@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import DashboardPage from '../DashboardPage/DashboardPage'
 import { useAngelConnection } from '../../shared/angel/AngelConnectionProvider'
 import StrategiesLayout from './StrategiesLayout'
+import { ENABLE_LIVE_TRADING } from '../../config/env'
 import {
   computePremiumRange,
   computeStopLossAndTarget,
@@ -52,6 +52,10 @@ type CandlesResponse = {
   items: Candle[]
 }
 
+type AngelPositionsResponse = {
+  data?: unknown
+}
+
 type PlaceOrderResponse = {
   item: {
     id: string
@@ -63,7 +67,7 @@ type PlaceOrderResponse = {
 
 type StrategyState = 'WAITING' | 'SIGNAL' | 'IN_POSITION' | 'EXITED' | 'STOPPED'
 
-const ENABLE_ORDER_PLACEMENT = false
+type StrikeMode = 'ATM' | 'ITM' | 'OTM'
 
 const API_BASE = import.meta.env.VITE_ANGEL_ONE_API_BASE ?? 'http://localhost:8000'
 
@@ -133,6 +137,58 @@ function pickNearestStrike(strikes: number[], spot: number): number | null {
   return best
 }
 
+function hasOpenOptionPosition(raw: AngelPositionsResponse): boolean {
+  const data = raw?.data
+  if (!Array.isArray(data)) return false
+
+  for (const row of data) {
+    if (!row || typeof row !== 'object') continue
+    const r = row as Record<string, unknown>
+
+    const ex = String(r.exchange ?? r.exch_seg ?? r.exchSeg ?? '').toUpperCase()
+    const isDeriv = ex === 'NFO' || ex === 'BFO'
+    if (!isDeriv) continue
+
+    const netRaw = r.netqty ?? r.netQty ?? r.net_quantity ?? r.netQuantity
+    const net = Number(netRaw)
+    if (Number.isFinite(net) && net !== 0) return true
+  }
+
+  return false
+}
+
+function compareToPremiumRange(premium: number, minP: number, maxP: number): 'below' | 'within' | 'above' {
+  if (premium <= minP) return 'below'
+  if (premium >= maxP) return 'above'
+  return 'within'
+}
+
+function resolveStrikeForSide(params: {
+  strikes: number[]
+  atmStrike: number
+  mode: StrikeMode
+  depth: number
+  side: 'CE' | 'PE'
+}): number | null {
+  const { strikes, atmStrike, mode, depth, side } = params
+  const sorted = [...strikes].filter((s) => Number.isFinite(s)).sort((a, b) => a - b)
+  const idx = sorted.findIndex((s) => Math.abs(s - atmStrike) < 1e-6)
+  if (idx < 0) return null
+
+  if (mode === 'ATM') return sorted[idx]
+
+  const steps = Math.max(0, Math.floor(depth))
+  if (side === 'CE') {
+    // CE: ITM is lower strikes, OTM is higher strikes
+    const next = mode === 'ITM' ? idx - steps : idx + steps
+    return next >= 0 && next < sorted.length ? sorted[next] : null
+  }
+
+  // PE: ITM is higher strikes, OTM is lower strikes
+  const next = mode === 'ITM' ? idx + steps : idx - steps
+  return next >= 0 && next < sorted.length ? sorted[next] : null
+}
+
 function parseCandleTsMs(ts: string): number | null {
   const raw = String(ts || '').trim()
   if (!raw) return null
@@ -183,10 +239,18 @@ export default function FiveMinBreakoutPage() {
   const [message, setMessage] = useState<string>('')
 
   const [lookback, setLookback] = useState<4 | 5>(5)
-  const [quantity, setQuantity] = useState<number>(10)
+  const [quantity, setQuantity] = useState<number>(20)
+  const [liveTradingConsent, setLiveTradingConsent] = useState(false)
+
+  const [premiumMin, setPremiumMin] = useState<number>(300)
+  const [premiumMax, setPremiumMax] = useState<number>(400)
+
+  const [strikeMode, setStrikeMode] = useState<StrikeMode>('ATM')
+  const [strikeDepth, setStrikeDepth] = useState<number>(1)
 
   const [selectedExpiry, setSelectedExpiry] = useState<string | null>(null)
   const [selectedStrike, setSelectedStrike] = useState<number | null>(null)
+  const [atmStrike, setAtmStrike] = useState<number | null>(null)
   const [ceContract, setCeContract] = useState<IndexOptionContract | null>(null)
   const [peContract, setPeContract] = useState<IndexOptionContract | null>(null)
 
@@ -208,6 +272,7 @@ export default function FiveMinBreakoutPage() {
   const inFlightRef = useRef(false)
   const lastProcessedCandleTsRef = useRef<string | null>(null)
   const stopRequestedRef = useRef(false)
+  const positionPollRef = useRef(0)
 
   const activeContract = useMemo(() => {
     if (rangeSide === 'CE') return ceContract
@@ -285,17 +350,13 @@ export default function FiveMinBreakoutPage() {
         const strike = pickNearestStrike(opt.strikes, index.ltp)
         if (strike === null) throw new Error('Unable to pick ATM strike')
 
-        const eps = 1e-6
-        const ce = opt.contracts.find((c) => c.expiry === exp && Math.abs(c.strike - strike) < eps && c.option_type === 'CE') ?? null
-        const pe = opt.contracts.find((c) => c.expiry === exp && Math.abs(c.strike - strike) < eps && c.option_type === 'PE') ?? null
-        if (!ce || !pe) throw new Error('ATM CE/PE contracts not found for selected expiry/strike')
-
         if (disposed) return
         setSelectedExpiry(exp)
         setSelectedStrike(strike)
-        setCeContract(ce)
-        setPeContract(pe)
-        setMessage('Contracts ready. Waiting for valid range…')
+        setAtmStrike(strike)
+        setCeContract(null)
+        setPeContract(null)
+        setMessage('Contracts loaded. Resolving strike selection…')
       } catch (e) {
         if (disposed) return
         const msg = e instanceof Error ? e.message : 'Unable to load contracts'
@@ -310,6 +371,99 @@ export default function FiveMinBreakoutPage() {
       disposed = true
     }
   }, [connectStatus, isRunning])
+
+  useEffect(() => {
+    if (!isRunning) return
+    if (connectStatus !== 'connected') return
+    if (!selectedExpiry || atmStrike === null) return
+
+    let cancelled = false
+    const intervalMs = 12000
+
+    async function resolveContractsOnce() {
+      if (cancelled) return
+      if (stopRequestedRef.current) return
+      if (inFlightRef.current) return
+
+      const expiry = selectedExpiry
+      const atm = atmStrike
+      if (!expiry || atm === null) return
+
+      const minP = Number(premiumMin)
+      const maxP = Number(premiumMax)
+      if (!Number.isFinite(minP) || !Number.isFinite(maxP) || minP >= maxP) {
+        setMessage('Invalid premium filter. Ensure min < max and both are valid numbers.')
+        return
+      }
+
+      inFlightRef.current = true
+      try {
+        const opt = await apiGet<IndexOptionsResponse>(
+          `/instruments/index-options?exchange=${encodeURIComponent('BFO')}&underlying=${encodeURIComponent('SENSEX')}&expiry=${encodeURIComponent(expiry)}`,
+        )
+
+        const ceStrike = resolveStrikeForSide({ strikes: opt.strikes, atmStrike: atm, mode: strikeMode, depth: strikeDepth, side: 'CE' })
+        const peStrike = resolveStrikeForSide({ strikes: opt.strikes, atmStrike: atm, mode: strikeMode, depth: strikeDepth, side: 'PE' })
+
+        if (ceStrike === null || peStrike === null) {
+          setCeContract(null)
+          setPeContract(null)
+          setMessage('Selected strike depth is not available for this expiry. Adjust depth and retry.')
+          return
+        }
+
+        const eps = 1e-6
+        const ce = opt.contracts.find((c) => c.expiry === expiry && Math.abs(c.strike - ceStrike) < eps && c.option_type === 'CE') ?? null
+        const pe = opt.contracts.find((c) => c.expiry === expiry && Math.abs(c.strike - peStrike) < eps && c.option_type === 'PE') ?? null
+        if (!ce || !pe) {
+          setCeContract(null)
+          setPeContract(null)
+          setMessage('Unable to resolve CE/PE contracts for selected strike. Try different strike mode/depth.')
+          return
+        }
+
+        const [ceLtp, peLtp] = await Promise.all([
+          apiGet<LtpResponse>(
+            `/market/ltp?exchange=${encodeURIComponent(ce.exchange)}&tradingsymbol=${encodeURIComponent(ce.tradingsymbol)}&symboltoken=${encodeURIComponent(ce.symboltoken)}`,
+          ),
+          apiGet<LtpResponse>(
+            `/market/ltp?exchange=${encodeURIComponent(pe.exchange)}&tradingsymbol=${encodeURIComponent(pe.tradingsymbol)}&symboltoken=${encodeURIComponent(pe.symboltoken)}`,
+          ),
+        ])
+
+        const ceCmp = compareToPremiumRange(ceLtp.ltp, minP, maxP)
+        const peCmp = compareToPremiumRange(peLtp.ltp, minP, maxP)
+        if (ceCmp !== 'within' || peCmp !== 'within') {
+          setCeContract(null)
+          setPeContract(null)
+
+          const ceMsg = ceCmp === 'within' ? null : `CE premium is ${ceCmp === 'below' ? 'below' : 'above'} your range (${minP} < premium < ${maxP}).`
+          const peMsg = peCmp === 'within' ? null : `PE premium is ${peCmp === 'below' ? 'below' : 'above'} your range (${minP} < premium < ${maxP}).`
+          setMessage([ceMsg, peMsg].filter(Boolean).join(' '))
+          return
+        }
+
+        setCeContract(ce)
+        setPeContract(pe)
+        setMessage('Contracts ready. Waiting for valid range…')
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'Unable to resolve strike contracts'
+        setMessage(msg)
+      } finally {
+        inFlightRef.current = false
+      }
+    }
+
+    const t = window.setInterval(() => {
+      void resolveContractsOnce()
+    }, intervalMs)
+    void resolveContractsOnce()
+
+    return () => {
+      cancelled = true
+      window.clearInterval(t)
+    }
+  }, [atmStrike, connectStatus, isRunning, premiumMax, premiumMin, selectedExpiry, strikeDepth, strikeMode])
 
   useEffect(() => {
     if (!isRunning) return
@@ -403,18 +557,33 @@ export default function FiveMinBreakoutPage() {
         setRange(selected.snapshot)
         setRangeSide(selected.side)
         setBreakoutClose(selected.window.breakoutCandle.close)
-        setUsedRangeKey(selected.key)
 
         const contract = selected.side === 'CE' ? ceContract : peContract
         setSignalContract(contract)
-
-        setMessage(`Breakout confirmed (${selected.side}). Signal generated (no orders will be placed).`)
 
         const ltpNow = await apiGet<LtpResponse>(
           `/market/ltp?exchange=${encodeURIComponent(contract.exchange)}&tradingsymbol=${encodeURIComponent(contract.tradingsymbol)}&symboltoken=${encodeURIComponent(contract.symboltoken)}`,
         )
         setCurrentLtp(ltpNow.ltp)
         setEntryPrice(ltpNow.ltp)
+
+        const minP = Number(premiumMin)
+        const maxP = Number(premiumMax)
+        if (!Number.isFinite(minP) || !Number.isFinite(maxP) || minP >= maxP) {
+          setRangeSide(null)
+          setBreakoutClose(null)
+          setSignalContract(null)
+          setMessage('Invalid premium filter. Ensure min < max and both are valid numbers.')
+          return
+        }
+
+        if (!(ltpNow.ltp > minP && ltpNow.ltp < maxP)) {
+          setRangeSide(null)
+          setBreakoutClose(null)
+          setSignalContract(null)
+          setMessage(`Premium out of range (${minP} < premium < ${maxP}). Waiting…`)
+          return
+        }
 
         const slt = computeStopLossAndTarget({ entryPrice: ltpNow.ltp, rangeLow: selected.snapshot.rangeLow })
         if (!slt) {
@@ -430,54 +599,53 @@ export default function FiveMinBreakoutPage() {
         setSlOrderId(null)
         setState('SIGNAL')
 
-        if (ENABLE_ORDER_PLACEMENT) {
-          setMessage(`Breakout confirmed (${selected.side}). Placing entry…`)
-
-          const entryResp = await apiPost<PlaceOrderResponse>('/angel/orders/simple', {
-            exchange: contract.exchange,
-            tradingsymbol: contract.tradingsymbol,
-            symboltoken: contract.symboltoken,
-            transactiontype: 'BUY',
-            producttype: 'INTRADAY',
-            quantity: normalizedQuantity,
-            ordertype: 'MARKET',
-          })
-
-          const okEntry = isSuccessResponse(entryResp.item.response)
-          if (!okEntry) {
-            setMessage('Entry order rejected by broker.')
-            setState('EXITED')
-            return
-          }
-
-          const oid = extractOrderId(entryResp.item.response)
-          setEntryOrderId(oid)
-
-          setMessage('Placing SL order…')
-          const slResp = await apiPost<PlaceOrderResponse>('/angel/orders/simple', {
-            exchange: contract.exchange,
-            tradingsymbol: contract.tradingsymbol,
-            symboltoken: contract.symboltoken,
-            transactiontype: 'SELL',
-            producttype: 'INTRADAY',
-            quantity: normalizedQuantity,
-            ordertype: 'SL',
-            triggerprice: slt.stopLoss,
-          })
-
-          const okSl = isSuccessResponse(slResp.item.response)
-          if (!okSl) {
-            setMessage('SL order rejected. Strategy stopped to avoid unmanaged position.')
-            setState('STOPPED')
-            setIsRunning(false)
-            return
-          }
-          const slOid = extractOrderId(slResp.item.response)
-          setSlOrderId(slOid)
-
-          setState('IN_POSITION')
-          setMessage('In position. Monitoring target/SL…')
+        const shouldPlaceOrders = ENABLE_LIVE_TRADING && liveTradingConsent
+        if (!shouldPlaceOrders) {
+          setMessage(
+            `Breakout confirmed (${selected.side}). Signal only (ENABLE_LIVE_TRADING=${String(ENABLE_LIVE_TRADING)}, consent=${String(liveTradingConsent)}).`,
+          )
+          setUsedRangeKey(selected.key)
+          return
         }
+
+        try {
+          const positions = await apiGet<AngelPositionsResponse>('/angel/positions')
+          if (hasOpenOptionPosition(positions)) {
+            setMessage('Open options position detected (NFO/BFO). Strategy will not take a new trade.')
+            return
+          }
+        } catch {
+          setMessage('Unable to verify open positions. Skipping trade for safety.')
+          return
+        }
+
+        setUsedRangeKey(selected.key)
+
+        setMessage(`Breakout confirmed (${selected.side}). Placing entry…`)
+
+        const entryResp = await apiPost<PlaceOrderResponse>('/angel/orders/simple', {
+          exchange: contract.exchange,
+          tradingsymbol: contract.tradingsymbol,
+          symboltoken: contract.symboltoken,
+          transactiontype: 'BUY',
+          producttype: 'INTRADAY',
+          quantity: normalizedQuantity,
+          ordertype: 'MARKET',
+        })
+
+        const okEntry = isSuccessResponse(entryResp.item.response)
+        if (!okEntry) {
+          setMessage('Entry order rejected by broker.')
+          setState('EXITED')
+          return
+        }
+
+        const oid = extractOrderId(entryResp.item.response)
+        setEntryOrderId(oid)
+
+        setSlOrderId(null)
+        setState('IN_POSITION')
+        setMessage('In position. Monitoring target/SL level (no SL order placed)…')
       } catch (e) {
         const msg = e instanceof Error ? e.message : 'Scan failed'
         setMessage(msg)
@@ -515,6 +683,20 @@ export default function FiveMinBreakoutPage() {
       if (stopRequestedRef.current) return
 
       try {
+        positionPollRef.current += 1
+        if (positionPollRef.current % 4 === 0) {
+          try {
+            const positions = await apiGet<AngelPositionsResponse>('/angel/positions')
+            if (!hasOpenOptionPosition(positions)) {
+              setState('EXITED')
+              setMessage('No open option position detected. Strategy reset.')
+              return
+            }
+          } catch {
+            // ignore
+          }
+        }
+
         const ltpNow = await apiGet<LtpResponse>(
           `/market/ltp?exchange=${encodeURIComponent(contract.exchange)}&tradingsymbol=${encodeURIComponent(contract.tradingsymbol)}&symboltoken=${encodeURIComponent(contract.symboltoken)}`,
         )
@@ -531,21 +713,23 @@ export default function FiveMinBreakoutPage() {
             producttype: 'INTRADAY',
             transactiontype: 'SELL',
           })
-          if (slOrderId) {
-            try {
-              await apiPost<Record<string, unknown>>(`/angel/orders/${encodeURIComponent(slOrderId)}/cancel`, { variety: 'NORMAL' })
-            } catch {
-              // ignore
-            }
-          }
           setState('EXITED')
           setMessage('Exited on target. Waiting…')
           return
         }
 
         if (ltpNow.ltp <= stopLossValue) {
+          setMessage('SL level hit. Exiting…')
+          await apiPost<PlaceOrderResponse>('/angel/positions/exit', {
+            exchange: contract.exchange,
+            tradingsymbol: contract.tradingsymbol,
+            symboltoken: contract.symboltoken,
+            quantity: normalizedQuantity,
+            producttype: 'INTRADAY',
+            transactiontype: 'SELL',
+          })
           setState('EXITED')
-          setMessage('SL level hit. Strategy reset (no re-entry in same range).')
+          setMessage('Exited on SL level. Waiting…')
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : 'LTP monitor failed'
@@ -596,30 +780,35 @@ export default function FiveMinBreakoutPage() {
 
           <div className="flex flex-col gap-2 sm:items-end">
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={startStrategy}
-                disabled={connectStatus !== 'connected' || isRunning}
-                className="rounded-xl bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 transition-colors hover:bg-cyan-300 disabled:opacity-70"
-              >
-                Start
-              </button>
-              <button
-                type="button"
-                onClick={stopStrategy}
-                disabled={!isRunning}
-                className="rounded-xl border border-slate-200 bg-transparent px-4 py-2 text-sm font-semibold transition-colors hover:bg-slate-100 disabled:opacity-70 dark:border-white/10 dark:hover:bg-white/10"
-              >
-                Stop
-              </button>
-              <button
-                type="button"
-                onClick={resetSignalAndResume}
-                disabled={!isRunning || state === 'WAITING' || state === 'IN_POSITION'}
-                className="rounded-xl border border-slate-200 bg-transparent px-4 py-2 text-sm font-semibold transition-colors hover:bg-slate-100 disabled:opacity-70 dark:border-white/10 dark:hover:bg-white/10"
-              >
-                Reset
-              </button>
+              {!isRunning && connectStatus === 'connected' ? (
+                <button
+                  type="button"
+                  onClick={startStrategy}
+                  className="rounded-xl bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 transition-colors hover:bg-cyan-300"
+                >
+                  Start
+                </button>
+              ) : null}
+
+              {isRunning ? (
+                <button
+                  type="button"
+                  onClick={stopStrategy}
+                  className="rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-red-500"
+                >
+                  Stop
+                </button>
+              ) : null}
+
+              {isRunning && state !== 'WAITING' && state !== 'IN_POSITION' ? (
+                <button
+                  type="button"
+                  onClick={resetSignalAndResume}
+                  className="rounded-xl border border-slate-200 bg-transparent px-4 py-2 text-sm font-semibold transition-colors hover:bg-slate-100 dark:border-white/10 dark:hover:bg-white/10"
+                >
+                  Reset
+                </button>
+              ) : null}
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400">
               Stop disables scanning and auto-management. If you stop while in position, manage the trade manually.
@@ -645,6 +834,20 @@ export default function FiveMinBreakoutPage() {
               </label>
 
               <label className="text-sm">
+                <span className="block text-xs text-slate-500 dark:text-slate-400">Strike mode</span>
+                <select
+                  value={strikeMode}
+                  onChange={(e) => setStrikeMode((e.target.value as StrikeMode) || 'ATM')}
+                  disabled={isRunning}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-white/10 dark:bg-slate-900"
+                >
+                  <option value="ATM">ATM</option>
+                  <option value="ITM">ITM</option>
+                  <option value="OTM">OTM</option>
+                </select>
+              </label>
+
+              <label className="text-sm">
                 <span className="block text-xs text-slate-500 dark:text-slate-400">Quantity</span>
                 <input
                   value={String(quantity)}
@@ -654,6 +857,75 @@ export default function FiveMinBreakoutPage() {
                   className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-white/10 dark:bg-slate-900"
                 />
               </label>
+
+              {strikeMode !== 'ATM' ? (
+                <div className="text-sm">
+                  <span className="block text-xs text-slate-500 dark:text-slate-400">Depth</span>
+                  <div className="mt-1 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setStrikeDepth((d) => Math.max(1, Math.floor(d) - 1))}
+                      disabled={isRunning}
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold transition-colors hover:bg-slate-100 disabled:opacity-50 dark:border-white/10 dark:bg-slate-900 dark:hover:bg-white/10"
+                    >
+                      -
+                    </button>
+                    <input
+                      value={String(strikeDepth)}
+                      onChange={(e) => setStrikeDepth(Math.max(1, Math.floor(Number(e.target.value))))}
+                      disabled={isRunning}
+                      inputMode="numeric"
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-white/10 dark:bg-slate-900"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setStrikeDepth((d) => Math.max(1, Math.floor(d) + 1))}
+                      disabled={isRunning}
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold transition-colors hover:bg-slate-100 disabled:opacity-50 dark:border-white/10 dark:bg-slate-900 dark:hover:bg-white/10"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              <label className="text-sm">
+                <span className="block text-xs text-slate-500 dark:text-slate-400">Premium min</span>
+                <input
+                  value={String(premiumMin)}
+                  onChange={(e) => setPremiumMin(Number(e.target.value))}
+                  disabled={isRunning}
+                  inputMode="numeric"
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-white/10 dark:bg-slate-900"
+                />
+              </label>
+
+              <label className="text-sm">
+                <span className="block text-xs text-slate-500 dark:text-slate-400">Premium max</span>
+                <input
+                  value={String(premiumMax)}
+                  onChange={(e) => setPremiumMax(Number(e.target.value))}
+                  disabled={isRunning}
+                  inputMode="numeric"
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-white/10 dark:bg-slate-900"
+                />
+              </label>
+            </div>
+            <div className="mt-3">
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={liveTradingConsent}
+                  onChange={(e) => setLiveTradingConsent(e.target.checked)}
+                  disabled={isRunning || !ENABLE_LIVE_TRADING}
+                />
+                <span>
+                  Place real orders
+                </span>
+              </label>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                Premium filter: {premiumMin} &lt; premium &lt; {premiumMax}
+              </p>
             </div>
             <div className="mt-3 text-sm text-slate-600 dark:text-slate-300">
               <p>

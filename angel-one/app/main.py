@@ -424,6 +424,14 @@ def place_order(req: PlaceOrderRequest) -> Dict[str, Any]:
 def place_simple_order(req: SimpleOrderRequest) -> Dict[str, Any]:
     attempt_id = str(uuid4())
 
+    qty = int(req.quantity)
+    if qty <= 0:
+        raise HTTPException(status_code=400, detail="Quantity must be > 0")
+
+    tx = req.transactiontype.strip().upper()
+    if tx not in {"BUY", "SELL"}:
+        raise HTTPException(status_code=400, detail="Invalid transactiontype")
+
     producttype = req.producttype
     ex = req.exchange.strip().upper()
     if ex in {"NFO", "BFO"}:
@@ -458,8 +466,8 @@ def place_simple_order(req: SimpleOrderRequest) -> Dict[str, Any]:
         "variety": req.variety,
         "tradingsymbol": req.tradingsymbol,
         "symboltoken": req.symboltoken,
-        "transactiontype": req.transactiontype,
-        "exchange": req.exchange,
+        "transactiontype": tx,
+        "exchange": ex,
         "ordertype": ordertype,
         "producttype": producttype,
         "duration": "DAY",
@@ -467,7 +475,7 @@ def place_simple_order(req: SimpleOrderRequest) -> Dict[str, Any]:
         "triggerprice": str(trigger) if trigger is not None else None,
         "squareoff": "0",
         "stoploss": "0",
-        "quantity": str(req.quantity),
+        "quantity": str(qty),
     }
 
     try:

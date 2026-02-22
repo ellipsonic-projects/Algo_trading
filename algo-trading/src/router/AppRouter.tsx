@@ -7,6 +7,7 @@ import IchimokuStrategyPage from '../pages/StrategiesPage/IchimokuStrategyPage'
 import StrategiesPage from '../pages/StrategiesPage/StrategiesPage'
 import ManualTradingPage from '../pages/StrategiesPage/ManualTradingPage'
 import VwapSmmaPage from '../pages/StrategiesPage/VwapSmmaPage'
+import HeikenashiPage from '../pages/StrategiesPage/HeikenashiPage'
 
 export default function AppRouter() {
   return (
@@ -19,6 +20,7 @@ export default function AppRouter() {
       <Route path="/strategies/5-min-breakout" element={<FiveMinBreakoutPage />} />
       <Route path="/strategies/vwap-smma" element={<VwapSmmaPage />} />
       <Route path="/strategies/expiry" element={<ExpiryStrategyPage />} />
+      <Route path="/strategies/heikenashi" element={<HeikenashiPage />} />
       <Route path="*" element={<Navigate to="/login" replace />} />
     </Routes>
   )

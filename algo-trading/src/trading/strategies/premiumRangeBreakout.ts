@@ -67,9 +67,7 @@ export function computeStopLossAndTarget(params: {
   const { entryPrice, rangeLow } = params
   if (!Number.isFinite(entryPrice) || !Number.isFinite(rangeLow)) return null
 
-  const rawSL = rangeLow - 2
-  const maxDistanceSL = entryPrice - 35
-  const stopLoss = Math.max(maxDistanceSL, rawSL)
+  const stopLoss = rangeLow - 2
   const riskPoints = entryPrice - stopLoss
   if (!Number.isFinite(riskPoints) || riskPoints < 10) return null
   const target = entryPrice + riskPoints

@@ -61,7 +61,16 @@ describe('computePremiumRange', () => {
 
 describe('detectBreakoutCloseOnly', () => {
   it('signals breakout only when close > rangeHigh', () => {
-    const range = computePremiumRange([c('t1', 0, 10, 5, 9), c('t2', 0, 11, 6, 10), c('t3', 0, 12, 7, 11), c('t4', 0, 13, 8, 12), c('t5', 0, 14, 9, 13)], 5)
+    const range = computePremiumRange(
+      [
+        c('t1', 7, 10, 5, 8),
+        c('t2', 8, 9, 6, 7),
+        c('t3', 7.5, 9.5, 6.5, 8.5),
+        c('t4', 9, 9.8, 7, 9.2),
+        c('t5', 8.8, 9.9, 7.2, 8.9),
+      ],
+      5,
+    )
     expect(range).not.toBeNull()
 
     expect(detectBreakoutCloseOnly({ candleClose: 9.99, range: range! })).toBe(false)
@@ -70,18 +79,8 @@ describe('detectBreakoutCloseOnly', () => {
 })
 
 describe('computeStopLossAndTarget', () => {
-  it('caps SL distance to 35 points', () => {
-    const res = computeStopLossAndTarget({ entryPrice: 200, rangeLow: 100 })
-    expect(res).not.toBeNull()
-    // rawSL = 98, entry-35 = 165 -> max = 165
-    expect(res?.stopLoss).toBe(165)
-    // risk = 35 -> 1:1 target = entry + 35
-    expect(res?.target).toBe(235)
-  })
-
-  it('uses rawSL when within max distance', () => {
+  it('uses stopLoss = rangeLow - 2 and 1:1 target', () => {
     const res = computeStopLossAndTarget({ entryPrice: 120, rangeLow: 110 })
-    // rawSL = 108, entry-35 = 85 -> max = 108
     expect(res?.stopLoss).toBe(108)
     // risk = 12 -> 1:1 target = entry + 12
     expect(res?.target).toBe(132)
@@ -89,7 +88,7 @@ describe('computeStopLossAndTarget', () => {
 
   it('returns null when risk is below 10 points', () => {
     const res = computeStopLossAndTarget({ entryPrice: 120, rangeLow: 119 })
-    // rawSL = 117, entry-35 = 85 -> stopLoss = 117, risk = 3 (< 10)
+    // stopLoss = 117, risk = 3 (< 10)
     expect(res).toBeNull()
   })
 })

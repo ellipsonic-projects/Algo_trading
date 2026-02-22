@@ -43,6 +43,12 @@ export default function StrategiesPage() {
       to: '/strategies/expiry',
       accentClassName: 'from-sky-400 to-emerald-400',
     },
+    {
+      title: 'Heikenashi',
+      description: 'Trend following strategy using Heiken Ashi candles.',
+      to: '/strategies/heikenashi',
+      accentClassName: 'from-rose-400 to-orange-400',
+    },
   ]
 
   return (

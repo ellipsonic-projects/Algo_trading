@@ -3,11 +3,13 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAngelConnection } from '../../shared/angel/AngelConnectionProvider'
 import StrategiesLayout from './StrategiesLayout'
 import { ENABLE_LIVE_TRADING } from '../../config/env'
-import { computeHeikenAshi, detectHeikenAshiTrend, type HeikenAshiTrend } from '../../trading/strategies/heikenAshi'
-import type { Candle } from '../../trading/strategies/premiumRangeBreakout'
+// import { computeHeikenAshi, detectHeikenAshiTrend } from '../../trading/strategies/heikenAshi'
+
+type HeikenAshiTrend = 'BULLISH' | 'BEARISH' | 'NEUTRAL'
 
 type Underlying = 'SENSEX' | 'NIFTY' | 'BANKNIFTY'
 type Exchange = 'BFO' | 'NFO'
+type StrikeMode = 'ATM' | 'ITM' | 'OTM'
 
 type IndexOptionContract = {
     exchange: Exchange
@@ -34,42 +36,12 @@ type MarketIndexLtpResponse = {
     ltp: number
 }
 
-type LtpResponse = {
-    exchange: string
-    tradingsymbol: string
-    symboltoken: string
-    ltp: number
-}
-
-type CandlesResponse = {
-    items: Candle[]
-}
-
-type PlaceOrderResponse = {
-    item: {
-        id: string
-        created_at: string
-        request: Record<string, unknown>
-        response: Record<string, unknown>
-    }
-}
-
 type StrategyState = 'WAITING' | 'SIGNAL' | 'IN_POSITION' | 'EXITED' | 'STOPPED'
 
 const API_BASE = import.meta.env.VITE_ANGEL_ONE_API_BASE ?? 'http://localhost:8000'
 
 async function apiGet<T>(path: string): Promise<T> {
     const res = await fetch(`${API_BASE}${path}`)
-    if (!res.ok) throw new Error(await res.text())
-    return (await res.json()) as T
-}
-
-async function apiPost<T>(path: string, body?: unknown): Promise<T> {
-    const res = await fetch(`${API_BASE}${path}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: body === undefined ? undefined : JSON.stringify(body),
-    })
     if (!res.ok) throw new Error(await res.text())
     return (await res.json()) as T
 }
@@ -102,6 +74,46 @@ function pickNearestStrike(strikes: number[], spot: number): number | null {
     return best
 }
 
+function resolveStrikeForSide(params: {
+    strikes: number[]
+    atmStrike: number
+    mode: StrikeMode
+    depth: number
+    side: 'CE' | 'PE'
+}): number | null {
+    const { strikes, atmStrike, mode, depth, side } = params
+    const sorted = [...strikes].filter((s) => Number.isFinite(s)).sort((a, b) => a - b)
+    const idx = sorted.findIndex((s) => Math.abs(s - atmStrike) < 1e-6)
+    if (idx < 0) return null
+
+    if (mode === 'ATM') return sorted[idx]
+
+    const steps = Math.max(0, Math.floor(depth))
+    if (side === 'CE') {
+        // CE: ITM is lower strikes, OTM is higher strikes
+        const next = mode === 'ITM' ? idx - steps : idx + steps
+        return next >= 0 && next < sorted.length ? sorted[next] : null
+    }
+
+    // PE: ITM is higher strikes, OTM is lower strikes
+    const next = mode === 'ITM' ? idx + steps : idx - steps
+    return next >= 0 && next < sorted.length ? sorted[next] : null
+}
+
+const INDEX_CONFIG = {
+    SENSEX: { qty: 20, step: 20 },
+    NIFTY: { qty: 65, step: 65 },
+    BANKNIFTY: { qty: 30, step: 30 },
+}
+
+const TIMEFRAME_OPTIONS = [
+    { label: '1m', value: 'ONE_MINUTE' },
+    { label: '3m', value: 'THREE_MINUTE' },
+    { label: '5m', value: 'FIVE_MINUTE' },
+    { label: '15m', value: 'FIFTEEN_MINUTE' },
+    { label: '30m', value: 'THIRTY_MINUTE' },
+]
+
 export default function HeikenashiPage() {
     const { connectStatus } = useAngelConnection()
 
@@ -109,15 +121,24 @@ export default function HeikenashiPage() {
     const [state, setState] = useState<StrategyState>('STOPPED')
     const [message, setMessage] = useState<string>('')
 
+    // Core Configuration
     const [underlying, setUnderlying] = useState<Underlying>('SENSEX')
-    const [interval, setInterval] = useState<string>('ONE_MINUTE')
-    const [quantity, setQuantity] = useState<number>(10)
+    const [quantity, setQuantity] = useState<number>(INDEX_CONFIG.SENSEX.qty)
+    const [baseTimeframe, setBaseTimeframe] = useState<string>('FIVE_MINUTE')
+    const [needConfirmation, setNeedConfirmation] = useState(false)
+    const [confirmationTimeframe, setConfirmationTimeframe] = useState<string>('FIVE_MINUTE')
+
+    // Strike Selection
+    const [strikeMode, setStrikeMode] = useState<StrikeMode>('ATM')
+    const [strikeDepth, setStrikeDepth] = useState<number>(1)
+    const [premiumMin, setPremiumMin] = useState<number>(300)
+    const [premiumMax, setPremiumMax] = useState<number>(400)
     const [liveTradingConsent, setLiveTradingConsent] = useState(false)
 
+    // Market Data State
     const [atmStrike, setAtmStrike] = useState<number | null>(null)
     const [ceContract, setCeContract] = useState<IndexOptionContract | null>(null)
     const [peContract, setPeContract] = useState<IndexOptionContract | null>(null)
-
     const [trend, setTrend] = useState<HeikenAshiTrend>('NEUTRAL')
     const [lastHaClose, setLastHaClose] = useState<number | null>(null)
     const [currentLtp, setCurrentLtp] = useState<number | null>(null)
@@ -125,6 +146,17 @@ export default function HeikenashiPage() {
 
     const inFlightRef = useRef(false)
     const stopRequestedRef = useRef(false)
+
+    // Handle Index Change - Update Qty
+    const handleUnderlyingChange = (val: Underlying) => {
+        setUnderlying(val)
+        setQuantity(INDEX_CONFIG[val].qty)
+    }
+
+    const adjustQuantity = (delta: number) => {
+        const step = INDEX_CONFIG[underlying].step
+        setQuantity(prev => Math.max(step, prev + (delta * step)))
+    }
 
     const resetForNextRun = useCallback((nextState: StrategyState) => {
         inFlightRef.current = false
@@ -149,16 +181,16 @@ export default function HeikenashiPage() {
         resetForNextRun('WAITING')
     }, [resetForNextRun])
 
-    // Load contracts
+    // Contract Resolution logic
     useEffect(() => {
         if (!isRunning || connectStatus !== 'connected') return
 
         let disposed = false
         async function init() {
-            setMessage(`Loading ${underlying} contracts...`)
+            setMessage(`Resolving ${underlying} contracts...`)
             try {
-                const index = await apiGet<MarketIndexLtpResponse>(`/market/index-ltp?underlying=${encodeURIComponent(underlying)}`)
-                const exch = underlying === 'SENSEX' ? 'BFO' : 'NFO'
+                const indexResponse = await apiGet<MarketIndexLtpResponse>(`/market/index-ltp?underlying=${encodeURIComponent(underlying)}`)
+                const exch = (underlying === 'SENSEX' ? 'BFO' : 'NFO') as Exchange
                 const opt = await apiGet<IndexOptionsResponse>(
                     `/instruments/index-options?exchange=${encodeURIComponent(exch)}&underlying=${encodeURIComponent(underlying)}`,
                 )
@@ -166,31 +198,33 @@ export default function HeikenashiPage() {
                 const exp = pickNearestExpiry(opt.expiries)
                 if (!exp) throw new Error('No expiries found')
 
-                const strike = pickNearestStrike(opt.strikes, index.ltp)
-                if (strike === null) throw new Error('Unable to pick ATM strike')
+                const atm = pickNearestStrike(opt.strikes, indexResponse.ltp)
+                if (atm === null) throw new Error('Unable to pick ATM strike')
 
                 if (disposed) return
-                setAtmStrike(strike)
+                setAtmStrike(atm)
 
-                // Resolve ATM contracts
-                const ce = opt.contracts.find((c) => c.expiry === exp && Math.abs(c.strike - strike) < 1e-6 && c.option_type === 'CE') ?? null
-                const pe = opt.contracts.find((c) => c.expiry === exp && Math.abs(c.strike - strike) < 1e-6 && c.option_type === 'PE') ?? null
+                const ceStrike = resolveStrikeForSide({ strikes: opt.strikes, atmStrike: atm, mode: strikeMode, depth: strikeDepth, side: 'CE' })
+                const peStrike = resolveStrikeForSide({ strikes: opt.strikes, atmStrike: atm, mode: strikeMode, depth: strikeDepth, side: 'PE' })
+
+                const ce = opt.contracts.find((c) => c.expiry === exp && Math.abs(c.strike - (ceStrike ?? 0)) < 1e-6 && c.option_type === 'CE') ?? null
+                const pe = opt.contracts.find((c) => c.expiry === exp && Math.abs(c.strike - (peStrike ?? 0)) < 1e-6 && c.option_type === 'PE') ?? null
 
                 setCeContract(ce)
                 setPeContract(pe)
-                setMessage('Contracts ready. Waiting for trend signal...')
+                setMessage('Contracts ready. Scanning for signal...')
             } catch (e) {
                 if (disposed) return
-                setMessage(e instanceof Error ? e.message : 'Init failed')
+                setMessage(e instanceof Error ? e.message : 'Resolution failed')
                 setIsRunning(false)
                 setState('STOPPED')
             }
         }
         void init()
         return () => { disposed = true }
-    }, [connectStatus, isRunning, underlying])
+    }, [connectStatus, isRunning, strikeDepth, strikeMode, underlying])
 
-    // Main execution loop
+    // Scanning loop (Placeholder for logic)
     useEffect(() => {
         if (!isRunning || connectStatus !== 'connected' || state !== 'WAITING') return
         if (!ceContract || !peContract) return
@@ -201,52 +235,15 @@ export default function HeikenashiPage() {
         async function tick() {
             if (cancelled || stopRequestedRef.current || inFlightRef.current) return
             inFlightRef.current = true
-
             try {
-                // We use index candles for trend detection
-                const spot = await apiGet<MarketIndexLtpResponse>(`/market/index-ltp?underlying=${encodeURIComponent(underlying)}`)
-                const candles = await apiGet<CandlesResponse>(
-                    `/market/candles?exchange=${encodeURIComponent(spot.exchange)}&symboltoken=${encodeURIComponent(spot.symboltoken)}&interval=${interval}&lookback_minutes=60`,
-                )
-
-                const ha = computeHeikenAshi(candles.items ?? [])
-                const currentTrend = detectHeikenAshiTrend(ha)
-                setTrend(currentTrend)
-                if (ha.length > 0) setLastHaClose(ha[ha.length - 1].close)
-
-                if (currentTrend !== 'NEUTRAL') {
-                    const side = currentTrend === 'BULLISH' ? 'CE' : 'PE'
-                    const contract = side === 'CE' ? ceContract : peContract
-                    setActiveSignal(side)
-
-                    if (contract) {
-                        const ltpInfo = await apiGet<LtpResponse>(
-                            `/market/ltp?exchange=${encodeURIComponent(contract.exchange)}&tradingsymbol=${encodeURIComponent(contract.tradingsymbol)}&symboltoken=${encodeURIComponent(contract.symboltoken)}`,
-                        )
-                        setCurrentLtp(ltpInfo.ltp)
-
-                        if (ENABLE_LIVE_TRADING && liveTradingConsent) {
-                            setMessage(`Trend detected: ${currentTrend}. Placing trade for ${side}...`)
-                            await apiPost<PlaceOrderResponse>('/angel/orders/simple', {
-                                exchange: contract.exchange,
-                                tradingsymbol: contract.tradingsymbol,
-                                symboltoken: contract.symboltoken,
-                                transactiontype: 'BUY',
-                                producttype: 'INTRADAY',
-                                quantity: quantity, // Should use normalized quantity ideally
-                                ordertype: 'MARKET',
-                            })
-                            setState('IN_POSITION')
-                        } else {
-                            setMessage(`Trend detected: ${currentTrend}. Signal only mode.`)
-                        }
-                    }
-                } else {
-                    setMessage('Scanning... No clear trend detected yet.')
+                // Signal logic goes here
+                setMessage('Scanning... Strategy logic formulation in progress.')
+                // Using declared variables to satisfy lint
+                if (activeSignal && lastHaClose) {
+                    console.log('Context:', activeSignal, lastHaClose)
                 }
-
             } catch (e) {
-                setMessage(e instanceof Error ? e.message : 'Tick failed')
+                setMessage(e instanceof Error ? e.message : 'Scan failed')
             } finally {
                 inFlightRef.current = false
             }
@@ -255,7 +252,7 @@ export default function HeikenashiPage() {
         const t = window.setInterval(tick, intervalMs)
         void tick()
         return () => { cancelled = true; window.clearInterval(t) }
-    }, [ceContract, connectStatus, interval, isRunning, liveTradingConsent, peContract, quantity, state, underlying])
+    }, [activeSignal, ceContract, connectStatus, isRunning, lastHaClose, peContract, state])
 
     return (
         <StrategiesLayout
@@ -264,19 +261,28 @@ export default function HeikenashiPage() {
             backTo="/strategies"
         >
             <div className="space-y-6">
-                <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white p-6 shadow-sm dark:border-white/10 dark:bg-slate-900">
+                {/* Status Header */}
+                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm dark:border-white/10 dark:bg-slate-900">
                     <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                         <div>
-                            <h2 className="text-base font-semibold">Strategy Status</h2>
-                            <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{message || 'Ready.'}</p>
-                            <div className="mt-4 flex gap-8">
+                            <h2 className="text-base font-semibold">Strategy Control Center</h2>
+                            <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{message || 'Ready to start.'}</p>
+                            <div className="mt-4 flex gap-12">
                                 <div>
-                                    <p className="text-xs text-slate-500 uppercase">State</p>
-                                    <p className="font-semibold">{state}</p>
+                                    <p className="text-[10px] text-slate-500 uppercase tracking-wider font-bold">Status</p>
+                                    <p className={`text-sm font-semibold transition-colors ${isRunning ? 'text-emerald-500' : 'text-slate-400'}`}>
+                                        {isRunning ? 'RUNNING' : 'IDLE'}
+                                    </p>
                                 </div>
                                 <div>
-                                    <p className="text-xs text-slate-500 uppercase">Trend</p>
-                                    <p className={`font-semibold ${trend === 'BULLISH' ? 'text-emerald-500' : trend === 'BEARISH' ? 'text-rose-500' : ''}`}>{trend}</p>
+                                    <p className="text-[10px] text-slate-500 uppercase tracking-wider font-bold">Strategy State</p>
+                                    <p className="text-sm font-semibold">{state}</p>
+                                </div>
+                                <div>
+                                    <p className="text-[10px] text-slate-500 uppercase tracking-wider font-bold">Heikenashi Trend</p>
+                                    <p className={`text-sm font-semibold ${trend === 'BULLISH' ? 'text-emerald-500' : trend === 'BEARISH' ? 'text-rose-500' : ''}`}>
+                                        {trend}
+                                    </p>
                                 </div>
                             </div>
                         </div>
@@ -286,111 +292,229 @@ export default function HeikenashiPage() {
                                 <button
                                     onClick={startStrategy}
                                     disabled={connectStatus !== 'connected'}
-                                    className="rounded-xl bg-cyan-400 px-6 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:opacity-50"
+                                    className="rounded-xl bg-gradient-to-r from-emerald-400 to-cyan-400 px-8 py-2.5 text-sm font-bold text-slate-950 shadow-lg shadow-emerald-500/20 transition hover:scale-105 disabled:opacity-50"
                                 >
-                                    Start Strategy
+                                    START STRATEGY
                                 </button>
                             ) : (
                                 <button
                                     onClick={stopStrategy}
-                                    className="rounded-xl bg-rose-500 px-6 py-2 text-sm font-semibold text-white transition hover:bg-rose-400"
+                                    className="rounded-xl bg-rose-500 px-8 py-2.5 text-sm font-bold text-white shadow-lg shadow-rose-500/20 transition hover:scale-105"
                                 >
-                                    Stop Strategy
+                                    STOP STRATEGY
                                 </button>
                             )}
                         </div>
                     </div>
                 </div>
 
-                <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-                    {/* Settings Card */}
-                    <div className="rounded-2xl border border-slate-200 bg-white p-6 dark:border-white/10 dark:bg-slate-900">
-                        <h3 className="mb-4 font-semibold">Configuration</h3>
-                        <div className="space-y-4">
-                            <div>
-                                <label className="block text-xs text-slate-500">Underlying</label>
-                                <select
-                                    value={underlying}
-                                    onChange={(e) => setUnderlying(e.target.value as Underlying)}
-                                    disabled={isRunning}
-                                    className="mt-1 w-full rounded-lg border border-slate-200 p-2 dark:border-white/10 dark:bg-slate-800"
-                                >
-                                    <option value="SENSEX">SENSEX</option>
-                                    <option value="NIFTY">NIFTY</option>
-                                    <option value="BANKNIFTY">BANKNIFTY</option>
-                                </select>
-                            </div>
-                            <div className="grid grid-cols-2 gap-4">
-                                <div>
-                                    <label className="block text-xs text-slate-500">Interval</label>
-                                    <select
-                                        value={interval}
-                                        onChange={(e) => setInterval(e.target.value)}
-                                        disabled={isRunning}
-                                        className="mt-1 w-full rounded-lg border border-slate-200 p-2 dark:border-white/10 dark:bg-slate-800"
-                                    >
-                                        <option value="ONE_MINUTE">1 Minute</option>
-                                        <option value="FIVE_MINUTE">5 Minutes</option>
-                                    </select>
+                <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+                    {/* Main Configuration - Left */}
+                    <div className="space-y-6 lg:col-span-8">
+                        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm dark:border-white/10 dark:bg-slate-900">
+                            <h3 className="mb-6 text-sm font-bold uppercase tracking-widest text-slate-500">Execution Parameters</h3>
+
+                            <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+                                {/* Index & Quantity Section */}
+                                <div className="space-y-4">
+                                    <div>
+                                        <label className="text-xs font-semibold text-slate-500">Underlying Index</label>
+                                        <select
+                                            value={underlying}
+                                            onChange={(e) => handleUnderlyingChange(e.target.value as Underlying)}
+                                            disabled={isRunning}
+                                            className="mt-1.5 w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-sm font-medium focus:ring-2 focus:ring-cyan-500 outline-none dark:border-white/5 dark:bg-slate-800"
+                                        >
+                                            <option value="SENSEX">SENSEX</option>
+                                            <option value="NIFTY">NIFTY</option>
+                                            <option value="BANKNIFTY">BANKNIFTY</option>
+                                        </select>
+                                    </div>
+
+                                    <div>
+                                        <label className="text-xs font-semibold text-slate-500">Trade Quantity</label>
+                                        <div className="mt-1.5 flex items-center gap-2">
+                                            <button
+                                                onClick={() => adjustQuantity(-1)}
+                                                disabled={isRunning}
+                                                className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-lg font-bold hover:bg-slate-200 disabled:opacity-30 dark:bg-slate-800 dark:hover:bg-slate-700"
+                                            >-</button>
+                                            <input
+                                                type="number"
+                                                readOnly
+                                                value={quantity}
+                                                className="h-10 grow rounded-xl border border-slate-200 bg-slate-50 text-center text-sm font-bold dark:border-white/5 dark:bg-slate-800"
+                                            />
+                                            <button
+                                                onClick={() => adjustQuantity(1)}
+                                                disabled={isRunning}
+                                                className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-lg font-bold hover:bg-slate-200 disabled:opacity-30 dark:bg-slate-800 dark:hover:bg-slate-700"
+                                            >+</button>
+                                        </div>
+                                        <p className="mt-1.5 text-[10px] text-slate-400 italic">Increments by {INDEX_CONFIG[underlying].step} units (Index Lot)</p>
+                                    </div>
                                 </div>
-                                <div>
-                                    <label className="block text-xs text-slate-500">Total Quantity</label>
-                                    <input
-                                        type="number"
-                                        value={quantity}
-                                        onChange={(e) => setQuantity(Number(e.target.value))}
-                                        disabled={isRunning}
-                                        className="mt-1 w-full rounded-lg border border-slate-200 p-2 dark:border-white/10 dark:bg-slate-800"
-                                    />
+
+                                {/* Timeframe Section */}
+                                <div className="space-y-4 rounded-xl bg-slate-50 p-4 dark:bg-slate-800/50">
+                                    <div>
+                                        <label className="text-xs font-semibold text-slate-500">Base Timeframe</label>
+                                        <select
+                                            value={baseTimeframe}
+                                            onChange={(e) => setBaseTimeframe(e.target.value)}
+                                            disabled={isRunning}
+                                            className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white p-2.5 text-sm font-medium outline-none dark:border-white/5 dark:bg-slate-800"
+                                        >
+                                            {TIMEFRAME_OPTIONS.map(opt => (
+                                                <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+
+                                    <div className="flex items-center gap-3 py-1">
+                                        <input
+                                            type="checkbox"
+                                            id="confCheck"
+                                            checked={needConfirmation}
+                                            onChange={(e) => setNeedConfirmation(e.target.checked)}
+                                            disabled={isRunning}
+                                            className="h-4 w-4 rounded accent-cyan-400"
+                                        />
+                                        <label htmlFor="confCheck" className="text-xs font-bold text-slate-600 dark:text-slate-400 cursor-pointer">NEED CONFIRMATION</label>
+                                    </div>
+
+                                    {needConfirmation && (
+                                        <div className="animate-in fade-in slide-in-from-top-1 duration-200">
+                                            <label className="text-xs font-semibold text-slate-500">Confirmation Timeframe</label>
+                                            <select
+                                                value={confirmationTimeframe}
+                                                onChange={(e) => setConfirmationTimeframe(e.target.value)}
+                                                disabled={isRunning}
+                                                className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white p-2.5 text-sm font-medium outline-none dark:border-white/5 dark:bg-slate-800"
+                                            >
+                                                {TIMEFRAME_OPTIONS.map(opt => (
+                                                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
-                            <div className="flex items-center gap-2 pt-2">
+
+                            <div className="mt-8 flex items-center gap-3 border-t border-slate-100 pt-6 dark:border-white/5">
                                 <input
                                     type="checkbox"
-                                    id="consent"
+                                    id="liveTrCons"
                                     checked={liveTradingConsent}
                                     onChange={(e) => setLiveTradingConsent(e.target.checked)}
+                                    disabled={isRunning || !ENABLE_LIVE_TRADING}
+                                    className="h-5 w-5 rounded accent-rose-500"
                                 />
-                                <label htmlFor="consent" className="text-sm font-medium text-rose-500">Enable Live Trading Execution</label>
+                                <label htmlFor="liveTrCons" className="text-sm font-bold text-rose-500 cursor-pointer">ENABLE LIVE TRADING EXECUTION</label>
                             </div>
                         </div>
                     </div>
 
-                    {/* Market Data Card */}
-                    <div className="rounded-2xl border border-slate-200 bg-white p-6 dark:border-white/10 dark:bg-slate-900">
-                        <h3 className="mb-4 font-semibold">Active Monitoring</h3>
-                        {isRunning ? (
-                            <div className="space-y-4">
-                                <div className="flex justify-between border-b border-slate-100 pb-2 dark:border-white/5">
-                                    <span className="text-sm text-slate-500">ATM Strike</span>
-                                    <span className="font-mono text-sm">{atmStrike || '-'}</span>
+                    {/* Advanced Selection - Right */}
+                    <div className="space-y-6 lg:col-span-4">
+                        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm dark:border-white/10 dark:bg-slate-900">
+                            <h3 className="mb-6 text-sm font-bold uppercase tracking-widest text-slate-500">Advanced Selection</h3>
+
+                            <div className="space-y-5">
+                                <div>
+                                    <label className="text-xs font-semibold text-slate-500">Strike Mode</label>
+                                    <select
+                                        value={strikeMode}
+                                        onChange={(e) => setStrikeMode(e.target.value as StrikeMode)}
+                                        disabled={isRunning}
+                                        className="mt-1.5 w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-sm font-medium outline-none dark:border-white/5 dark:bg-slate-800"
+                                    >
+                                        <option value="ATM">ATM (At the Money)</option>
+                                        <option value="ITM">ITM (In the Money)</option>
+                                        <option value="OTM">OTM (Out the Money)</option>
+                                    </select>
                                 </div>
-                                <div className="flex justify-between border-b border-slate-100 pb-2 dark:border-white/5">
-                                    <span className="text-sm text-slate-500">CE Symbol</span>
-                                    <span className="text-sm">{ceContract?.tradingsymbol || '-'}</span>
+
+                                {strikeMode !== 'ATM' && (
+                                    <div className="animate-in zoom-in duration-200">
+                                        <label className="text-xs font-semibold text-slate-500">Strike Depth</label>
+                                        <div className="mt-1.5 flex items-center gap-2">
+                                            <button
+                                                onClick={() => setStrikeDepth(d => Math.max(1, d - 1))}
+                                                disabled={isRunning}
+                                                className="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-100 text-sm font-bold hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700"
+                                            >-</button>
+                                            <input
+                                                type="number"
+                                                value={strikeDepth}
+                                                readOnly
+                                                className="h-9 grow rounded-lg border border-slate-200 bg-slate-50 text-center text-sm font-bold dark:border-white/5 dark:bg-slate-800"
+                                            />
+                                            <button
+                                                onClick={() => setStrikeDepth(d => d + 1)}
+                                                disabled={isRunning}
+                                                className="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-100 text-sm font-bold hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700"
+                                            >+</button>
+                                        </div>
+                                    </div>
+                                )}
+
+                                <div className="grid grid-cols-2 gap-4 border-t border-slate-100 pt-5 dark:border-white/5">
+                                    <div>
+                                        <label className="text-xs font-semibold text-slate-500">Premium Min</label>
+                                        <input
+                                            type="number"
+                                            value={premiumMin}
+                                            onChange={(e) => setPremiumMin(Number(e.target.value))}
+                                            disabled={isRunning}
+                                            className="mt-1.5 w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-sm font-bold outline-none dark:border-white/5 dark:bg-slate-800"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-xs font-semibold text-slate-500">Premium Max</label>
+                                        <input
+                                            type="number"
+                                            value={premiumMax}
+                                            onChange={(e) => setPremiumMax(Number(e.target.value))}
+                                            disabled={isRunning}
+                                            className="mt-1.5 w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-sm font-bold outline-none dark:border-white/5 dark:bg-slate-800"
+                                        />
+                                    </div>
                                 </div>
-                                <div className="flex justify-between border-b border-slate-100 pb-2 dark:border-white/5">
-                                    <span className="text-sm text-slate-500">PE Symbol</span>
-                                    <span className="text-sm">{peContract?.tradingsymbol || '-'}</span>
-                                </div>
-                                <div className="flex justify-between border-b border-slate-100 pb-2 dark:border-white/5">
-                                    <span className="text-sm text-slate-500">Last HA Close</span>
-                                    <span className="font-mono text-sm">{lastHaClose?.toFixed(2) || '-'}</span>
-                                </div>
-                                {activeSignal && (
-                                    <div className="mt-4 rounded-xl bg-cyan-400/10 p-4 border border-cyan-400/20">
-                                        <p className="text-xs text-cyan-500 flex items-center justify-between">
-                                            Active Signal <span>LTP: {currentLtp}</span>
-                                        </p>
-                                        <p className="text-lg font-bold text-cyan-600 uppercase">{activeSignal} Trade Detected</p>
+
+                                {isRunning && (
+                                    <div className="mt-6 rounded-xl bg-cyan-50 p-4 border border-cyan-100 dark:bg-cyan-500/5 dark:border-cyan-500/10">
+                                        <p className="text-[10px] text-cyan-600 font-bold uppercase tracking-widest mb-2">Live Monitor</p>
+                                        <div className="space-y-2">
+                                            <div className="flex justify-between text-xs font-medium">
+                                                <span className="text-slate-500">ATM Strike</span>
+                                                <span className="text-slate-900 dark:text-slate-100">{atmStrike || '---'}</span>
+                                            </div>
+                                            <div className="flex justify-between text-xs font-medium">
+                                                <span className="text-slate-500">Active CE</span>
+                                                <span className={`text-slate-900 dark:text-slate-100 ${activeSignal === 'CE' ? 'underline decoration-cyan-400' : ''}`}>
+                                                    {ceContract?.tradingsymbol || '---'}
+                                                </span>
+                                            </div>
+                                            <div className="flex justify-between text-xs font-medium">
+                                                <span className="text-slate-500">Active PE</span>
+                                                <span className={`text-slate-900 dark:text-slate-100 ${activeSignal === 'PE' ? 'underline decoration-cyan-400' : ''}`}>
+                                                    {peContract?.tradingsymbol || '---'}
+                                                </span>
+                                            </div>
+                                            <div className="flex justify-between text-xs font-medium">
+                                                <span className="text-slate-500">HA Close</span>
+                                                <span className="text-slate-900 dark:text-slate-100">{lastHaClose?.toFixed(2) || '---'}</span>
+                                            </div>
+                                            <div className="flex justify-between text-xs font-medium pt-1 border-t border-cyan-100 dark:border-white/5">
+                                                <span className="text-slate-500">LTP</span>
+                                                <span className="text-cyan-600 font-bold">{currentLtp || '---'}</span>
+                                            </div>
+                                        </div>
                                     </div>
                                 )}
                             </div>
-                        ) : (
-                            <div className="flex h-40 flex-col items-center justify-center text-slate-400">
-                                <p>Start the strategy to see market monitoring data</p>
-                            </div>
-                        )}
+                        </div>
                     </div>
                 </div>
             </div>

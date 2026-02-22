@@ -1,170 +1,113 @@
-import { useMemo, useState } from 'react'
-import type { FormEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { Moon, Sun } from 'lucide-react'
+import React, { useState } from 'react';
+import { useAuth } from '../../context/AuthContext';
+import { useNavigate } from 'react-router-dom';
+import { LogIn, Mail, Lock, ShieldCheck, Sun, Moon } from 'lucide-react';
+import { useTheme } from '../../shared/theme/ThemeProvider';
 
-import { useTheme } from '../../shared/theme/ThemeProvider'
+const LoginPage: React.FC = () => {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const { login } = useAuth();
+  const { theme, toggleTheme } = useTheme();
+  const navigate = useNavigate();
 
-export default function LoginPage() {
-  const navigate = useNavigate()
-  const { theme, toggleTheme } = useTheme()
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
 
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [touched, setTouched] = useState<{ email: boolean; password: boolean }>({
-    email: false,
-    password: false,
-  })
-  const [isSubmitting, setIsSubmitting] = useState(false)
-
-  const errors = useMemo(() => {
-    const next: { email?: string; password?: string } = {}
-
-    if (!email.trim()) next.email = 'Username is required.'
-
-    if (!password) next.password = 'Password is required.'
-
-    return next
-  }, [email, password])
-
-  const canSubmit = !errors.email && !errors.password
-
-  async function onSubmit(e: FormEvent) {
-    e.preventDefault()
-    setTouched({ email: true, password: true })
-
-    if (!canSubmit) return
-
-    setIsSubmitting(true)
     try {
-      await new Promise((r) => setTimeout(r, 500))
-      navigate('/strategies')
+      await login(email, password);
+      navigate('/dashboard');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
-      setIsSubmitting(false)
+      setLoading(false);
     }
-  }
+  };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-50">
-      <div className="min-h-screen flex items-center justify-center px-4">
-        <div className="mx-auto w-fit items-center gap-6">
-          <section
-            className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-lg dark:border-white/10 dark:bg-slate-900"
-            aria-label="Login form"
-          >
-            <div className="h-1 bg-gradient-to-r from-cyan-400 to-violet-400" />
-            <div className="p-6">
-              <div className="mb-5 flex items-start justify-between gap-4">
-                <div>
-                  <h2 className="text-lg font-semibold">Sign in</h2>
-                  <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-                    Use your username and password to continue.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={toggleTheme}
-                  aria-label="Toggle theme"
-                  className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-transparent transition-colors hover:bg-slate-100 dark:border-white/10 dark:hover:bg-white/10"
-                >
-                  {theme === "dark" ? (
-                    <Sun className="h-5 w-5 text-slate-100" />
-                  ) : (
-                    <Moon className="h-5 w-5 text-slate-900" />
-                  )}
-                </button>
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center p-4 transition-colors">
+      <div className="max-w-md w-full relative">
+        {/* Theme Toggle */}
+        <button
+          onClick={toggleTheme}
+          className="absolute -top-12 right-0 p-3 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 shadow-lg text-slate-500 hover:text-cyan-500 transition-colors"
+        >
+          {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+        </button>
+
+        <div className="text-center mb-10">
+          <div className="inline-flex items-center justify-center p-3 bg-cyan-500 rounded-2xl shadow-lg shadow-cyan-500/30 mb-4">
+            <ShieldCheck className="w-8 h-8 text-white" />
+          </div>
+          <h1 className="text-3xl font-bold text-slate-900 dark:text-white mb-2 tracking-tight">Strategy Portal</h1>
+          <p className="text-slate-500 dark:text-slate-400 font-medium">Log in to manage your algorithmic trades</p>
+        </div>
+
+        <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl shadow-slate-200/50 dark:shadow-none p-8 border border-slate-100 dark:border-white/5 backdrop-blur-sm">
+          <form onSubmit={handleSubmit} className="space-y-6">
+            {error && (
+              <div className="p-4 bg-rose-50 dark:bg-rose-500/10 border border-rose-100 dark:border-rose-500/20 rounded-xl animate-shake">
+                <p className="text-sm text-rose-600 dark:text-rose-400 font-semibold">{error}</p>
               </div>
+            )}
 
-              <form className="flex flex-col gap-4" onSubmit={onSubmit} noValidate>
-                <div className="flex flex-col gap-2">
-                  <label className="text-sm font-semibold" htmlFor="email">
-                    Username
-                  </label>
-                  <input
-                    id="email"
-                    type="text"
-                    autoComplete="username"
-                    placeholder="Enter your username"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    onBlur={() => setTouched((t) => ({ ...t, email: true }))}
-                    aria-invalid={Boolean(touched.email && errors.email) || undefined}
-                    aria-describedby={touched.email && errors.email ? 'email-error' : undefined}
-                    className={[
-                      'w-full rounded-xl border px-3 py-2 text-sm outline-none transition-colors',
-                      'border-slate-200 bg-slate-50 text-slate-900 placeholder:text-slate-500',
-                      'hover:bg-slate-100 focus:ring-4 focus:ring-cyan-200',
-                      'dark:border-white/10 dark:bg-white/5 dark:text-slate-50 dark:placeholder:text-slate-400 dark:hover:bg-white/10 dark:focus:ring-cyan-400/20',
-                      touched.email && errors.email ? 'border-rose-400 focus:ring-rose-200 dark:border-rose-400 dark:focus:ring-rose-400/20' : '',
-                    ]
-                      .filter(Boolean)
-                      .join(' ')}
-                  />
-                  {touched.email && errors.email ? (
-                    <p id="email-error" className="text-sm text-rose-600 dark:text-rose-400" role="alert">
-                      {errors.email}
-                    </p>
-                  ) : null}
-                </div>
-
-                <div className="flex flex-col gap-2">
-                  <label className="text-sm font-semibold" htmlFor="password">
-                    Password
-                  </label>
-                  <input
-                    id="password"
-                    type="password"
-                    autoComplete="current-password"
-                    placeholder="••••••••"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    onBlur={() => setTouched((t) => ({ ...t, password: true }))}
-                    aria-invalid={Boolean(touched.password && errors.password) || undefined}
-                    aria-describedby={touched.password && errors.password ? 'password-error' : undefined}
-                    className={[
-                      'w-full rounded-xl border px-3 py-2 text-sm outline-none transition-colors',
-                      'border-slate-200 bg-slate-50 text-slate-900 placeholder:text-slate-500',
-                      'hover:bg-slate-100 focus:ring-4 focus:ring-cyan-200',
-                      'dark:border-white/10 dark:bg-white/5 dark:text-slate-50 dark:placeholder:text-slate-400 dark:hover:bg-white/10 dark:focus:ring-cyan-400/20',
-                      touched.password && errors.password
-                        ? 'border-rose-400 focus:ring-rose-200 dark:border-rose-400 dark:focus:ring-rose-400/20'
-                        : '',
-                    ]
-                      .filter(Boolean)
-                      .join(' ')}
-                  />
-                  {touched.password && errors.password ? (
-                    <p id="password-error" className="text-sm text-rose-600 dark:text-rose-400" role="alert">
-                      {errors.password}
-                    </p>
-                  ) : null}
-                </div>
-
-                <div className="mt-1 flex flex-col gap-3">
-                  <button
-                    type="submit"
-                    disabled={isSubmitting}
-                    aria-busy={isSubmitting || undefined}
-                    className="w-full rounded-xl bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 transition-colors hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-70"
-                  >
-                    {isSubmitting ? 'Signing in…' : 'Sign in'}
-                  </button>
-
-                  <div className="flex items-center justify-between gap-3 text-sm text-slate-600 dark:text-slate-300">
-                    <div></div>
-                    <button
-                      className="font-medium text-slate-900 underline underline-offset-4 dark:text-slate-50"
-                      type="button"
-                    >
-                      Request access
-                    </button>
-                  </div>
-                </div>
-              </form>
+            <div className="space-y-2">
+              <label className="block text-sm font-bold text-slate-700 dark:text-slate-200 ml-1">Email Address</label>
+              <div className="relative group">
+                <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-cyan-500 transition-colors" />
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="mithun@gmail.com"
+                  className="w-full pl-12 pr-4 py-3.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-white/10 rounded-2xl focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 outline-none transition-all dark:text-white dark:placeholder:text-slate-600"
+                  required
+                />
+              </div>
             </div>
-          </section>
+
+            <div className="space-y-2">
+              <label className="block text-sm font-bold text-slate-700 dark:text-slate-200 ml-1">Password</label>
+              <div className="relative group">
+                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-cyan-500 transition-colors" />
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  className="w-full pl-12 pr-4 py-3.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-white/10 rounded-2xl focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 outline-none transition-all dark:text-white dark:placeholder:text-slate-600"
+                  required
+                />
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full py-4 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 active:scale-[0.98] text-white font-black uppercase tracking-widest rounded-2xl shadow-xl shadow-cyan-500/25 transition-all flex items-center justify-center gap-3 disabled:opacity-70 disabled:grayscale"
+            >
+              {loading ? (
+                <div className="w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              ) : (
+                <>
+                  <span>Login</span>
+                  <LogIn className="w-5 h-5" />
+                </>
+              )}
+            </button>
+          </form>
+        </div>
+
+        <div className="mt-10 flex items-center justify-center gap-6">
+          <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest border border-slate-200 dark:border-white/5 px-4 py-2 rounded-full backdrop-blur-md">Secure Options Terminal v2.0</p>
         </div>
       </div>
     </div>
-  )
-}
+  );
+};
+
+export default LoginPage;

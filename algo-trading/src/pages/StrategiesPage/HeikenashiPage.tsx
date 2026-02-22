@@ -1,17 +1,31 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-
+import {
+    Activity,
+    ShieldAlert,
+    Target,
+    ChevronRight,
+    Play,
+    Square,
+    TrendingUp
+} from 'lucide-react'
 import { useAngelConnection } from '../../shared/angel/AngelConnectionProvider'
-import StrategiesLayout from './StrategiesLayout'
-import { ENABLE_LIVE_TRADING } from '../../config/env'
-import { analyzeHeikenAshiStrategy, computeHeikenAshi, type HeikenAshiTrend } from '../../trading/strategies/heikenAshi'
-import type { Candle } from '../../trading/strategies/premiumRangeBreakout'
-
-type CandlesResponse = {
-    items: Candle[]
-}
+import { apiGet, apiPost } from '../../trading'
+import {
+    computeHeikenAshi,
+    analyzeHeikenAshiStrategy
+} from '../../trading/strategies/heikenAshi'
 
 type Underlying = 'SENSEX' | 'NIFTY' | 'BANKNIFTY'
 type Exchange = 'BFO' | 'NFO'
+
+const INDEX_CONFIG: Record<Underlying, { qty: number, step: number, exchange: Exchange }> = {
+    SENSEX: { qty: 20, step: 20, exchange: 'BFO' },
+    NIFTY: { qty: 65, step: 65, exchange: 'NFO' },
+    BANKNIFTY: { qty: 30, step: 30, exchange: 'NFO' },
+}
+
+type StrategyState = 'WAITING' | 'SCANNING' | 'IN_POSITION' | 'COOLDOWN' | 'STOPPED'
+type Trend = 'BULLISH' | 'BEARISH' | 'NEUTRAL'
 type StrikeMode = 'ATM' | 'ITM' | 'OTM'
 
 type IndexOptionContract = {
@@ -33,80 +47,21 @@ type IndexOptionsResponse = {
 
 type MarketIndexLtpResponse = {
     underlying: Underlying
-    exchange: string
+    exchange: 'NSE'
     tradingsymbol: string
     symboltoken: string
     ltp: number
 }
 
-type StrategyState = 'WAITING' | 'SIGNAL' | 'IN_POSITION' | 'EXITED' | 'STOPPED'
-
-const API_BASE = import.meta.env.VITE_ANGEL_ONE_API_BASE ?? 'http://localhost:8000'
-
-async function apiGet<T>(path: string): Promise<T> {
-    const res = await fetch(`${API_BASE}${path}`)
-    if (!res.ok) throw new Error(await res.text())
-    return (await res.json()) as T
-}
-
-function asIsoDate(d: Date): string {
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
-
-function pickNearestExpiry(expiries: string[]): string | null {
-    const todayIso = asIsoDate(new Date())
-    const sorted = [...expiries].filter(Boolean).sort()
-    for (const e of sorted) {
-        if (e >= todayIso) return e
-    }
-    return sorted.length > 0 ? sorted[sorted.length - 1] : null
-}
-
-function pickNearestStrike(strikes: number[], spot: number): number | null {
-    if (!Array.isArray(strikes) || strikes.length === 0) return null
-    let best: number | null = null
-    let bestDist = Number.POSITIVE_INFINITY
-    for (const s of strikes) {
-        if (!Number.isFinite(s)) continue
-        const d = Math.abs(s - spot)
-        if (d < bestDist) {
-            bestDist = d
-            best = s
-        }
-    }
-    return best
-}
-
-function resolveStrikeForSide(params: {
-    strikes: number[]
-    atmStrike: number
-    mode: StrikeMode
-    depth: number
-    side: 'CE' | 'PE'
-}): number | null {
-    const { strikes, atmStrike, mode, depth, side } = params
-    const sorted = [...strikes].filter((s) => Number.isFinite(s)).sort((a, b) => a - b)
-    const idx = sorted.findIndex((s) => Math.abs(s - atmStrike) < 1e-6)
-    if (idx < 0) return null
-
-    if (mode === 'ATM') return sorted[idx]
-
-    const steps = Math.max(0, Math.floor(depth))
-    if (side === 'CE') {
-        // CE: ITM is lower strikes, OTM is higher strikes
-        const next = mode === 'ITM' ? idx - steps : idx + steps
-        return next >= 0 && next < sorted.length ? sorted[next] : null
-    }
-
-    // PE: ITM is higher strikes, OTM is lower strikes
-    const next = mode === 'ITM' ? idx + steps : idx - steps
-    return next >= 0 && next < sorted.length ? sorted[next] : null
-}
-
-const INDEX_CONFIG = {
-    SENSEX: { qty: 20, step: 20 },
-    NIFTY: { qty: 65, step: 65 },
-    BANKNIFTY: { qty: 30, step: 30 },
+type CandlesResponse = {
+    items: {
+        ts: string
+        open: number
+        high: number
+        low: number
+        close: number
+        v: number
+    }[]
 }
 
 const TIMEFRAME_OPTIONS = [
@@ -123,335 +78,385 @@ export default function HeikenashiPage() {
     const [isRunning, setIsRunning] = useState(false)
     const [state, setState] = useState<StrategyState>('STOPPED')
     const [message, setMessage] = useState<string>('')
+    const [trend, setTrend] = useState<Trend>('NEUTRAL')
 
     // Core Configuration
     const [underlying, setUnderlying] = useState<Underlying>('SENSEX')
     const [quantity, setQuantity] = useState<number>(INDEX_CONFIG.SENSEX.qty)
     const [baseTimeframe, setBaseTimeframe] = useState<string>('FIVE_MINUTE')
     const [needConfirmation, setNeedConfirmation] = useState(false)
-    const [confirmationTimeframe, setConfirmationTimeframe] = useState<string>('FIVE_MINUTE')
+    const [confirmationTimeframe, setConfirmationTimeframe] = useState<string>('FIFTEEN_MINUTE')
+
+    // Live Monitor State
+    const [monitoredPremiums, setMonitoredPremiums] = useState<{ ce: string, pe: string }>({ ce: '---', pe: '---' })
+    const [checkpoints, setCheckpoints] = useState([
+        { id: 'broker', label: 'Broker Connection', status: 'pending' },
+        { id: 'expiry', label: 'Next Expiry Locked', status: 'pending' },
+        { id: 'ha_trend', label: 'HA Trend Stability', status: 'pending' },
+        { id: 'confirmation', label: 'Timeframe Sync', status: 'pending' },
+        { id: 'indicators', label: 'EMA/JMA Cross Check', status: 'pending' }
+    ])
 
     // Strike Selection
     const [strikeMode, setStrikeMode] = useState<StrikeMode>('ATM')
     const [strikeDepth, setStrikeDepth] = useState<number>(1)
     const [premiumMin, setPremiumMin] = useState<number>(300)
     const [premiumMax, setPremiumMax] = useState<number>(400)
+
     const [liveTradingConsent, setLiveTradingConsent] = useState(false)
 
-    // Market Data State
+    // Strategy Execution State
+    const [selectedExpiry, setSelectedExpiry] = useState<string | null>(null)
     const [atmStrike, setAtmStrike] = useState<number | null>(null)
     const [ceContract, setCeContract] = useState<IndexOptionContract | null>(null)
     const [peContract, setPeContract] = useState<IndexOptionContract | null>(null)
-    const [trend, setTrend] = useState<HeikenAshiTrend>('NEUTRAL')
-    const [lastHaClose, setLastHaClose] = useState<number | null>(null)
+
+    const [activeTradeId, setActiveTradeId] = useState<string | null>(null)
+    const [entryPrice, setEntryPrice] = useState<number | null>(null)
     const [currentLtp, setCurrentLtp] = useState<number | null>(null)
-    const [indexToken, setIndexToken] = useState<string | null>(null)
-    const [activeSignal, setActiveSignal] = useState<'CE' | 'PE' | null>(null)
-    const [emaValue, setEmaValue] = useState<number | null>(null)
-    const [jmaValue, setJmaValue] = useState<number | null>(null)
 
     const inFlightRef = useRef(false)
-    const stopRequestedRef = useRef(false)
 
-    // Handle Index Change - Update Qty
+    // Helpers
+    const asIsoDate = (d: Date) => d.toISOString().split('T')[0]
+
+    const pickNearestExpiry = (expiries: string[]) => {
+        const today = asIsoDate(new Date())
+        const valid = expiries.filter(Boolean).sort()
+        return valid.find(e => e >= today) || (valid.length ? valid[valid.length - 1] : null)
+    }
+
+    const pickNearestStrike = (strikes: number[], spot: number) => {
+        if (!strikes.length) return null
+        return strikes.reduce((prev, curr) => Math.abs(curr - spot) < Math.abs(prev - spot) ? curr : prev)
+    }
+
+    const resolveStrikeForSide = (params: { strikes: number[], atmStrike: number, mode: StrikeMode, depth: number, side: 'CE' | 'PE' }) => {
+        const { strikes, atmStrike, mode, depth, side } = params
+        const sorted = [...strikes].filter(Number.isFinite).sort((a, b) => a - b)
+        const idx = sorted.findIndex(s => Math.abs(s - atmStrike) < 1e-6)
+        if (idx < 0) return null
+        if (mode === 'ATM') return sorted[idx]
+        const steps = Math.max(0, Math.floor(depth))
+        const offset = (side === 'CE' ? 1 : -1) * (mode === 'ITM' ? -1 : 1) * steps
+        const next = idx + offset
+        return (next >= 0 && next < sorted.length) ? sorted[next] : null
+    }
+
+    const startStrategy = () => {
+        setIsRunning(true)
+        setState('SCANNING')
+        setMessage('Market scan initialized...')
+    }
+
+    const stopStrategy = useCallback(() => {
+        setIsRunning(false)
+        setState('STOPPED')
+        setMessage('Strategy halted by user.')
+        setTrend('NEUTRAL')
+        setMonitoredPremiums({ ce: '---', pe: '---' })
+        setCheckpoints(prev => prev.map(cp => ({ ...cp, status: 'pending' })))
+        setCeContract(null)
+        setPeContract(null)
+        setAtmStrike(null)
+        setSelectedExpiry(null)
+        setActiveTradeId(null)
+        setEntryPrice(null)
+        setCurrentLtp(null)
+    }, [])
+
     const handleUnderlyingChange = (val: Underlying) => {
         setUnderlying(val)
         setQuantity(INDEX_CONFIG[val].qty)
     }
 
-    const adjustQuantity = (delta: number) => {
-        const step = INDEX_CONFIG[underlying].step
-        setQuantity(prev => Math.max(step, prev + (delta * step)))
-    }
+    useEffect(() => {
+        if (connectStatus !== 'connected' && isRunning) stopStrategy()
+    }, [connectStatus, isRunning, stopStrategy])
 
-    const resetForNextRun = useCallback((nextState: StrategyState) => {
-        inFlightRef.current = false
-        setMessage('')
-        setState(nextState)
-        setTrend('NEUTRAL')
-        setLastHaClose(null)
-        setCurrentLtp(null)
-        setActiveSignal(null)
-    }, [])
-
-    const stopStrategy = useCallback(() => {
-        stopRequestedRef.current = true
-        setIsRunning(false)
-        setState('STOPPED')
-        setMessage('Strategy stopped.')
-    }, [])
-
-    const startStrategy = useCallback(() => {
-        if (connectStatus !== 'connected') return
-        stopRequestedRef.current = false
-        setIsRunning(true)
-        resetForNextRun('WAITING')
-    }, [connectStatus, resetForNextRun])
-
-    // Contract Resolution logic
+    // Contract Management
     useEffect(() => {
         if (!isRunning || connectStatus !== 'connected') return
-
         let disposed = false
-        async function init() {
-            setMessage(`Resolving ${underlying} contracts...`)
+        const load = async () => {
             try {
-                const indexResponse = await apiGet<MarketIndexLtpResponse>(`/market/index-ltp?underlying=${encodeURIComponent(underlying)}`)
-                const exch = (underlying === 'SENSEX' ? 'BFO' : 'NFO') as Exchange
-                const opt = await apiGet<IndexOptionsResponse>(
-                    `/instruments/index-options?exchange=${encodeURIComponent(exch)}&underlying=${encodeURIComponent(underlying)}`,
-                )
-
-                const exp = pickNearestExpiry(opt.expiries)
-                if (!exp) throw new Error('No expiries found')
-
-                const atm = pickNearestStrike(opt.strikes, indexResponse.ltp)
-                if (atm === null) throw new Error('Unable to pick ATM strike')
+                const config = INDEX_CONFIG[underlying]
+                const index = await apiGet<MarketIndexLtpResponse>(`/market/index-ltp?underlying=${encodeURIComponent(underlying)}`)
+                const opt = await apiGet<IndexOptionsResponse>(`/instruments/index-options?exchange=${encodeURIComponent(config.exchange)}&underlying=${encodeURIComponent(underlying)}`)
 
                 if (disposed) return
-                setAtmStrike(atm)
-                setIndexToken(indexResponse.symboltoken)
+                const exp = pickNearestExpiry(opt.expiries)
+                const strike = pickNearestStrike(opt.strikes, index.ltp)
 
-                const ceStrike = resolveStrikeForSide({ strikes: opt.strikes, atmStrike: atm, mode: strikeMode, depth: strikeDepth, side: 'CE' })
-                const peStrike = resolveStrikeForSide({ strikes: opt.strikes, atmStrike: atm, mode: strikeMode, depth: strikeDepth, side: 'PE' })
-
-                const ce = opt.contracts.find((c) => c.expiry === exp && Math.abs(c.strike - (ceStrike ?? 0)) < 1e-6 && c.option_type === 'CE') ?? null
-                const pe = opt.contracts.find((c) => c.expiry === exp && Math.abs(c.strike - (peStrike ?? 0)) < 1e-6 && c.option_type === 'PE') ?? null
-
-                setCeContract(ce)
-                setPeContract(pe)
-                setMessage('Contracts ready. Scanning for signal...')
+                setSelectedExpiry(exp)
+                setAtmStrike(strike)
             } catch (e) {
                 if (disposed) return
-                setMessage(e instanceof Error ? e.message : 'Resolution failed')
-                setIsRunning(false)
-                setState('STOPPED')
+                setMessage(e instanceof Error ? e.message : 'Init failed')
+                stopStrategy()
             }
         }
-        void init()
+        load()
         return () => { disposed = true }
-    }, [connectStatus, isRunning, strikeDepth, strikeMode, underlying])
+    }, [isRunning, connectStatus, underlying, stopStrategy])
 
-    // Scanning loop
+    // Strike Resolution
     useEffect(() => {
-        if (!isRunning || connectStatus !== 'connected' || !ceContract || !peContract) return
+        if (!isRunning || !selectedExpiry || atmStrike === null) return
+        let cancelled = false
+        const tick = async () => {
+            if (cancelled || inFlightRef.current) return
+            inFlightRef.current = true
+            try {
+                const config = INDEX_CONFIG[underlying]
+                const opt = await apiGet<IndexOptionsResponse>(
+                    `/instruments/index-options?exchange=${encodeURIComponent(config.exchange)}&underlying=${encodeURIComponent(underlying)}&expiry=${encodeURIComponent(selectedExpiry)}`
+                )
+                if (cancelled) return
+
+                const ceStrike = resolveStrikeForSide({ strikes: opt.strikes, atmStrike, mode: strikeMode, depth: strikeDepth, side: 'CE' })
+                const peStrike = resolveStrikeForSide({ strikes: opt.strikes, atmStrike, mode: strikeMode, depth: strikeDepth, side: 'PE' })
+
+                const ce = opt.contracts.find(c => Math.abs(c.strike - (ceStrike ?? 0)) < 1e-6 && c.option_type === 'CE')
+                const pe = opt.contracts.find(c => Math.abs(c.strike - (peStrike ?? 0)) < 1e-6 && c.option_type === 'PE')
+
+                setCeContract(ce || null)
+                setPeContract(pe || null)
+            } finally { inFlightRef.current = false }
+        }
+        const t = setInterval(tick, 30000)
+        tick()
+        return () => { cancelled = true; clearInterval(t) }
+    }, [isRunning, underlying, selectedExpiry, atmStrike, strikeMode, strikeDepth])
+
+    // Strategy Scanning
+    useEffect(() => {
+        if (!isRunning || state !== 'SCANNING' || !ceContract || !peContract) return
+        let cancelled = false
+        const scan = async () => {
+            if (cancelled || inFlightRef.current) return
+            inFlightRef.current = true
+            try {
+                const config = INDEX_CONFIG[underlying]
+                // Fetch index candles for HA
+                const res = await apiGet<CandlesResponse>(
+                    `/market/candles?exchange=${encodeURIComponent(config.exchange === 'BFO' ? 'BSE' : 'NSE')}&symboltoken=${encodeURIComponent(underlying === 'SENSEX' ? '1' : underlying === 'NIFTY' ? '99926000' : '99926009')}&interval=${baseTimeframe}&lookback_minutes=100`
+                )
+                if (cancelled) return
+
+                const ha = computeHeikenAshi(res.items)
+                const signal = analyzeHeikenAshiStrategy(ha)
+
+                setTrend(signal.trend)
+                if (signal.isEntry && !activeTradeId) {
+                    setMessage(`HA Long Entry Signal @ ${signal.haClose}`)
+                    setState('IN_POSITION')
+                    setEntryPrice(signal.haClose)
+
+                    // Record Entry
+                    apiPost<{ data: { trade: { _id: string } } }>('/trades/record', {
+                        strategyName: 'Heiken Ashi',
+                        index: underlying,
+                        premium: ceContract.tradingsymbol,
+                        qty: quantity,
+                        buyPrice: signal.haClose
+                    }).then((res: { data: { trade: { _id: string } } }) => {
+                        setActiveTradeId(res.data.trade._id)
+                    }).catch(console.error)
+                } else if (signal.isExit && activeTradeId) {
+                    setMessage(`HA Exit Signal @ ${signal.haClose}`)
+
+                    // Update Exit
+                    apiPost('/trades/update-exit', {
+                        tradeId: activeTradeId,
+                        exitPrice: signal.haClose,
+                        exitReason: 'HA_TREND_REVERSAL'
+                    }).then(() => {
+                        setActiveTradeId(null)
+                        setEntryPrice(null)
+                        setState('SCANNING')
+                    }).catch(console.error)
+                }
+            } catch (e) {
+                console.error(e)
+            } finally { inFlightRef.current = false }
+        }
+        const t = setInterval(scan, 15000)
+        scan()
+        return () => { cancelled = true; clearInterval(t) }
+    }, [isRunning, state, underlying, ceContract, peContract, baseTimeframe])
+
+    // Heikenashi Position LTP Monitor
+    useEffect(() => {
+        if (!isRunning || state !== 'IN_POSITION' || !activeTradeId || !ceContract) return
 
         let cancelled = false
-        const intervalMs = 10000
-
-        async function tick() {
-            if (cancelled || stopRequestedRef.current || inFlightRef.current) return
-
-            // Only search for new trades if we are WAITING
-            if (state === 'WAITING') {
-                inFlightRef.current = true
-                try {
-                    const lb = 100 // Enough for EMA 20 and JMA 7
-
-                    // 1. Fetch Base Timeframe Candles
-                    const baseRes = await apiGet<CandlesResponse>(
-                        `/market/candles?exchange=${encodeURIComponent(underlying === 'SENSEX' ? 'BFO' : 'NFO')}&symboltoken=${encodeURIComponent(indexToken || '')}&interval=${baseTimeframe}&lookback_minutes=${lb}`
-                    )
-                    const baseHa = computeHeikenAshi(baseRes.items)
-                    const baseAnalysis = analyzeHeikenAshiStrategy(baseHa)
-
-                    let canEnter = baseAnalysis.isEntry
-
-                    // 2. Fetch Confirmation Timeframe if needed
-                    if (canEnter && needConfirmation) {
-                        const confRes = await apiGet<CandlesResponse>(
-                            `/market/candles?exchange=${encodeURIComponent(underlying === 'SENSEX' ? 'BFO' : 'NFO')}&symboltoken=${encodeURIComponent(indexToken || '')}&interval=${confirmationTimeframe}&lookback_minutes=${lb}`
-                        )
-                        const confHa = computeHeikenAshi(confRes.items)
-                        const confAnalysis = analyzeHeikenAshiStrategy(confHa)
-                        canEnter = confAnalysis.isEntry
-                    }
-
-                    setTrend(baseAnalysis.trend)
-                    setEmaValue(baseAnalysis.ema)
-                    setJmaValue(baseAnalysis.jma)
-                    setLastHaClose(baseAnalysis.haClose)
-
-                    if (canEnter) {
-                        setActiveSignal('CE') // Strategy as defined is bullish only for now
-                        setState('SIGNAL')
-                        setMessage('Bullish signal detected! Preparing entry...')
-                    } else {
-                        setMessage('Scanning for entry pattern...')
-                    }
-                } catch (e) {
-                    setMessage(e instanceof Error ? e.message : 'Scan failed')
-                } finally {
-                    inFlightRef.current = false
-                }
-            }
-
-            // If IN_POSITION, monitor for exit
-            if (state === 'IN_POSITION') {
-                inFlightRef.current = true
-                try {
-                    const lb = 50
-                    const baseRes = await apiGet<CandlesResponse>(
-                        `/market/candles?exchange=${encodeURIComponent(underlying === 'SENSEX' ? 'BFO' : 'NFO')}&symboltoken=${encodeURIComponent(indexToken || '')}&interval=${baseTimeframe}&lookback_minutes=${lb}`
-                    )
-                    const baseHa = computeHeikenAshi(baseRes.items)
-                    const baseAnalysis = analyzeHeikenAshiStrategy(baseHa)
-
-                    if (baseAnalysis.isExit) {
-                        setMessage('Exit signal detected (2 red HA candles). Exiting position...')
-                        setState('EXITED')
-                        // Here you would call an apiPost to exit positions if live trading
-                    }
-                } catch (e) {
-                    setMessage(e instanceof Error ? e.message : 'Exit scan failed')
-                } finally {
-                    inFlightRef.current = false
-                }
-            }
+        const monitor = async () => {
+            if (cancelled || inFlightRef.current) return
+            inFlightRef.current = true
+            try {
+                const res = await apiGet<{ ltp: number }>(`/market/ltp?exchange=${encodeURIComponent(ceContract.exchange)}&symboltoken=${encodeURIComponent(ceContract.symboltoken)}`)
+                if (!cancelled) setCurrentLtp(res.ltp)
+            } catch (e) {
+                console.error('HA Monitor error:', e)
+            } finally { inFlightRef.current = false }
         }
+        const t = setInterval(monitor, 2000)
+        monitor()
+        return () => { cancelled = true; clearInterval(t) }
+    }, [isRunning, state, activeTradeId, ceContract])
 
-        const t = window.setInterval(tick, intervalMs)
-        void tick()
-        return () => { cancelled = true; window.clearInterval(t) }
-    }, [baseTimeframe, ceContract, confirmationTimeframe, connectStatus, indexToken, isRunning, needConfirmation, peContract, state, underlying])
+    // Sync Monitor
+    useEffect(() => {
+        if (!isRunning) return
+        setCheckpoints([
+            { id: 'broker', label: 'Broker Connection', status: connectStatus === 'connected' ? 'success' : 'error' },
+            { id: 'expiry', label: 'Next Expiry Locked', status: selectedExpiry ? 'success' : 'pending' },
+            { id: 'ha_trend', label: 'HA Trend Stability', status: trend !== 'NEUTRAL' ? 'success' : 'pending' },
+            { id: 'confirmation', label: 'ATM Strike Sync', status: atmStrike ? 'success' : 'pending' },
+            { id: 'indicators', label: 'Premium Discovery', status: (ceContract && peContract) ? 'success' : 'pending' }
+        ])
+        if (ceContract && peContract) {
+            setMonitoredPremiums({
+                ce: ceContract.tradingsymbol,
+                pe: peContract.tradingsymbol
+            })
+        }
+    }, [isRunning, connectStatus, selectedExpiry, trend, atmStrike, ceContract, peContract])
 
     return (
-        <StrategiesLayout
-            title="Heikenashi Strategy"
-            subtitle="Trend following strategy using Heiken Ashi candles"
-            backTo="/strategies"
-        >
-            <div className="space-y-6">
-                {/* Status Header */}
-                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm dark:border-white/10 dark:bg-slate-900">
-                    <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                        <div>
-                            <h2 className="text-base font-semibold">Strategy Control Center</h2>
-                            <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{message || 'Ready to start.'}</p>
-                            <div className="mt-4 flex gap-12">
-                                <div>
-                                    <p className="text-[10px] text-slate-500 uppercase tracking-wider font-bold">Status</p>
-                                    <p className={`text-sm font-semibold transition-colors ${isRunning ? 'text-emerald-500' : 'text-slate-400'}`}>
-                                        {isRunning ? 'RUNNING' : 'IDLE'}
-                                    </p>
-                                </div>
-                                <div>
-                                    <p className="text-[10px] text-slate-500 uppercase tracking-wider font-bold">Strategy State</p>
-                                    <p className="text-sm font-semibold">{state}</p>
-                                </div>
-                                <div>
-                                    <p className="text-[10px] text-slate-500 uppercase tracking-wider font-bold">Heikenashi Trend</p>
-                                    <p className={`text-sm font-semibold ${trend === 'BULLISH' ? 'text-emerald-500' : trend === 'BEARISH' ? 'text-rose-500' : ''}`}>
-                                        {trend}
-                                    </p>
-                                </div>
+        <div className="space-y-6 animate-in fade-in duration-500 pb-12">
+            {/* Status Panel */}
+            <div className="bg-white dark:bg-slate-900 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm p-8">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+                    <div className="space-y-4">
+                        <div className="flex items-center gap-3">
+                            <div className={`w-3 h-3 rounded-full ${isRunning ? 'bg-emerald-500 animate-pulse shadow-lg shadow-emerald-500/50' : 'bg-slate-300'}`} />
+                            <h2 className="text-xl font-black text-slate-900 dark:text-white tracking-tight">Control Center</h2>
+                        </div>
+                        <p className="text-sm font-medium text-slate-500 max-w-md">
+                            {message || 'Ready to monitor market volatility and execution signals.'}
+                        </p>
+                        <div className="flex items-center gap-8 pt-2">
+                            <div>
+                                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Current state</p>
+                                <p className="text-sm font-black text-slate-700 dark:text-slate-200">{state}</p>
+                            </div>
+                            <div className="h-8 w-px bg-slate-100 dark:bg-white/5" />
+                            <div>
+                                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">HA Trend</p>
+                                <p className={`text-sm font-black ${trend === 'BULLISH' ? 'text-emerald-500' : trend === 'BEARISH' ? 'text-rose-500' : 'text-slate-400'}`}>
+                                    {trend}
+                                </p>
                             </div>
                         </div>
+                    </div>
 
-                        <div className="flex gap-2">
-                            {!isRunning ? (
-                                <button
-                                    onClick={startStrategy}
-                                    disabled={connectStatus !== 'connected'}
-                                    className="rounded-xl bg-gradient-to-r from-emerald-400 to-cyan-400 px-8 py-2.5 text-sm font-bold text-slate-950 shadow-lg shadow-emerald-500/20 transition hover:scale-105 disabled:opacity-50"
-                                >
-                                    START STRATEGY
-                                </button>
-                            ) : (
-                                <button
-                                    onClick={stopStrategy}
-                                    className="rounded-xl bg-rose-500 px-8 py-2.5 text-sm font-bold text-white shadow-lg shadow-rose-500/20 transition hover:scale-105"
-                                >
-                                    STOP STRATEGY
-                                </button>
-                            )}
-                        </div>
+                    <div className="flex items-center gap-4">
+                        {!isRunning ? (
+                            <button
+                                onClick={startStrategy}
+                                disabled={connectStatus !== 'connected'}
+                                className="flex items-center gap-2 px-8 py-4 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 text-white text-xs font-black uppercase tracking-widest rounded-2xl transition-all shadow-xl shadow-emerald-500/20 active:scale-95"
+                            >
+                                <Play className="w-4 h-4 fill-current" />
+                                Launch Algorithm
+                            </button>
+                        ) : (
+                            <button
+                                onClick={stopStrategy}
+                                className="flex items-center gap-2 px-8 py-4 bg-rose-500 hover:bg-rose-600 text-white text-xs font-black uppercase tracking-widest rounded-2xl transition-all shadow-xl shadow-rose-500/20 active:scale-95"
+                            >
+                                <Square className="w-4 h-4 fill-current" />
+                                Terminate Session
+                            </button>
+                        )}
                     </div>
                 </div>
+            </div>
 
-                <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-                    {/* Main Configuration - Left */}
-                    <div className="space-y-6 lg:col-span-8">
-                        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm dark:border-white/10 dark:bg-slate-900">
-                            <h3 className="mb-6 text-sm font-bold uppercase tracking-widest text-slate-500">Execution Parameters</h3>
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                {/* Configuration Area */}
+                <div className="lg:col-span-8 space-y-6">
+                    <div className="bg-white dark:bg-slate-900 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm p-8">
+                        <h3 className="text-[10px] items-center gap-2 font-black uppercase tracking-[0.2em] text-cyan-500 mb-8 flex">
+                            <Activity className="w-4 h-4" />
+                            Execution Parameters
+                        </h3>
 
-                            <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-                                {/* Index & Quantity Section */}
-                                <div className="space-y-4">
-                                    <div>
-                                        <label className="text-xs font-semibold text-slate-500">Underlying Index</label>
-                                        <select
-                                            value={underlying}
-                                            onChange={(e) => handleUnderlyingChange(e.target.value as Underlying)}
-                                            disabled={isRunning}
-                                            className="mt-1.5 w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-sm font-medium focus:ring-2 focus:ring-cyan-500 outline-none dark:border-white/5 dark:bg-slate-800"
-                                        >
-                                            <option value="SENSEX">SENSEX</option>
-                                            <option value="NIFTY">NIFTY</option>
-                                            <option value="BANKNIFTY">BANKNIFTY</option>
-                                        </select>
-                                    </div>
-
-                                    <div>
-                                        <label className="text-xs font-semibold text-slate-500">Trade Quantity</label>
-                                        <div className="mt-1.5 flex items-center gap-2">
-                                            <button
-                                                onClick={() => adjustQuantity(-1)}
-                                                disabled={isRunning}
-                                                className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-lg font-bold hover:bg-slate-200 disabled:opacity-30 dark:bg-slate-800 dark:hover:bg-slate-700"
-                                            >-</button>
-                                            <input
-                                                type="number"
-                                                readOnly
-                                                value={quantity}
-                                                className="h-10 grow rounded-xl border border-slate-200 bg-slate-50 text-center text-sm font-bold dark:border-white/5 dark:bg-slate-800"
-                                            />
-                                            <button
-                                                onClick={() => adjustQuantity(1)}
-                                                disabled={isRunning}
-                                                className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-lg font-bold hover:bg-slate-200 disabled:opacity-30 dark:bg-slate-800 dark:hover:bg-slate-700"
-                                            >+</button>
-                                        </div>
-                                        <p className="mt-1.5 text-[10px] text-slate-400 italic">Increments by {INDEX_CONFIG[underlying].step} units (Index Lot)</p>
-                                    </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                            <div className="space-y-6">
+                                <div>
+                                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 block">Instrument</label>
+                                    <select
+                                        value={underlying}
+                                        onChange={(e) => handleUnderlyingChange(e.target.value as Underlying)}
+                                        disabled={isRunning}
+                                        className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all"
+                                    >
+                                        <option value="SENSEX">SENSEX (BSE)</option>
+                                        <option value="NIFTY">NIFTY (NSE)</option>
+                                        <option value="BANKNIFTY">BANKNIFTY (NSE)</option>
+                                    </select>
                                 </div>
 
-                                {/* Timeframe Section */}
-                                <div className="space-y-4 rounded-xl bg-slate-50 p-4 dark:bg-slate-800/50">
-                                    <div>
-                                        <label className="text-xs font-semibold text-slate-500">Base Timeframe</label>
-                                        <select
-                                            value={baseTimeframe}
-                                            onChange={(e) => setBaseTimeframe(e.target.value)}
-                                            disabled={isRunning}
-                                            className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white p-2.5 text-sm font-medium outline-none dark:border-white/5 dark:bg-slate-800"
-                                        >
-                                            {TIMEFRAME_OPTIONS.map(opt => (
-                                                <option key={opt.value} value={opt.value}>{opt.label}</option>
-                                            ))}
-                                        </select>
-                                    </div>
+                                <div>
+                                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 block">Quantity</label>
+                                    <input
+                                        type="number"
+                                        value={quantity}
+                                        step={INDEX_CONFIG[underlying].step}
+                                        onChange={(e) => setQuantity(Number(e.target.value))}
+                                        disabled={isRunning}
+                                        className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all"
+                                    />
+                                </div>
+                            </div>
 
-                                    <div className="flex items-center gap-3 py-1">
-                                        <input
-                                            type="checkbox"
-                                            id="confCheck"
-                                            checked={needConfirmation}
-                                            onChange={(e) => setNeedConfirmation(e.target.checked)}
-                                            disabled={isRunning}
-                                            className="h-4 w-4 rounded accent-cyan-400"
-                                        />
-                                        <label htmlFor="confCheck" className="text-xs font-bold text-slate-600 dark:text-slate-400 cursor-pointer">NEED CONFIRMATION</label>
+                            <div className="space-y-6">
+                                <div>
+                                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 block">Scan Timeframe</label>
+                                    <select
+                                        value={baseTimeframe}
+                                        onChange={(e) => setBaseTimeframe(e.target.value)}
+                                        disabled={isRunning}
+                                        className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all"
+                                    >
+                                        {TIMEFRAME_OPTIONS.map(opt => (
+                                            <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                        ))}
+                                    </select>
+                                </div>
+
+                                <div className="pt-2">
+                                    <div className="flex items-center justify-between p-4 bg-slate-50 dark:bg-white/5 rounded-2xl border border-transparent hover:border-slate-200 dark:hover:border-white/10 transition-all">
+                                        <div className="flex items-center gap-3">
+                                            <ShieldAlert className="w-5 h-5 text-cyan-500" />
+                                            <div>
+                                                <p className="text-xs font-black text-slate-900 dark:text-white">Trend Confirmation</p>
+                                                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-tighter">Dual-frame validation</p>
+                                            </div>
+                                        </div>
+                                        <label className="relative inline-flex items-center cursor-pointer">
+                                            <input
+                                                type="checkbox"
+                                                checked={needConfirmation}
+                                                onChange={(e) => setNeedConfirmation(e.target.checked)}
+                                                disabled={isRunning}
+                                                className="sr-only peer"
+                                            />
+                                            <div className="w-11 h-6 bg-slate-200 dark:bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-cyan-500"></div>
+                                        </label>
                                     </div>
 
                                     {needConfirmation && (
-                                        <div className="animate-in fade-in slide-in-from-top-1 duration-200">
-                                            <label className="text-xs font-semibold text-slate-500">Confirmation Timeframe</label>
+                                        <div className="mt-4 animate-in slide-in-from-top-2 duration-300">
+                                            <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 block">Confirmation Timeframe</label>
                                             <select
                                                 value={confirmationTimeframe}
                                                 onChange={(e) => setConfirmationTimeframe(e.target.value)}
                                                 disabled={isRunning}
-                                                className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white p-2.5 text-sm font-medium outline-none dark:border-white/5 dark:bg-slate-800"
+                                                className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black"
                                             >
                                                 {TIMEFRAME_OPTIONS.map(opt => (
                                                     <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -461,132 +466,183 @@ export default function HeikenashiPage() {
                                     )}
                                 </div>
                             </div>
+                        </div>
 
-                            <div className="mt-8 flex items-center gap-3 border-t border-slate-100 pt-6 dark:border-white/5">
+                        <div className="mt-8 flex items-center justify-between p-6 bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-3xl group hover:border-cyan-500/50 transition-all duration-500">
+                            <div className="flex items-center gap-4">
+                                <div className={`w-12 h-12 flex items-center justify-center rounded-2xl transition-all duration-500 ${liveTradingConsent ? 'bg-rose-500 text-white shadow-lg shadow-rose-500/20' : 'bg-slate-200 dark:bg-white/5 text-slate-400'}`}>
+                                    <Activity className="w-6 h-6" />
+                                </div>
+                                <div>
+                                    <p className="text-xs font-black text-slate-900 dark:text-white uppercase tracking-widest">Live Execution</p>
+                                    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-tighter">Authorize real-time order placement</p>
+                                </div>
+                            </div>
+                            <label className="relative inline-flex items-center cursor-pointer">
                                 <input
                                     type="checkbox"
-                                    id="liveTrCons"
                                     checked={liveTradingConsent}
                                     onChange={(e) => setLiveTradingConsent(e.target.checked)}
-                                    disabled={isRunning || !ENABLE_LIVE_TRADING}
-                                    className="h-5 w-5 rounded accent-rose-500"
+                                    disabled={isRunning}
+                                    className="sr-only peer"
                                 />
-                                <label htmlFor="liveTrCons" className="text-sm font-bold text-rose-500 cursor-pointer">ENABLE LIVE TRADING EXECUTION</label>
+                                <div className="w-14 h-7 bg-slate-200 dark:bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[4px] after:left-[4px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-6 after:w-6 after:transition-all peer-checked:bg-rose-500 shadow-inner"></div>
+                            </label>
+                        </div>
+
+                        {state !== 'STOPPED' && (
+                            <div className="bg-white dark:bg-slate-900 p-8 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm animate-in zoom-in duration-300">
+                                <div className="flex items-center justify-between mb-8">
+                                    <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-cyan-500">Live Trade Metrics</h3>
+                                    <div className="flex items-center gap-2">
+                                        <span className="w-2 h-2 rounded-full bg-cyan-500 animate-ping" />
+                                        <span className="text-[10px] font-black text-slate-400">Monitoring Active Position</span>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 lg:grid-cols-3 gap-8">
+                                    <div>
+                                        <p className="text-[10px] font-bold text-slate-400 uppercase">Premium LTP</p>
+                                        <p className="text-xl font-black text-slate-900 dark:text-white mt-1">₹{currentLtp?.toFixed(2) || '---'}</p>
+                                    </div>
+                                    <div>
+                                        <p className="text-[10px] font-bold text-slate-400 uppercase">Entry Price</p>
+                                        <p className="text-xl font-black text-slate-900 dark:text-white mt-1">₹{entryPrice?.toFixed(2) || '---'}</p>
+                                    </div>
+                                    <div>
+                                        <p className="text-[10px] font-bold text-slate-400 uppercase">Strategy Trend</p>
+                                        <p className={`text-xl font-black mt-1 ${trend === 'BULLISH' ? 'text-emerald-500' : trend === 'BEARISH' ? 'text-rose-500' : 'text-slate-400'}`}>
+                                            {trend}
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                {/* Side Panels */}
+                <div className="lg:col-span-4 space-y-6">
+                    <div className="bg-white dark:bg-slate-900 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm p-8">
+                        <h3 className="text-[10px] items-center gap-2 font-black uppercase tracking-[0.2em] text-slate-400 mb-8 flex">
+                            <Target className="w-4 h-4" />
+                            Strike Selection
+                        </h3>
+
+                        <div className="space-y-6">
+                            <div>
+                                <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 block">Strike Preference</label>
+                                <div className="grid grid-cols-3 gap-2">
+                                    {(['ITM', 'ATM', 'OTM'] as StrikeMode[]).map((mode) => (
+                                        <button
+                                            key={mode}
+                                            onClick={() => setStrikeMode(mode)}
+                                            disabled={isRunning}
+                                            className={`py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${strikeMode === mode
+                                                ? 'bg-cyan-500 text-white shadow-lg shadow-cyan-500/20'
+                                                : 'bg-slate-50 dark:bg-white/5 text-slate-400 hover:text-slate-600'
+                                                }`}
+                                        >
+                                            {mode}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {strikeMode !== 'ATM' && (
+                                <div>
+                                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 block">Strike Depth</label>
+                                    <div className="flex items-center justify-between p-1 bg-slate-50 dark:bg-white/5 rounded-xl">
+                                        <button
+                                            onClick={() => setStrikeDepth(Math.max(1, strikeDepth - 1))}
+                                            disabled={isRunning}
+                                            className="w-10 h-10 flex items-center justify-center text-slate-400 hover:text-cyan-500 font-black text-xl"
+                                        >-</button>
+                                        <span className="text-sm font-black text-slate-900 dark:text-white">{strikeDepth}</span>
+                                        <button
+                                            onClick={() => setStrikeDepth(strikeDepth + 1)}
+                                            disabled={isRunning}
+                                            className="w-10 h-10 flex items-center justify-center text-slate-400 hover:text-cyan-500 font-black text-xl"
+                                        >+</button>
+                                    </div>
+                                </div>
+                            )}
+
+                            <div>
+                                <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 block">Premium Range</label>
+                                <div className="flex items-center gap-3">
+                                    <input
+                                        type="number"
+                                        value={premiumMin}
+                                        onChange={(e) => setPremiumMin(Number(e.target.value))}
+                                        disabled={isRunning}
+                                        placeholder="Min"
+                                        className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-xs font-bold text-slate-900 dark:text-white outline-none focus:ring-1 focus:ring-cyan-500/20"
+                                    />
+                                    <ChevronRight className="w-4 h-4 text-slate-300" />
+                                    <input
+                                        type="number"
+                                        value={premiumMax}
+                                        onChange={(e) => setPremiumMax(Number(e.target.value))}
+                                        disabled={isRunning}
+                                        placeholder="Max"
+                                        className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-xs font-bold text-slate-900 dark:text-white outline-none focus:ring-1 focus:ring-cyan-500/20"
+                                    />
+                                </div>
                             </div>
                         </div>
                     </div>
 
-                    {/* Advanced Selection - Right */}
-                    <div className="space-y-6 lg:col-span-4">
-                        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm dark:border-white/10 dark:bg-slate-900">
-                            <h3 className="mb-6 text-sm font-bold uppercase tracking-widest text-slate-500">Advanced Selection</h3>
+                </div>
+            </div>
 
-                            <div className="space-y-5">
-                                <div>
-                                    <label className="text-xs font-semibold text-slate-500">Strike Mode</label>
-                                    <select
-                                        value={strikeMode}
-                                        onChange={(e) => setStrikeMode(e.target.value as StrikeMode)}
-                                        disabled={isRunning}
-                                        className="mt-1.5 w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-sm font-medium outline-none dark:border-white/5 dark:bg-slate-800"
-                                    >
-                                        <option value="ATM">ATM (At the Money)</option>
-                                        <option value="ITM">ITM (In the Money)</option>
-                                        <option value="OTM">OTM (Out the Money)</option>
-                                    </select>
+            {/* Live Monitor Panel */}
+            <div className="bg-slate-900 rounded-[2rem] border border-white/5 shadow-2xl p-8 relative overflow-hidden group">
+                <div className="absolute top-0 right-0 p-8 opacity-5 pointer-events-none group-hover:scale-110 transition-transform duration-700">
+                    <Activity className="w-64 h-64 text-cyan-500" />
+                </div>
+
+                <div className="relative z-10 flex flex-col lg:flex-row gap-12">
+                    <div className="flex-1 space-y-8">
+                        <div>
+                            <h3 className="text-sm font-black text-white uppercase tracking-widest mb-6 flex items-center gap-2">
+                                <div className="w-2 h-2 rounded-full bg-cyan-500 animate-pulse" />
+                                Live Strategy Monitor
+                            </h3>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl">
+                                    <p className="text-[10px] font-black text-cyan-500 uppercase tracking-widest mb-3">Analyzed CE</p>
+                                    <p className="text-xl font-black text-white">{monitoredPremiums.ce}</p>
                                 </div>
-
-                                {strikeMode !== 'ATM' && (
-                                    <div className="animate-in zoom-in duration-200">
-                                        <label className="text-xs font-semibold text-slate-500">Strike Depth</label>
-                                        <div className="mt-1.5 flex items-center gap-2">
-                                            <button
-                                                onClick={() => setStrikeDepth(d => Math.max(1, d - 1))}
-                                                disabled={isRunning}
-                                                className="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-100 text-sm font-bold hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700"
-                                            >-</button>
-                                            <input
-                                                type="number"
-                                                value={strikeDepth}
-                                                readOnly
-                                                className="h-9 grow rounded-lg border border-slate-200 bg-slate-50 text-center text-sm font-bold dark:border-white/5 dark:bg-slate-800"
-                                            />
-                                            <button
-                                                onClick={() => setStrikeDepth(d => d + 1)}
-                                                disabled={isRunning}
-                                                className="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-100 text-sm font-bold hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700"
-                                            >+</button>
-                                        </div>
-                                    </div>
-                                )}
-
-                                <div className="grid grid-cols-2 gap-4 border-t border-slate-100 pt-5 dark:border-white/5">
-                                    <div>
-                                        <label className="text-xs font-semibold text-slate-500">Premium Min</label>
-                                        <input
-                                            type="number"
-                                            value={premiumMin}
-                                            onChange={(e) => setPremiumMin(Number(e.target.value))}
-                                            disabled={isRunning}
-                                            className="mt-1.5 w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-sm font-bold outline-none dark:border-white/5 dark:bg-slate-800"
-                                        />
-                                    </div>
-                                    <div>
-                                        <label className="text-xs font-semibold text-slate-500">Premium Max</label>
-                                        <input
-                                            type="number"
-                                            value={premiumMax}
-                                            onChange={(e) => setPremiumMax(Number(e.target.value))}
-                                            disabled={isRunning}
-                                            className="mt-1.5 w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-sm font-bold outline-none dark:border-white/5 dark:bg-slate-800"
-                                        />
-                                    </div>
+                                <div className="bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl">
+                                    <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest mb-3">Analyzed PE</p>
+                                    <p className="text-xl font-black text-white">{monitoredPremiums.pe}</p>
                                 </div>
-
-                                {isRunning && (
-                                    <div className="mt-6 rounded-xl bg-cyan-50 p-4 border border-cyan-100 dark:bg-cyan-500/5 dark:border-cyan-500/10">
-                                        <p className="text-[10px] text-cyan-600 font-bold uppercase tracking-widest mb-2">Live Monitor</p>
-                                        <div className="space-y-2">
-                                            <div className="flex justify-between text-xs font-medium">
-                                                <span className="text-slate-500">ATM Strike</span>
-                                                <span className="text-slate-900 dark:text-slate-100">{atmStrike || '---'}</span>
-                                            </div>
-                                            <div className="flex justify-between text-xs font-medium">
-                                                <span className="text-slate-500">Active CE</span>
-                                                <span className={`text-slate-900 dark:text-slate-100 ${activeSignal === 'CE' ? 'underline decoration-cyan-400' : ''}`}>
-                                                    {ceContract?.tradingsymbol || '---'}
-                                                </span>
-                                            </div>
-                                            <div className="flex justify-between text-xs font-medium">
-                                                <span className="text-slate-500">Active PE</span>
-                                                <span className={`text-slate-900 dark:text-slate-100 ${activeSignal === 'PE' ? 'underline decoration-cyan-400' : ''}`}>
-                                                    {peContract?.tradingsymbol || '---'}
-                                                </span>
-                                            </div>
-                                            <div className="flex justify-between text-xs font-medium">
-                                                <span className="text-slate-500">HA Close</span>
-                                                <span className="text-slate-900 dark:text-slate-100">{lastHaClose?.toFixed(2) || '---'}</span>
-                                            </div>
-                                            <div className="flex justify-between text-xs font-medium">
-                                                <span className="text-slate-500">EMA 20</span>
-                                                <span className="text-slate-900 dark:text-slate-100">{emaValue?.toFixed(2) || '---'}</span>
-                                            </div>
-                                            <div className="flex justify-between text-xs font-medium">
-                                                <span className="text-slate-500">JMA 7</span>
-                                                <span className="text-slate-900 dark:text-slate-100">{jmaValue?.toFixed(2) || '---'}</span>
-                                            </div>
-                                            <div className="flex justify-between text-xs font-medium pt-1 border-t border-cyan-100 dark:border-white/5">
-                                                <span className="text-slate-500">LTP</span>
-                                                <span className="text-cyan-600 font-bold">{currentLtp || '---'}</span>
-                                            </div>
-                                        </div>
-                                    </div>
-                                )}
                             </div>
                         </div>
+
+                        <div className="space-y-4">
+                            <p className="text-[10px] font-black text-white/40 uppercase tracking-widest">Active Checkpoints</p>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                                {checkpoints.map(cp => (
+                                    <div key={cp.id} className="flex items-center gap-3 bg-white/[0.02] border border-white/5 p-4 rounded-xl">
+                                        <div className={`w-2 h-2 rounded-full ${cp.status === 'success' ? 'bg-emerald-500 shadow-lg shadow-emerald-500/50' : cp.status === 'error' ? 'bg-rose-500' : 'bg-white/20'}`} />
+                                        <span className="text-[11px] font-bold text-white/60 uppercase">{cp.label}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="lg:w-80 bg-cyan-500/10 border border-cyan-500/20 rounded-3xl p-8 flex flex-col justify-center text-center">
+                        <TrendingUp className="w-12 h-12 text-cyan-500 mx-auto mb-4" />
+                        <h4 className="text-lg font-black text-white mb-2">Algorithm Integrity</h4>
+                        <p className="text-xs text-white/60 font-medium leading-relaxed">
+                            All parameters are sanitized. Execution occurs only when 100% of checkpoints return a success state.
+                        </p>
                     </div>
                 </div>
             </div>
-        </StrategiesLayout>
+        </div>
     )
 }

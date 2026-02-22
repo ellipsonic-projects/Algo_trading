@@ -8,19 +8,30 @@ import StrategiesPage from '../pages/StrategiesPage/StrategiesPage'
 import ManualTradingPage from '../pages/StrategiesPage/ManualTradingPage'
 import VwapSmmaPage from '../pages/StrategiesPage/VwapSmmaPage'
 import HeikenashiPage from '../pages/StrategiesPage/HeikenashiPage'
+import DashboardPage from '../pages/DashboardPage/DashboardPage'
+import TradesPage from '../pages/TradesPage/TradesPage'
+import DashboardLayout from '../components/Layout/DashboardLayout'
+import ProtectedRoute from './ProtectedRoute'
 
 export default function AppRouter() {
   return (
     <Routes>
-      <Route path="/" element={<Navigate to="/login" replace />} />
       <Route path="/login" element={<LoginPage />} />
-      <Route path="/strategies" element={<StrategiesPage />} />
-      <Route path="/strategies/manual-trading" element={<ManualTradingPage />} />
-      <Route path="/strategies/ichimoku" element={<IchimokuStrategyPage />} />
-      <Route path="/strategies/5-min-breakout" element={<FiveMinBreakoutPage />} />
-      <Route path="/strategies/vwap-smma" element={<VwapSmmaPage />} />
-      <Route path="/strategies/expiry" element={<ExpiryStrategyPage />} />
-      <Route path="/strategies/heikenashi" element={<HeikenashiPage />} />
+
+      {/* Protected Routes Wrapper */}
+      <Route element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>
+        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/dashboard" element={<DashboardPage />} />
+        <Route path="/strategies" element={<StrategiesPage />} />
+        <Route path="/strategies/manual-trading" element={<ManualTradingPage />} />
+        <Route path="/strategies/ichimoku" element={<IchimokuStrategyPage />} />
+        <Route path="/strategies/5-min-breakout" element={<FiveMinBreakoutPage />} />
+        <Route path="/strategies/vwap-smma" element={<VwapSmmaPage />} />
+        <Route path="/strategies/expiry" element={<ExpiryStrategyPage />} />
+        <Route path="/strategies/heikenashi" element={<HeikenashiPage />} />
+        <Route path="/trades" element={<TradesPage />} />
+      </Route>
+
       <Route path="*" element={<Navigate to="/login" replace />} />
     </Routes>
   )

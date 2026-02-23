@@ -113,8 +113,8 @@ export type StrategySignal = {
  * 
  * Entry (Bullish):
  * 1. Two consecutive HA candles with no lower wick (Open = Low).
- * 2. EMA 20 > JMA 7.
- * 3. Close of 2nd HA candle > EMA 20.
+ * 2. JMA 7 > EMA 20.
+ * 3. Close of 2nd HA candle > JMA 7.
  * 
  * Exit (Bullish):
  * 1. Two consecutive red HA candles (Close < Open).
@@ -148,8 +148,8 @@ export function analyzeHeikenAshiStrategy(
         lastNoWick && prevNoWick &&     // 2 consecutive no lower wick
         last.close > last.open &&       // Green candles
         prev.close > prev.open &&
-        lastEma > lastJma &&            // EMA 20 > JMA 7
-        last.close > lastEma            // Close > EMA 20
+        lastJma > lastEma &&            // JMA 7 > EMA 20
+        last.close > lastJma            // Close > JMA 7
     )
 
     // Exit Conditions check

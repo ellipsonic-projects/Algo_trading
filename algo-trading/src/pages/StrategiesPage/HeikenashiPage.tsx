@@ -255,7 +255,7 @@ export default function HeikenashiPage() {
 
                     // Record Entry
                     apiPost<{ data: { trade: { _id: string } } }>('/trades/record', {
-                        strategyName: 'Heiken Ashi',
+                        strategyName: 'HeikenAshi',
                         index: underlying,
                         premium: ceContract.tradingsymbol,
                         qty: quantity,

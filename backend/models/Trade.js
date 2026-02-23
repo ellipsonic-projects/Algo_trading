@@ -16,7 +16,7 @@ const tradeSchema = new mongoose.Schema({
         required: true
     },
     premium: {
-        type: Number,
+        type: String,
         required: true
     },
     qty: {
@@ -35,7 +35,7 @@ const tradeSchema = new mongoose.Schema({
     },
     exitReason: {
         type: String,
-        enum: ['Target', 'SL', 'Strategy']
+        enum: ['Target', 'SL', 'Strategy', 'HA_TREND_REVERSAL']
     }
 }, { timestamps: true });
 

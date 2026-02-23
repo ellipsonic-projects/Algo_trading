@@ -113,12 +113,32 @@ export default function HeikenashiPage() {
     const [peContract, setPeContract] = useState<IndexOptionContract | null>(null)
 
     const [activeTradeId, setActiveTradeId] = useState<string | null>(null)
+    const [activeTradePremium, setActiveTradePremium] = useState<string | null>(null)
     const [entryPrice, setEntryPrice] = useState<number | null>(null)
     const [currentLtp, setCurrentLtp] = useState<number | null>(null)
 
+    // ─── Refs ────────────────────────────────────────────────────────────────
     const inFlightRef = useRef(false)
 
-    // Helpers
+    /**
+     * activeTradeRef mirrors activeTradeId + activeTradePremium in a ref so
+     * the scan interval closure always reads the *current* value without needing
+     * to be listed in the dependency array (which would restart the interval on
+     * every entry/exit and cause duplicate orders).
+     */
+    const activeTradeRef = useRef<{ tradeId: string | null; premium: string | null }>({
+        tradeId: null,
+        premium: null,
+    })
+
+    /** Single helper that keeps state + ref in sync atomically. */
+    const setActiveTrade = useCallback((tradeId: string | null, premium: string | null) => {
+        activeTradeRef.current = { tradeId, premium }
+        setActiveTradeId(tradeId)
+        setActiveTradePremium(premium)
+    }, [])
+
+    // ─── Helpers ─────────────────────────────────────────────────────────────
     const asIsoDate = (d: Date) => d.toISOString().split('T')[0]
 
     const pickNearestExpiry = (expiries: string[]) => {
@@ -129,10 +149,18 @@ export default function HeikenashiPage() {
 
     const pickNearestStrike = (strikes: number[], spot: number) => {
         if (!strikes.length) return null
-        return strikes.reduce((prev, curr) => Math.abs(curr - spot) < Math.abs(prev - spot) ? curr : prev)
+        return strikes.reduce((prev, curr) =>
+            Math.abs(curr - spot) < Math.abs(prev - spot) ? curr : prev
+        )
     }
 
-    const resolveStrikeForSide = (params: { strikes: number[], atmStrike: number, mode: StrikeMode, depth: number, side: 'CE' | 'PE' }) => {
+    const resolveStrikeForSide = (params: {
+        strikes: number[]
+        atmStrike: number
+        mode: StrikeMode
+        depth: number
+        side: 'CE' | 'PE'
+    }) => {
         const { strikes, atmStrike, mode, depth, side } = params
         const sorted = [...strikes].filter(Number.isFinite).sort((a, b) => a - b)
         const idx = sorted.findIndex(s => Math.abs(s - atmStrike) < 1e-6)
@@ -141,9 +169,10 @@ export default function HeikenashiPage() {
         const steps = Math.max(0, Math.floor(depth))
         const offset = (side === 'CE' ? 1 : -1) * (mode === 'ITM' ? -1 : 1) * steps
         const next = idx + offset
-        return (next >= 0 && next < sorted.length) ? sorted[next] : null
+        return next >= 0 && next < sorted.length ? sorted[next] : null
     }
 
+    // ─── Strategy controls ───────────────────────────────────────────────────
     const startStrategy = () => {
         setIsRunning(true)
         setState('SCANNING')
@@ -161,31 +190,42 @@ export default function HeikenashiPage() {
         setPeContract(null)
         setAtmStrike(null)
         setSelectedExpiry(null)
-        setActiveTradeId(null)
+        setActiveTrade(null, null)
         setEntryPrice(null)
         setCurrentLtp(null)
-    }, [])
+    }, [setActiveTrade])
 
-    // Check for existing open trade on load
+    // ─── Recover open trade on mount ─────────────────────────────────────────
     useEffect(() => {
         if (connectStatus !== 'connected') return
         let disposed = false
-        apiGet<{ data: { trade?: { _id: string, buyPrice: number, index: Underlying, strategyName: string } } }>(`/trades/latest-open?strategyName=HeikenAshi`)
+        apiGet<{
+            data: {
+                trade?: {
+                    _id: string
+                    buyPrice: number
+                    index: Underlying
+                    strategyName: string
+                    premium?: string
+                }
+            }
+        }>(`/trades/latest-open?strategyName=HeikenAshi`)
             .then(res => {
                 if (disposed) return
                 if (res.data?.trade) {
-                    setActiveTradeId(res.data.trade._id)
-                    setEntryPrice(res.data.trade.buyPrice)
-                    setUnderlying(res.data.trade.index as Underlying)
+                    const t = res.data.trade
+                    setActiveTrade(t._id, t.premium || null)
+                    setEntryPrice(t.buyPrice)
+                    setUnderlying(t.index as Underlying)
                     setState('IN_POSITION')
                     setMessage('Recovered active HeikenAshi trade.')
                 }
             })
             .catch(console.error)
         return () => { disposed = true }
-    }, [connectStatus])
+    }, [connectStatus, setActiveTrade])
 
-    // Handle Underlying Change
+    // ─── Stop if broker disconnects ──────────────────────────────────────────
     const handleUnderlyingChange = (val: Underlying) => {
         setUnderlying(val)
         setQuantity(INDEX_CONFIG[val].qty)
@@ -195,22 +235,22 @@ export default function HeikenashiPage() {
         if (connectStatus !== 'connected' && isRunning) stopStrategy()
     }, [connectStatus, isRunning, stopStrategy])
 
-    // Contract Management
+    // ─── Contract Management: resolve expiry + ATM strike ────────────────────
     useEffect(() => {
         if (!isRunning || connectStatus !== 'connected') return
         let disposed = false
         const load = async () => {
             try {
                 const config = INDEX_CONFIG[underlying]
-                const index = await apiGet<MarketIndexLtpResponse>(`/market/index-ltp?underlying=${encodeURIComponent(underlying)}`)
-                const opt = await apiGet<IndexOptionsResponse>(`/instruments/index-options?exchange=${encodeURIComponent(config.exchange)}&underlying=${encodeURIComponent(underlying)}`)
-
+                const index = await apiGet<MarketIndexLtpResponse>(
+                    `/market/index-ltp?underlying=${encodeURIComponent(underlying)}`
+                )
+                const opt = await apiGet<IndexOptionsResponse>(
+                    `/instruments/index-options?exchange=${encodeURIComponent(config.exchange)}&underlying=${encodeURIComponent(underlying)}`
+                )
                 if (disposed) return
-                const exp = pickNearestExpiry(opt.expiries)
-                const strike = pickNearestStrike(opt.strikes, index.ltp)
-
-                setSelectedExpiry(exp)
-                setAtmStrike(strike)
+                setSelectedExpiry(pickNearestExpiry(opt.expiries))
+                setAtmStrike(pickNearestStrike(opt.strikes, index.ltp))
             } catch (e) {
                 if (disposed) return
                 setMessage(e instanceof Error ? e.message : 'Init failed')
@@ -221,7 +261,7 @@ export default function HeikenashiPage() {
         return () => { disposed = true }
     }, [isRunning, connectStatus, underlying, stopStrategy])
 
-    // Strike Resolution
+    // ─── Strike Resolution: pick CE/PE contracts ──────────────────────────────
     useEffect(() => {
         if (!isRunning || !selectedExpiry || atmStrike === null) return
         let cancelled = false
@@ -243,32 +283,36 @@ export default function HeikenashiPage() {
 
                 setCeContract(ce || null)
                 setPeContract(pe || null)
-            } finally { inFlightRef.current = false }
+            } finally {
+                inFlightRef.current = false
+            }
         }
-        const t = setInterval(tick, 30000)
+        const t = setInterval(tick, 30_000)
         tick()
         return () => { cancelled = true; clearInterval(t) }
     }, [isRunning, underlying, selectedExpiry, atmStrike, strikeMode, strikeDepth])
 
-    // Strategy Scanning
+    // ─── Strategy Scanning ────────────────────────────────────────────────────
     useEffect(() => {
         if (!isRunning || !ceContract || !peContract) return
         if (state !== 'SCANNING' && state !== 'IN_POSITION') return
         let cancelled = false
 
+        // Snapshot contract references so the closure always has the correct tokens
+        // even if the parent component re-renders and swaps contracts mid-interval.
+        const snapCe = ceContract
+        const snapPe = peContract
+
         const scan = async () => {
             if (cancelled || inFlightRef.current) return
             inFlightRef.current = true
             try {
-                const config = INDEX_CONFIG[underlying]
+                // ✅ Always read fresh trade state from the ref — never from stale closure state
+                const { tradeId: currentTradeId, premium: currentPremium } = activeTradeRef.current
 
-                // ✅ Use the resolved contract tokens, not the index token
-                const ceToken = ceContract.symboltoken
-                const peToken = peContract.symboltoken
-                const contractExchange = ceContract.exchange  // e.g. 'BFO', 'NFO', 'MCX'
-
-                // Map derivative exchange to the correct candles exchange
-                const scanExchange = contractExchange === 'BFO' ? 'BFO' : contractExchange === 'MCX' ? 'MCX' : 'NFO'
+                const scanExchange =
+                    snapCe.exchange === 'BFO' ? 'BFO' :
+                    snapCe.exchange === 'MCX' ? 'MCX' : 'NFO'
 
                 const lookbackMap: Record<string, number> = {
                     ONE_MINUTE: 100,
@@ -279,93 +323,149 @@ export default function HeikenashiPage() {
                 }
                 const lookback = lookbackMap[baseTimeframe] ?? 300
 
-                // Fetch CE candles
-                const ceRes = await apiGet<CandlesResponse>(
-                    `/market/candles?exchange=${scanExchange}&symboltoken=${ceToken}&interval=${baseTimeframe}&lookback_minutes=${lookback}`
-                )
-
-                // Fetch PE candles
-                const peRes = await apiGet<CandlesResponse>(
-                    `/market/candles?exchange=${scanExchange}&symboltoken=${peToken}&interval=${baseTimeframe}&lookback_minutes=${lookback}`
-                )
+                // ✅ Use the resolved option contract tokens (not the index token)
+                const [ceRes, peRes] = await Promise.all([
+                    apiGet<CandlesResponse>(
+                        `/market/candles?exchange=${scanExchange}&symboltoken=${snapCe.symboltoken}&interval=${baseTimeframe}&lookback_minutes=${lookback}`
+                    ),
+                    apiGet<CandlesResponse>(
+                        `/market/candles?exchange=${scanExchange}&symboltoken=${snapPe.symboltoken}&interval=${baseTimeframe}&lookback_minutes=${lookback}`
+                    ),
+                ])
 
                 if (cancelled) return
 
-                console.log(`[HA SCAN] CE candles: ${ceRes.items?.length}, PE candles: ${peRes.items?.length}`)
-
-                // Run HA strategy on CE candles (primary signal)
-                const haCandles = computeHeikenAshi(ceRes.items)
-                const signal = analyzeHeikenAshiStrategy(haCandles)
-
                 console.log(`[HA SCAN] Index: ${underlying}, Time: ${new Date().toISOString()}`)
-                console.log(`[HA SCAN] Signal details:`, JSON.stringify(signal))
-                console.log(`[HA SCAN] ActiveTradeId: ${activeTradeId}`)
+                console.log(`[HA SCAN] CE token: ${snapCe.symboltoken} | candles: ${ceRes.items?.length}`)
+                console.log(`[HA SCAN] PE token: ${snapPe.symboltoken} | candles: ${peRes.items?.length}`)
 
-                setTrend(signal.trend)
+                const ceHa = computeHeikenAshi(ceRes.items)
+                const peHa = computeHeikenAshi(peRes.items)
 
-                if (signal.isEntry && !activeTradeId) {
-                    console.log(`[HA ENTRY FIRED] Signal at ${signal.haClose}`)
-                    setMessage(`HA Long Entry Signal @ ${signal.haClose}`)
-                    setState('IN_POSITION')
-                    setEntryPrice(signal.haClose)
+                const ceSignal = analyzeHeikenAshiStrategy(ceHa)
+                const peSignal = analyzeHeikenAshiStrategy(peHa)
 
-                    apiPost<{ data: { trade: { _id: string } } }>('/trades/record', {
-                        strategyName: 'HeikenAshi',
-                        index: underlying,
-                        premium: ceContract.tradingsymbol,
-                        qty: quantity,
-                        buyPrice: signal.haClose
-                    }).then((res: { data: { trade: { _id: string } } }) => {
-                        setActiveTradeId(res.data.trade._id)
-                    }).catch(console.error)
+                console.log(`[HA SCAN] CE Signal:`, JSON.stringify(ceSignal))
+                console.log(`[HA SCAN] PE Signal:`, JSON.stringify(peSignal))
+                console.log(`[HA SCAN] ActiveTradeId (ref): ${currentTradeId}, Premium (ref): ${currentPremium}`)
 
-                } else if (signal.isExit && activeTradeId) {
-                    setMessage(`HA Exit Signal @ ${signal.haClose}`)
+                if (!currentTradeId) {
+                    // ── ENTRY LOGIC ──────────────────────────────────────────
+                    if (ceSignal.isEntry) {
+                        console.log(`[HA ENTRY] CE @ ${ceSignal.haClose}`)
+                        setMessage(`HA Long Entry CE @ ${ceSignal.haClose}`)
+                        setState('IN_POSITION')
+                        setEntryPrice(ceSignal.haClose)
+                        setTrend('BULLISH')
 
-                    apiPost('/trades/update-exit', {
-                        tradeId: activeTradeId,
-                        exitPrice: signal.haClose,
-                        exitReason: 'HA_TREND_REVERSAL'
-                    }).then(() => {
-                        setActiveTradeId(null)
+                        // Mark premium immediately in the ref so the next interval
+                        // tick sees it even before the API call completes.
+                        setActiveTrade(null, snapCe.tradingsymbol)
+
+                        const res = await apiPost<{ data: { trade: { _id: string } } }>('/trades/record', {
+                            strategyName: 'HeikenAshi',
+                            index: underlying,
+                            premium: snapCe.tradingsymbol,
+                            qty: quantity,
+                            buyPrice: ceSignal.haClose,
+                        })
+                        setActiveTrade(res.data.trade._id, snapCe.tradingsymbol)
+
+                    } else if (peSignal.isEntry) {
+                        console.log(`[HA ENTRY] PE @ ${peSignal.haClose}`)
+                        setMessage(`HA Long Entry PE @ ${peSignal.haClose}`)
+                        setState('IN_POSITION')
+                        setEntryPrice(peSignal.haClose)
+                        setTrend('BEARISH')
+
+                        // Mark premium immediately in the ref
+                        setActiveTrade(null, snapPe.tradingsymbol)
+
+                        const res = await apiPost<{ data: { trade: { _id: string } } }>('/trades/record', {
+                            strategyName: 'HeikenAshi',
+                            index: underlying,
+                            premium: snapPe.tradingsymbol,
+                            qty: quantity,
+                            buyPrice: peSignal.haClose,
+                        })
+                        setActiveTrade(res.data.trade._id, snapPe.tradingsymbol)
+
+                    } else {
+                        setTrend(ceSignal.trend)
+                    }
+
+                } else {
+                    // ── EXIT LOGIC ───────────────────────────────────────────
+                    const isCeTrade = currentPremium === snapCe.tradingsymbol
+                    const isPeTrade = currentPremium === snapPe.tradingsymbol
+
+                    const shouldExit =
+                        (isCeTrade && ceSignal.isExit) ||
+                        (isPeTrade && peSignal.isExit)
+
+                    const exitPrice = isCeTrade ? ceSignal.haClose : peSignal.haClose
+
+                    if (shouldExit) {
+                        console.log(`[HA EXIT] @ ${exitPrice}`)
+                        setMessage(`HA Exit Signal @ ${exitPrice}`)
+
+                        await apiPost('/trades/update-exit', {
+                            tradeId: currentTradeId,
+                            exitPrice,
+                            exitReason: 'HA_TREND_REVERSAL',
+                        })
+
+                        setActiveTrade(null, null)
                         setEntryPrice(null)
                         setState('SCANNING')
-                    }).catch(console.error)
+                        setTrend('NEUTRAL')
+                    }
                 }
             } catch (e) {
                 console.error('[HA SCAN ERROR]', e)
-    } finally {
-        inFlightRef.current = false
-    }
-}
-        // Every 1 min for CRUDEOILM, else 15s
-        const intervalMs = underlying === 'CRUDEOILM' ? 60000 : 15000
+            } finally {
+                inFlightRef.current = false
+            }
+        }
+
+        const intervalMs = underlying === 'CRUDEOILM' ? 60_000 : 15_000
         const t = setInterval(scan, intervalMs)
         scan()
         return () => { cancelled = true; clearInterval(t) }
-    }, [isRunning, state, underlying, ceContract, peContract, baseTimeframe])
 
-    // Heikenashi Position LTP Monitor
+        // ✅ activeTradeId / activeTradePremium intentionally excluded —
+        //    we read live values from activeTradeRef inside the closure instead.
+    }, [isRunning, state, underlying, ceContract, peContract, baseTimeframe, quantity, setActiveTrade])
+
+    // ─── LTP Monitor for active position ─────────────────────────────────────
     useEffect(() => {
-        if (!isRunning || state !== 'IN_POSITION' || !activeTradeId || !ceContract) return
+        if (!isRunning || state !== 'IN_POSITION' || !activeTradeId || !activeTradePremium) return
+
+        const contract =
+            ceContract?.tradingsymbol === activeTradePremium ? ceContract :
+            peContract?.tradingsymbol === activeTradePremium ? peContract :
+            null
+
+        if (!contract) return
 
         let cancelled = false
         const monitor = async () => {
-            if (cancelled || inFlightRef.current) return
-            inFlightRef.current = true
+            if (cancelled) return
             try {
-                const res = await apiGet<{ ltp: number }>(`/market/ltp?exchange=${encodeURIComponent(ceContract.exchange)}&symboltoken=${encodeURIComponent(ceContract.symboltoken)}`)
+                const res = await apiGet<{ ltp: number }>(
+                    `/market/ltp?exchange=${encodeURIComponent(contract.exchange)}&symboltoken=${encodeURIComponent(contract.symboltoken)}`
+                )
                 if (!cancelled) setCurrentLtp(res.ltp)
             } catch (e) {
                 console.error('HA Monitor error:', e)
-            } finally { inFlightRef.current = false }
+            }
         }
-        const t = setInterval(monitor, 2000)
+        const t = setInterval(monitor, 2_000)
         monitor()
         return () => { cancelled = true; clearInterval(t) }
-    }, [isRunning, state, activeTradeId, ceContract])
+    }, [isRunning, state, activeTradeId, activeTradePremium, ceContract, peContract])
 
-    // Sync Monitor
+    // ─── Checkpoint / monitor sync ────────────────────────────────────────────
     useEffect(() => {
         if (!isRunning) return
         setCheckpoints([
@@ -373,16 +473,14 @@ export default function HeikenashiPage() {
             { id: 'expiry', label: 'Next Expiry Locked', status: selectedExpiry ? 'success' : 'pending' },
             { id: 'ha_trend', label: 'HA Trend Stability', status: trend !== 'NEUTRAL' ? 'success' : 'pending' },
             { id: 'confirmation', label: 'ATM Strike Sync', status: atmStrike ? 'success' : 'pending' },
-            { id: 'indicators', label: 'Premium Discovery', status: (ceContract && peContract) ? 'success' : 'pending' }
+            { id: 'indicators', label: 'Premium Discovery', status: ceContract && peContract ? 'success' : 'pending' },
         ])
         if (ceContract && peContract) {
-            setMonitoredPremiums({
-                ce: ceContract.tradingsymbol,
-                pe: peContract.tradingsymbol
-            })
+            setMonitoredPremiums({ ce: ceContract.tradingsymbol, pe: peContract.tradingsymbol })
         }
     }, [isRunning, connectStatus, selectedExpiry, trend, atmStrike, ceContract, peContract])
 
+    // ─── Render ───────────────────────────────────────────────────────────────
     return (
         <div className="space-y-6 animate-in fade-in duration-500 pb-12">
             {/* Status Panel */}
@@ -408,6 +506,15 @@ export default function HeikenashiPage() {
                                     {trend}
                                 </p>
                             </div>
+                            {activeTradePremium && (
+                                <>
+                                    <div className="h-8 w-px bg-slate-100 dark:bg-white/5" />
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Active Premium</p>
+                                        <p className="text-sm font-black text-cyan-500">{activeTradePremium}</p>
+                                    </div>
+                                </>
+                            )}
                         </div>
                     </div>
 
@@ -551,7 +658,7 @@ export default function HeikenashiPage() {
                         </div>
 
                         {state !== 'STOPPED' && (
-                            <div className="bg-white dark:bg-slate-900 p-8 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm animate-in zoom-in duration-300">
+                            <div className="mt-6 bg-white dark:bg-slate-900 p-8 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm animate-in zoom-in duration-300">
                                 <div className="flex items-center justify-between mb-8">
                                     <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-cyan-500">Live Trade Metrics</h3>
                                     <div className="flex items-center gap-2">
@@ -560,14 +667,30 @@ export default function HeikenashiPage() {
                                     </div>
                                 </div>
 
-                                <div className="grid grid-cols-2 lg:grid-cols-3 gap-8">
+                                <div className="grid grid-cols-2 lg:grid-cols-4 gap-8">
                                     <div>
                                         <p className="text-[10px] font-bold text-slate-400 uppercase">Premium LTP</p>
-                                        <p className="text-xl font-black text-slate-900 dark:text-white mt-1">₹{currentLtp?.toFixed(2) || '---'}</p>
+                                        <p className="text-xl font-black text-slate-900 dark:text-white mt-1">
+                                            ₹{currentLtp?.toFixed(2) || '---'}
+                                        </p>
                                     </div>
                                     <div>
                                         <p className="text-[10px] font-bold text-slate-400 uppercase">Entry Price</p>
-                                        <p className="text-xl font-black text-slate-900 dark:text-white mt-1">₹{entryPrice?.toFixed(2) || '---'}</p>
+                                        <p className="text-xl font-black text-slate-900 dark:text-white mt-1">
+                                            ₹{entryPrice?.toFixed(2) || '---'}
+                                        </p>
+                                    </div>
+                                    <div>
+                                        <p className="text-[10px] font-bold text-slate-400 uppercase">P&amp;L</p>
+                                        <p className={`text-xl font-black mt-1 ${
+                                            currentLtp && entryPrice
+                                                ? currentLtp >= entryPrice ? 'text-emerald-500' : 'text-rose-500'
+                                                : 'text-slate-400'
+                                        }`}>
+                                            {currentLtp && entryPrice
+                                                ? `₹${((currentLtp - entryPrice) * quantity).toFixed(2)}`
+                                                : '---'}
+                                        </p>
                                     </div>
                                     <div>
                                         <p className="text-[10px] font-bold text-slate-400 uppercase">Strategy Trend</p>
@@ -598,10 +721,11 @@ export default function HeikenashiPage() {
                                             key={mode}
                                             onClick={() => setStrikeMode(mode)}
                                             disabled={isRunning}
-                                            className={`py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${strikeMode === mode
-                                                ? 'bg-cyan-500 text-white shadow-lg shadow-cyan-500/20'
-                                                : 'bg-slate-50 dark:bg-white/5 text-slate-400 hover:text-slate-600'
-                                                }`}
+                                            className={`py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                                                strikeMode === mode
+                                                    ? 'bg-cyan-500 text-white shadow-lg shadow-cyan-500/20'
+                                                    : 'bg-slate-50 dark:bg-white/5 text-slate-400 hover:text-slate-600'
+                                            }`}
                                         >
                                             {mode}
                                         </button>
@@ -652,7 +776,6 @@ export default function HeikenashiPage() {
                             </div>
                         </div>
                     </div>
-
                 </div>
             </div>
 
@@ -670,12 +793,26 @@ export default function HeikenashiPage() {
                                 Live Strategy Monitor
                             </h3>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div className="bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl">
-                                    <p className="text-[10px] font-black text-cyan-500 uppercase tracking-widest mb-3">Analyzed CE</p>
+                                <div className={`border rounded-2xl p-6 backdrop-blur-xl transition-all ${
+                                    activeTradePremium === ceContract?.tradingsymbol
+                                        ? 'bg-cyan-500/20 border-cyan-500/40'
+                                        : 'bg-white/5 border-white/10'
+                                }`}>
+                                    <p className="text-[10px] font-black text-cyan-500 uppercase tracking-widest mb-1">Analyzed CE</p>
+                                    {activeTradePremium === ceContract?.tradingsymbol && (
+                                        <p className="text-[9px] font-black text-cyan-400 uppercase tracking-widest mb-2">● ACTIVE TRADE</p>
+                                    )}
                                     <p className="text-xl font-black text-white">{monitoredPremiums.ce}</p>
                                 </div>
-                                <div className="bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl">
-                                    <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest mb-3">Analyzed PE</p>
+                                <div className={`border rounded-2xl p-6 backdrop-blur-xl transition-all ${
+                                    activeTradePremium === peContract?.tradingsymbol
+                                        ? 'bg-rose-500/20 border-rose-500/40'
+                                        : 'bg-white/5 border-white/10'
+                                }`}>
+                                    <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest mb-1">Analyzed PE</p>
+                                    {activeTradePremium === peContract?.tradingsymbol && (
+                                        <p className="text-[9px] font-black text-rose-400 uppercase tracking-widest mb-2">● ACTIVE TRADE</p>
+                                    )}
                                     <p className="text-xl font-black text-white">{monitoredPremiums.pe}</p>
                                 </div>
                             </div>
@@ -686,7 +823,13 @@ export default function HeikenashiPage() {
                             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                                 {checkpoints.map(cp => (
                                     <div key={cp.id} className="flex items-center gap-3 bg-white/[0.02] border border-white/5 p-4 rounded-xl">
-                                        <div className={`w-2 h-2 rounded-full ${cp.status === 'success' ? 'bg-emerald-500 shadow-lg shadow-emerald-500/50' : cp.status === 'error' ? 'bg-rose-500' : 'bg-white/20'}`} />
+                                        <div className={`w-2 h-2 rounded-full ${
+                                            cp.status === 'success'
+                                                ? 'bg-emerald-500 shadow-lg shadow-emerald-500/50'
+                                                : cp.status === 'error'
+                                                ? 'bg-rose-500'
+                                                : 'bg-white/20'
+                                        }`} />
                                         <span className="text-[11px] font-bold text-white/60 uppercase">{cp.label}</span>
                                     </div>
                                 ))}

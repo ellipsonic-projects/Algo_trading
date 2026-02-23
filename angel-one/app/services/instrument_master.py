@@ -124,16 +124,16 @@ def _parse_option_type(symbol: str) -> Optional[str]:
 
 def parse_index_option_contract(row: Dict[str, Any]) -> Optional[IndexOptionContract]:
     exchange = str(row.get("exch_seg") or "").strip().upper()
-    if exchange not in {"NFO", "BFO"}:
+    if exchange not in {"NFO", "BFO", "MCX"}:
         return None
 
     inst_type = str(row.get("instrumenttype") or "").strip().upper()
-    # Index options
-    if inst_type != "OPTIDX":
+    # Index options or Commodity Options
+    if inst_type not in {"OPTIDX", "OPTFUT"}:
         return None
 
     underlying = str(row.get("name") or "").strip().upper()
-    if underlying not in {"NIFTY", "BANKNIFTY", "SENSEX"}:
+    if underlying not in {"NIFTY", "BANKNIFTY", "SENSEX", "CRUDEOILM"}:
         return None
 
     tradingsymbol = str(row.get("symbol") or "").strip()
@@ -205,7 +205,7 @@ class InstrumentMasterCache:
     def get_index_spot(self, *, underlying: str) -> Tuple[str, str]:
         self.refresh_if_needed()
         und = underlying.strip().upper()
-        if und not in {"NIFTY", "BANKNIFTY", "SENSEX"}:
+        if und not in {"NIFTY", "BANKNIFTY", "SENSEX", "CRUDEOILM"}:
             raise RuntimeError("Unsupported underlying")
         spot = self._index_spot.get(und)
         if spot is None:
@@ -249,13 +249,18 @@ class InstrumentMasterCache:
                     contracts.append(c)
 
                 und = str(r.get("name") or "").strip().upper()
-                if und not in {"NIFTY", "BANKNIFTY", "SENSEX"}:
+                if und not in {"NIFTY", "BANKNIFTY", "SENSEX", "CRUDEOILM"}:
                     continue
 
                 exch = str(r.get("exch_seg") or "").strip().upper()
-                # NIFTY/BANKNIFTY spot are on NSE, SENSEX spot is on BSE.
+                # NIFTY/BANKNIFTY spot are on NSE, SENSEX spot is on BSE. CRUDEOILM is MCX
                 if und == "SENSEX":
                     if exch != "BSE":
+                        continue
+                elif und == "CRUDEOILM":
+                    if exch != "MCX":
+                        continue
+                    if str(r.get("instrumenttype") or "").strip().upper() != "FUTCOM":
                         continue
                 else:
                     if exch != "NSE":

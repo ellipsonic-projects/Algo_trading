@@ -140,9 +140,18 @@ export function analyzeHeikenAshiStrategy(
     const lastEma = emas[lastIdx]
     const lastJma = jmas[lastIdx]
 
-    // Entry Conditions check
-    const lastNoWick = Math.abs(last.open - last.low) < 1e-6
-    const prevNoWick = Math.abs(prev.open - prev.low) < 1e-6
+    // Entry Conditions check (Allowing very tiny wick up to 5% of body size or fixed absolute small value)
+    const lastBody = Math.abs(last.close - last.open)
+    const prevBody = Math.abs(prev.close - prev.open)
+
+    // An ideal HA entry candle has 0 lower wick. However, float math or very slight 
+    // real-market ticks can cause a visible "no wick" to actually have ~0.5 points.
+    // We allow a lower wick if it's <= 2% of the body, OR absolutely <= 0.5 points.
+    const lastWick = last.open - last.low
+    const prevWick = prev.open - prev.low
+
+    const lastNoWick = lastWick <= 0.5 || lastWick <= lastBody * 0.02
+    const prevNoWick = prevWick <= 0.5 || prevWick <= prevBody * 0.02
 
     const isEntry = (
         lastNoWick && prevNoWick &&     // 2 consecutive no lower wick

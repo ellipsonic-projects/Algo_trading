@@ -15,13 +15,14 @@ import {
     analyzeHeikenAshiStrategy
 } from '../../trading/strategies/heikenAshi'
 
-type Underlying = 'SENSEX' | 'NIFTY' | 'BANKNIFTY'
-type Exchange = 'BFO' | 'NFO'
+type Underlying = 'SENSEX' | 'NIFTY' | 'BANKNIFTY' | 'CRUDEOILM'
+type Exchange = 'BFO' | 'NFO' | 'MCX'
 
 const INDEX_CONFIG: Record<Underlying, { qty: number, step: number, exchange: Exchange }> = {
     SENSEX: { qty: 20, step: 20, exchange: 'BFO' },
     NIFTY: { qty: 65, step: 65, exchange: 'NFO' },
     BANKNIFTY: { qty: 30, step: 30, exchange: 'NFO' },
+    CRUDEOILM: { qty: 1, step: 1, exchange: 'MCX' },
 }
 
 type StrategyState = 'WAITING' | 'SCANNING' | 'IN_POSITION' | 'COOLDOWN' | 'STOPPED'
@@ -165,6 +166,26 @@ export default function HeikenashiPage() {
         setCurrentLtp(null)
     }, [])
 
+    // Check for existing open trade on load
+    useEffect(() => {
+        if (connectStatus !== 'connected') return
+        let disposed = false
+        apiGet<{ data: { trade?: { _id: string, buyPrice: number, index: Underlying, strategyName: string } } }>(`/trades/latest-open?strategyName=HeikenAshi`)
+            .then(res => {
+                if (disposed) return
+                if (res.data?.trade) {
+                    setActiveTradeId(res.data.trade._id)
+                    setEntryPrice(res.data.trade.buyPrice)
+                    setUnderlying(res.data.trade.index as Underlying)
+                    setState('IN_POSITION')
+                    setMessage('Recovered active HeikenAshi trade.')
+                }
+            })
+            .catch(console.error)
+        return () => { disposed = true }
+    }, [connectStatus])
+
+    // Handle Underlying Change
     const handleUnderlyingChange = (val: Underlying) => {
         setUnderlying(val)
         setQuantity(INDEX_CONFIG[val].qty)
@@ -231,29 +252,63 @@ export default function HeikenashiPage() {
 
     // Strategy Scanning
     useEffect(() => {
-        if (!isRunning || state !== 'SCANNING' || !ceContract || !peContract) return
+        if (!isRunning || !ceContract || !peContract) return
+        if (state !== 'SCANNING' && state !== 'IN_POSITION') return
         let cancelled = false
+
         const scan = async () => {
             if (cancelled || inFlightRef.current) return
             inFlightRef.current = true
             try {
                 const config = INDEX_CONFIG[underlying]
-                // Fetch index candles for HA
-                const res = await apiGet<CandlesResponse>(
-                    `/market/candles?exchange=${encodeURIComponent(config.exchange === 'BFO' ? 'BSE' : 'NSE')}&symboltoken=${encodeURIComponent(underlying === 'SENSEX' ? '1' : underlying === 'NIFTY' ? '99926000' : '99926009')}&interval=${baseTimeframe}&lookback_minutes=100`
+
+                // ✅ Use the resolved contract tokens, not the index token
+                const ceToken = ceContract.symboltoken
+                const peToken = peContract.symboltoken
+                const contractExchange = ceContract.exchange  // e.g. 'BFO', 'NFO', 'MCX'
+
+                // Map derivative exchange to the correct candles exchange
+                const scanExchange = contractExchange === 'BFO' ? 'BFO' : contractExchange === 'MCX' ? 'MCX' : 'NFO'
+
+                const lookbackMap: Record<string, number> = {
+                    ONE_MINUTE: 100,
+                    THREE_MINUTE: 200,
+                    FIVE_MINUTE: 300,
+                    FIFTEEN_MINUTE: 600,
+                    THIRTY_MINUTE: 1200,
+                }
+                const lookback = lookbackMap[baseTimeframe] ?? 300
+
+                // Fetch CE candles
+                const ceRes = await apiGet<CandlesResponse>(
+                    `/market/candles?exchange=${scanExchange}&symboltoken=${ceToken}&interval=${baseTimeframe}&lookback_minutes=${lookback}`
                 )
+
+                // Fetch PE candles
+                const peRes = await apiGet<CandlesResponse>(
+                    `/market/candles?exchange=${scanExchange}&symboltoken=${peToken}&interval=${baseTimeframe}&lookback_minutes=${lookback}`
+                )
+
                 if (cancelled) return
 
-                const ha = computeHeikenAshi(res.items)
-                const signal = analyzeHeikenAshiStrategy(ha)
+                console.log(`[HA SCAN] CE candles: ${ceRes.items?.length}, PE candles: ${peRes.items?.length}`)
+
+                // Run HA strategy on CE candles (primary signal)
+                const haCandles = computeHeikenAshi(ceRes.items)
+                const signal = analyzeHeikenAshiStrategy(haCandles)
+
+                console.log(`[HA SCAN] Index: ${underlying}, Time: ${new Date().toISOString()}`)
+                console.log(`[HA SCAN] Signal details:`, JSON.stringify(signal))
+                console.log(`[HA SCAN] ActiveTradeId: ${activeTradeId}`)
 
                 setTrend(signal.trend)
+
                 if (signal.isEntry && !activeTradeId) {
+                    console.log(`[HA ENTRY FIRED] Signal at ${signal.haClose}`)
                     setMessage(`HA Long Entry Signal @ ${signal.haClose}`)
                     setState('IN_POSITION')
                     setEntryPrice(signal.haClose)
 
-                    // Record Entry
                     apiPost<{ data: { trade: { _id: string } } }>('/trades/record', {
                         strategyName: 'HeikenAshi',
                         index: underlying,
@@ -263,10 +318,10 @@ export default function HeikenashiPage() {
                     }).then((res: { data: { trade: { _id: string } } }) => {
                         setActiveTradeId(res.data.trade._id)
                     }).catch(console.error)
+
                 } else if (signal.isExit && activeTradeId) {
                     setMessage(`HA Exit Signal @ ${signal.haClose}`)
 
-                    // Update Exit
                     apiPost('/trades/update-exit', {
                         tradeId: activeTradeId,
                         exitPrice: signal.haClose,
@@ -278,10 +333,14 @@ export default function HeikenashiPage() {
                     }).catch(console.error)
                 }
             } catch (e) {
-                console.error(e)
-            } finally { inFlightRef.current = false }
-        }
-        const t = setInterval(scan, 15000)
+                console.error('[HA SCAN ERROR]', e)
+    } finally {
+        inFlightRef.current = false
+    }
+}
+        // Every 1 min for CRUDEOILM, else 15s
+        const intervalMs = underlying === 'CRUDEOILM' ? 60000 : 15000
+        const t = setInterval(scan, intervalMs)
         scan()
         return () => { cancelled = true; clearInterval(t) }
     }, [isRunning, state, underlying, ceContract, peContract, baseTimeframe])
@@ -397,6 +456,7 @@ export default function HeikenashiPage() {
                                         <option value="SENSEX">SENSEX (BSE)</option>
                                         <option value="NIFTY">NIFTY (NSE)</option>
                                         <option value="BANKNIFTY">BANKNIFTY (NSE)</option>
+                                        <option value="CRUDEOILM">CRUDEOILM (MCX)</option>
                                     </select>
                                 </div>
 

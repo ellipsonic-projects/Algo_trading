@@ -330,8 +330,8 @@ def index_options(
 @app.get("/market/index-ltp")
 def index_ltp(underlying: str) -> Dict[str, Any]:
     und = underlying.strip().upper()
-    # NIFTY/BANKNIFTY are NSE indices, SENSEX is BSE.
-    primary_ex = "BSE" if und == "SENSEX" else "NSE"
+    # NIFTY/BANKNIFTY are NSE indices, SENSEX is BSE, CRUDEOILM is MCX.
+    primary_ex = "BSE" if und == "SENSEX" else "MCX" if und == "CRUDEOILM" else "NSE"
     search_ex = primary_ex
 
     try:

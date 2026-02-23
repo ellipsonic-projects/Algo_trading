@@ -238,6 +238,25 @@ export default function FiveMinBreakoutPage() {
     }
   }, [connectStatus, stopStrategy])
 
+  // Check for existing open trade on load
+  useEffect(() => {
+    if (connectStatus !== 'connected') return
+    let disposed = false
+    apiGet<{ data: { trade?: { _id: string, buyPrice: number, index: Underlying, strategyName: string } } }>(`/trades/latest-open?strategyName=5minBreakout`)
+      .then(res => {
+        if (disposed) return
+        if (res.data?.trade) {
+          setActiveTradeId(res.data.trade._id)
+          setEntryPrice(res.data.trade.buyPrice)
+          setUnderlying(res.data.trade.index as Underlying)
+          setState('IN_POSITION')
+          setMessage('Recovered active 5minBreakout trade.')
+        }
+      })
+      .catch(console.error)
+    return () => { disposed = true }
+  }, [connectStatus])
+
   // Context-aware initialization
   useEffect(() => {
     if (!isRunning) return
@@ -360,7 +379,7 @@ export default function FiveMinBreakoutPage() {
 
           // Record Trade to DB
           apiPost<{ data: { trade: { _id: string } } }>('/trades/record', {
-            strategyName: '5-Min Breakout',
+            strategyName: '5minBreakout',
             index: underlying,
             premium: ceBreakout ? ceContract.tradingsymbol : peContract.tradingsymbol,
             qty: quantity,

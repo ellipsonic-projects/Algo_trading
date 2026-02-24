@@ -303,22 +303,48 @@ export default function HeikenashiPage() {
 
     // ─── Strike Resolution: pick CE/PE contracts ──────────────────────────────
     useEffect(() => {
-        if (!isRunning || !selectedExpiry || atmStrike === null) return
+        if (!isRunning || !selectedExpiry) return
         let cancelled = false
         const tick = async () => {
             if (cancelled || inFlightRef.current) return
             inFlightRef.current = true
             try {
                 const config = INDEX_CONFIG[underlying]
+                const currentPremium = activeTradeRef.current.premium
+
+                // If not holding a trade, fetch the latest Index LTP to dynamically update ATM strike
+                let newAtmStrike = atmStrike
+                if (!currentPremium) {
+                    try {
+                        const indexRes = await apiGet<MarketIndexLtpResponse>(
+                            `/market/index-ltp?underlying=${encodeURIComponent(underlying)}`
+                        )
+                        if (!cancelled) {
+                            // Fetch all strikes from the options chain to accurately pick the nearest
+                            const optAll = await apiGet<IndexOptionsResponse>(
+                                `/instruments/index-options?exchange=${encodeURIComponent(config.exchange)}&underlying=${encodeURIComponent(underlying)}`
+                            )
+                            newAtmStrike = pickNearestStrike(optAll.strikes, indexRes.ltp)
+                            if (newAtmStrike !== null) setAtmStrike(newAtmStrike)
+                        }
+                    } catch (e) {
+                        console.error("Failed to update dynamic ATM:", e)
+                    }
+                }
+
+                if (cancelled) return
+
+                // Fetch the options chain for the selected expiry
                 const opt = await apiGet<IndexOptionsResponse>(
                     `/instruments/index-options?exchange=${encodeURIComponent(config.exchange)}&underlying=${encodeURIComponent(underlying)}&expiry=${encodeURIComponent(selectedExpiry)}`
                 )
                 if (cancelled) return
 
-                const currentPremium = activeTradeRef.current.premium
+                const targetAtm = currentPremium ? atmStrike : newAtmStrike
+                if (targetAtm === null) return
 
-                const ceStrike = resolveStrikeForSide({ strikes: opt.strikes, atmStrike, mode: strikeMode, depth: strikeDepth, side: 'CE' })
-                const peStrike = resolveStrikeForSide({ strikes: opt.strikes, atmStrike, mode: strikeMode, depth: strikeDepth, side: 'PE' })
+                const ceStrike = resolveStrikeForSide({ strikes: opt.strikes, atmStrike: targetAtm, mode: strikeMode, depth: strikeDepth, side: 'CE' })
+                const peStrike = resolveStrikeForSide({ strikes: opt.strikes, atmStrike: targetAtm, mode: strikeMode, depth: strikeDepth, side: 'PE' })
 
                 let ce = opt.contracts.find(c => Math.abs(c.strike - (ceStrike ?? 0)) < 1e-6 && c.option_type === 'CE')
                 let pe = opt.contracts.find(c => Math.abs(c.strike - (peStrike ?? 0)) < 1e-6 && c.option_type === 'PE')
@@ -337,8 +363,8 @@ export default function HeikenashiPage() {
                 inFlightRef.current = false
             }
         }
-        const t = setInterval(tick, 30_000)
-        tick()
+        const t = setInterval(tick, 60_000)
+        tick() // Run immediately on mount or dependency change
         return () => { cancelled = true; clearInterval(t) }
     }, [isRunning, underlying, selectedExpiry, atmStrike, strikeMode, strikeDepth])
 

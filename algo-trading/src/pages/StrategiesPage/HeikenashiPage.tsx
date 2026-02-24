@@ -74,20 +74,34 @@ const TIMEFRAME_OPTIONS = [
     { label: '30m', value: 'THIRTY_MINUTE' },
 ]
 
+function getSavedState<T>(key: string, fallback: T): T {
+    try {
+        const item = localStorage.getItem(key)
+        if (item === null) return fallback
+        try {
+            return JSON.parse(item) as T
+        } catch {
+            return item as unknown as T
+        }
+    } catch {
+        return fallback
+    }
+}
+
 export default function HeikenashiPage() {
     const { connectStatus } = useAngelConnection()
 
-    const [isRunning, setIsRunning] = useState(false)
-    const [state, setState] = useState<StrategyState>('STOPPED')
+    const [isRunning, setIsRunning] = useState<boolean>(() => getSavedState('ha_isRunning', false))
+    const [state, setState] = useState<StrategyState>(() => getSavedState('ha_state', 'STOPPED'))
     const [message, setMessage] = useState<string>('')
     const [trend, setTrend] = useState<Trend>('NEUTRAL')
 
     // Core Configuration
-    const [underlying, setUnderlying] = useState<Underlying>('SENSEX')
-    const [quantity, setQuantity] = useState<number>(INDEX_CONFIG.SENSEX.qty)
-    const [baseTimeframe, setBaseTimeframe] = useState<string>('FIVE_MINUTE')
-    const [needConfirmation, setNeedConfirmation] = useState(false)
-    const [confirmationTimeframe, setConfirmationTimeframe] = useState<string>('FIFTEEN_MINUTE')
+    const [underlying, setUnderlying] = useState<Underlying>(() => getSavedState('ha_underlying', 'SENSEX'))
+    const [quantity, setQuantity] = useState<number>(() => getSavedState('ha_quantity', INDEX_CONFIG.SENSEX.qty))
+    const [baseTimeframe, setBaseTimeframe] = useState<string>(() => getSavedState('ha_baseTimeframe', 'FIVE_MINUTE'))
+    const [needConfirmation, setNeedConfirmation] = useState<boolean>(() => getSavedState('ha_needConfirmation', false))
+    const [confirmationTimeframe, setConfirmationTimeframe] = useState<string>(() => getSavedState('ha_confirmationTimeframe', 'FIFTEEN_MINUTE'))
 
     // Live Monitor State
     const [monitoredPremiums, setMonitoredPremiums] = useState<{ ce: string, pe: string }>({ ce: '---', pe: '---' })
@@ -100,16 +114,34 @@ export default function HeikenashiPage() {
     ])
 
     // Strike Selection
-    const [strikeMode, setStrikeMode] = useState<StrikeMode>('ATM')
-    const [strikeDepth, setStrikeDepth] = useState<number>(1)
-    const [premiumMin, setPremiumMin] = useState<number>(300)
-    const [premiumMax, setPremiumMax] = useState<number>(400)
+    const [strikeMode, setStrikeMode] = useState<StrikeMode>(() => getSavedState('ha_strikeMode', 'ATM'))
+    const [strikeDepth, setStrikeDepth] = useState<number>(() => getSavedState('ha_strikeDepth', 1))
+    const [premiumMin, setPremiumMin] = useState<number>(() => getSavedState('ha_premiumMin', 300))
+    const [premiumMax, setPremiumMax] = useState<number>(() => getSavedState('ha_premiumMax', 400))
 
     // Exit Strategy Configuration
-    const [exitStrategy, setExitStrategy] = useState<ExitStrategy>('CANDLES')
-    const [targetPoints, setTargetPoints] = useState<number>(20)
+    const [exitStrategy, setExitStrategy] = useState<ExitStrategy>(() => getSavedState('ha_exitStrategy', 'CANDLES'))
+    const [targetPoints, setTargetPoints] = useState<number>(() => getSavedState('ha_targetPoints', 20))
 
-    const [liveTradingConsent, setLiveTradingConsent] = useState(false)
+    const [liveTradingConsent, setLiveTradingConsent] = useState<boolean>(() => getSavedState('ha_liveTradingConsent', false))
+
+    // Local Storage Sync
+    useEffect(() => {
+        localStorage.setItem('ha_isRunning', JSON.stringify(isRunning))
+        localStorage.setItem('ha_state', JSON.stringify(state))
+        localStorage.setItem('ha_underlying', JSON.stringify(underlying))
+        localStorage.setItem('ha_quantity', JSON.stringify(quantity))
+        localStorage.setItem('ha_baseTimeframe', JSON.stringify(baseTimeframe))
+        localStorage.setItem('ha_needConfirmation', JSON.stringify(needConfirmation))
+        localStorage.setItem('ha_confirmationTimeframe', JSON.stringify(confirmationTimeframe))
+        localStorage.setItem('ha_strikeMode', JSON.stringify(strikeMode))
+        localStorage.setItem('ha_strikeDepth', JSON.stringify(strikeDepth))
+        localStorage.setItem('ha_premiumMin', JSON.stringify(premiumMin))
+        localStorage.setItem('ha_premiumMax', JSON.stringify(premiumMax))
+        localStorage.setItem('ha_exitStrategy', JSON.stringify(exitStrategy))
+        localStorage.setItem('ha_targetPoints', JSON.stringify(targetPoints))
+        localStorage.setItem('ha_liveTradingConsent', JSON.stringify(liveTradingConsent))
+    }, [isRunning, state, underlying, quantity, baseTimeframe, needConfirmation, confirmationTimeframe, strikeMode, strikeDepth, premiumMin, premiumMax, exitStrategy, targetPoints, liveTradingConsent])
 
     // Strategy Execution State
     const [selectedExpiry, setSelectedExpiry] = useState<string | null>(null)
@@ -224,7 +256,8 @@ export default function HeikenashiPage() {
                     const t = res.data.trade
                     setActiveTrade(t._id, t.premium || null)
                     setEntryPrice(t.buyPrice)
-                    setUnderlying(t.index as Underlying)
+                    // We DO NOT override 'underlying' from the trade because and it might desync with the active UI configs.
+                    // The stored configurations from localStorage are sufficient.
                     setState('IN_POSITION')
                     setMessage('Recovered active HeikenAshi trade.')
                 }
@@ -239,9 +272,9 @@ export default function HeikenashiPage() {
         setQuantity(INDEX_CONFIG[val].qty)
     }
 
-    useEffect(() => {
-        if (connectStatus !== 'connected' && isRunning) stopStrategy()
-    }, [connectStatus, isRunning, stopStrategy])
+    // The strategy is now completely resilient to broker disconnects.
+    // It will not auto-stop if connectStatus turns to 'error'. It will just wait 
+    // for the auto-reconnect ping or for the user to manually intervene.
 
     // ─── Contract Management: resolve expiry + ATM strike ────────────────────
     useEffect(() => {
@@ -262,7 +295,6 @@ export default function HeikenashiPage() {
             } catch (e) {
                 if (disposed) return
                 setMessage(e instanceof Error ? e.message : 'Init failed')
-                stopStrategy()
             }
         }
         load()
@@ -283,11 +315,21 @@ export default function HeikenashiPage() {
                 )
                 if (cancelled) return
 
+                const currentPremium = activeTradeRef.current.premium
+
                 const ceStrike = resolveStrikeForSide({ strikes: opt.strikes, atmStrike, mode: strikeMode, depth: strikeDepth, side: 'CE' })
                 const peStrike = resolveStrikeForSide({ strikes: opt.strikes, atmStrike, mode: strikeMode, depth: strikeDepth, side: 'PE' })
 
-                const ce = opt.contracts.find(c => Math.abs(c.strike - (ceStrike ?? 0)) < 1e-6 && c.option_type === 'CE')
-                const pe = opt.contracts.find(c => Math.abs(c.strike - (peStrike ?? 0)) < 1e-6 && c.option_type === 'PE')
+                let ce = opt.contracts.find(c => Math.abs(c.strike - (ceStrike ?? 0)) < 1e-6 && c.option_type === 'CE')
+                let pe = opt.contracts.find(c => Math.abs(c.strike - (peStrike ?? 0)) < 1e-6 && c.option_type === 'PE')
+
+                if (currentPremium) {
+                    const heldContract = opt.contracts.find(c => c.tradingsymbol === currentPremium)
+                    if (heldContract) {
+                        if (heldContract.option_type === 'CE') ce = heldContract
+                        if (heldContract.option_type === 'PE') pe = heldContract
+                    }
+                }
 
                 setCeContract(ce || null)
                 setPeContract(pe || null)
@@ -608,7 +650,7 @@ export default function HeikenashiPage() {
                                         value={underlying}
                                         onChange={(e) => handleUnderlyingChange(e.target.value as Underlying)}
                                         disabled={isRunning}
-                                        className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all"
+                                        className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                                     >
                                         <option value="SENSEX">SENSEX (BSE)</option>
                                         <option value="NIFTY">NIFTY (NSE)</option>
@@ -625,7 +667,7 @@ export default function HeikenashiPage() {
                                         step={INDEX_CONFIG[underlying].step}
                                         onChange={(e) => setQuantity(Number(e.target.value))}
                                         disabled={isRunning}
-                                        className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all"
+                                        className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                                     />
                                 </div>
                             </div>
@@ -637,7 +679,7 @@ export default function HeikenashiPage() {
                                         value={baseTimeframe}
                                         onChange={(e) => setBaseTimeframe(e.target.value)}
                                         disabled={isRunning}
-                                        className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all"
+                                        className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                                     >
                                         {TIMEFRAME_OPTIONS.map(opt => (
                                             <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -673,7 +715,7 @@ export default function HeikenashiPage() {
                                                 value={confirmationTimeframe}
                                                 onChange={(e) => setConfirmationTimeframe(e.target.value)}
                                                 disabled={isRunning}
-                                                className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black"
+                                                className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black disabled:opacity-50 disabled:cursor-not-allowed"
                                             >
                                                 {TIMEFRAME_OPTIONS.map(opt => (
                                                     <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -772,7 +814,9 @@ export default function HeikenashiPage() {
                                             disabled={isRunning}
                                             className={`py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${strikeMode === mode
                                                 ? 'bg-cyan-500 text-white shadow-lg shadow-cyan-500/20'
-                                                : 'bg-slate-50 dark:bg-white/5 text-slate-400 hover:text-slate-600'
+                                                : isRunning
+                                                    ? 'bg-slate-50 dark:bg-white/5 text-slate-400 opacity-50 cursor-not-allowed'
+                                                    : 'bg-slate-50 dark:bg-white/5 text-slate-400 hover:text-slate-600'
                                                 }`}
                                         >
                                             {mode}
@@ -788,13 +832,13 @@ export default function HeikenashiPage() {
                                         <button
                                             onClick={() => setStrikeDepth(Math.max(1, strikeDepth - 1))}
                                             disabled={isRunning}
-                                            className="w-10 h-10 flex items-center justify-center text-slate-400 hover:text-cyan-500 font-black text-xl"
+                                            className="w-10 h-10 flex items-center justify-center text-slate-400 hover:text-cyan-500 font-black text-xl disabled:opacity-50 disabled:cursor-not-allowed"
                                         >-</button>
-                                        <span className="text-sm font-black text-slate-900 dark:text-white">{strikeDepth}</span>
+                                        <span className={`text-sm font-black ${isRunning ? 'text-slate-400' : 'text-slate-900 dark:text-white'}`}>{strikeDepth}</span>
                                         <button
                                             onClick={() => setStrikeDepth(strikeDepth + 1)}
                                             disabled={isRunning}
-                                            className="w-10 h-10 flex items-center justify-center text-slate-400 hover:text-cyan-500 font-black text-xl"
+                                            className="w-10 h-10 flex items-center justify-center text-slate-400 hover:text-cyan-500 font-black text-xl disabled:opacity-50 disabled:cursor-not-allowed"
                                         >+</button>
                                     </div>
                                 </div>
@@ -809,7 +853,7 @@ export default function HeikenashiPage() {
                                         onChange={(e) => setPremiumMin(Number(e.target.value))}
                                         disabled={isRunning}
                                         placeholder="Min"
-                                        className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-xs font-bold text-slate-900 dark:text-white outline-none focus:ring-1 focus:ring-cyan-500/20"
+                                        className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-xs font-bold text-slate-900 dark:text-white outline-none focus:ring-1 focus:ring-cyan-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
                                     />
                                     <ChevronRight className="w-4 h-4 text-slate-300" />
                                     <input
@@ -818,14 +862,14 @@ export default function HeikenashiPage() {
                                         onChange={(e) => setPremiumMax(Number(e.target.value))}
                                         disabled={isRunning}
                                         placeholder="Max"
-                                        className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-xs font-bold text-slate-900 dark:text-white outline-none focus:ring-1 focus:ring-cyan-500/20"
+                                        className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-xs font-bold text-slate-900 dark:text-white outline-none focus:ring-1 focus:ring-cyan-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
                                     />
                                 </div>
                             </div>
                             <div>
                                 <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 block">Exit Strategy</label>
                                 <div className="space-y-3">
-                                    <label className="flex items-center gap-3 cursor-pointer group" onClick={() => setExitStrategy('CANDLES')}>
+                                    <label className={`flex items-center gap-3 ${isRunning ? 'cursor-not-allowed opacity-50' : 'cursor-pointer group'}`} onClick={() => !isRunning && setExitStrategy('CANDLES')}>
                                         <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${exitStrategy === 'CANDLES' ? 'border-cyan-500 bg-cyan-500/10' : 'border-slate-300 dark:border-white/20'}`}>
                                             <div className={`w-2.5 h-2.5 rounded-full bg-cyan-500 transition-all ${exitStrategy === 'CANDLES' ? 'scale-100 opacity-100' : 'scale-0 opacity-0'}`} />
                                         </div>
@@ -833,7 +877,7 @@ export default function HeikenashiPage() {
                                             2 Consecutive Red Candles
                                         </span>
                                     </label>
-                                    <label className="flex items-center gap-3 cursor-pointer group" onClick={() => setExitStrategy('TARGET')}>
+                                    <label className={`flex items-center gap-3 ${isRunning ? 'cursor-not-allowed opacity-50' : 'cursor-pointer group'}`} onClick={() => !isRunning && setExitStrategy('TARGET')}>
                                         <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${exitStrategy === 'TARGET' ? 'border-cyan-500 bg-cyan-500/10' : 'border-slate-300 dark:border-white/20'}`}>
                                             <div className={`w-2.5 h-2.5 rounded-full bg-cyan-500 transition-all ${exitStrategy === 'TARGET' ? 'scale-100 opacity-100' : 'scale-0 opacity-0'}`} />
                                         </div>
@@ -854,7 +898,7 @@ export default function HeikenashiPage() {
                                             onChange={(e) => setTargetPoints(parseFloat(e.target.value) || 0)}
                                             disabled={isRunning}
                                             placeholder="e.g. 20"
-                                            className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-xs font-bold text-slate-900 dark:text-white outline-none focus:ring-1 focus:ring-cyan-500/20"
+                                            className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-xs font-bold text-slate-900 dark:text-white outline-none focus:ring-1 focus:ring-cyan-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
                                         />
                                         <div className="text-[10px] font-black text-rose-500 uppercase tracking-widest whitespace-nowrap">
                                             SL: {targetPoints * 2} pts

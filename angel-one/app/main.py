@@ -97,11 +97,23 @@ def health() -> Dict[str, Any]:
 
 @app.post("/angel/login")
 def angel_login(req: LoginRequest) -> Dict[str, Any]:
+    if angel.is_logged_in:
+        return {
+            "status": True,
+            "message": "Angel One login successful (Reused active session)",
+            "client_code": getattr(angel, "_client_code", ""),
+        }
     try:
         return angel.login(req.mpin)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(e))
 
+@app.post("/angel/logout")
+def angel_logout() -> Dict[str, Any]:
+    try:
+        return angel.logout()
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/angel/profile")
 def angel_profile() -> Dict[str, Any]:

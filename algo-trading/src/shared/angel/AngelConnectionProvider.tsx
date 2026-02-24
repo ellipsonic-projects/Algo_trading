@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useMemo, useState, useEffect } from 'react'
 import type { ReactNode } from 'react'
 
 import MpinModal from './MpinModal'
@@ -51,21 +51,42 @@ export function AngelConnectionProvider({ children }: { children: ReactNode }) {
     setConnectMessage('Disconnected')
   }, [])
 
-  const submitMpin = useCallback(async (mpin: string) => {
-    setConnectStatus('connecting')
-    setConnectMessage('')
+  const submitMpin = useCallback(async (mpin: string, silent = false) => {
+    if (!silent) {
+      setConnectStatus('connecting')
+      setConnectMessage('')
+    }
     try {
       const login = await apiPost<AngelLoginResponse>('/angel/login', { mpin })
       setConnectStatus('connected')
-      setConnectMessage(login.message ?? 'Connected')
+      if (!silent) {
+        setConnectMessage(login.message ?? 'Connected')
+      }
       setMpinOpen(false)
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Connect failed'
-      setConnectStatus('error')
-      setConnectMessage('')
+      if (!silent) {
+        setConnectStatus('error')
+        setConnectMessage('')
+      }
       throw new Error(msg)
     }
   }, [])
+
+  // Auto-login & 5 min reconnect
+  useEffect(() => {
+    const mpin = import.meta.env.VITE_ANGEL_MPIN ?? '1504'
+
+    // Auto login on mount
+    submitMpin(mpin, false).catch(console.error)
+
+    // Auto reconnect every 5 minutes
+    const intervalId = setInterval(() => {
+      submitMpin(mpin, true).catch(console.error)
+    }, 300_000)
+
+    return () => clearInterval(intervalId)
+  }, [submitMpin])
 
   const value = useMemo<AngelConnectionContextValue>(
     () => ({

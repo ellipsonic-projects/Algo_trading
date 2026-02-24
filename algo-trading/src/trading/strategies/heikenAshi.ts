@@ -132,33 +132,31 @@ export function analyzeHeikenAshiStrategy(
     const emas = computeEMA(closes, emaPeriod)
     const jmas = computeJMA(closes, jmaLength)
 
-    const lastIdx = haCandles.length - 1
-    const prevIdx = lastIdx - 1
+    // Evaluate based on fully closed candles. The last candle (length - 1) is currently developing.
+    const lastClosedIdx = haCandles.length - 2
+    const prevClosedIdx = haCandles.length - 3
 
-    const last = haCandles[lastIdx]
-    const prev = haCandles[prevIdx]
-    const lastEma = emas[lastIdx]
-    const lastJma = jmas[lastIdx]
+    if (lastClosedIdx < 0 || prevClosedIdx < 0) {
+        return { trend: 'NEUTRAL', ema: 0, jma: 0, haClose: 0, isEntry: false, isExit: false }
+    }
 
-    // Entry Conditions check (Allowing very tiny wick up to 5% of body size or fixed absolute small value)
-    const lastBody = Math.abs(last.close - last.open)
-    const prevBody = Math.abs(prev.close - prev.open)
+    const last = haCandles[lastClosedIdx]
+    const prev = haCandles[prevClosedIdx]
+    const lastEma = emas[lastClosedIdx]
+    const lastJma = jmas[lastClosedIdx]
 
-    // An ideal HA entry candle has 0 lower wick. However, float math or very slight 
-    // real-market ticks can cause a visible "no wick" to actually have ~0.5 points.
-    // We allow a lower wick if it's <= 2% of the body, OR absolutely <= 0.5 points.
-    const lastWick = last.open - last.low
-    const prevWick = prev.open - prev.low
-
-    const lastNoWick = lastWick <= 0.5 || lastWick <= lastBody * 0.02
-    const prevNoWick = prevWick <= 0.5 || prevWick <= prevBody * 0.02
+    // Entry Conditions check: previous 2 closed candles open=low
+    // We use a small epsilon like 0.05 to handle any float precision issues 
+    // but effectively enforce open == low.
+    const lastNoWick = Math.abs(last.open - last.low) <= 0.05
+    const prevNoWick = Math.abs(prev.open - prev.low) <= 0.05
 
     const isEntry = (
-        lastNoWick && prevNoWick &&     // 2 consecutive no lower wick
+        lastNoWick && prevNoWick &&     // 2 consecutive no lower wick (open=low)
         last.close > last.open &&       // Green candles
         prev.close > prev.open &&
         lastJma > lastEma &&            // JMA 7 > EMA 20
-        last.close > lastJma            // Close > JMA 7
+        last.close > lastJma            // Close of 2nd candle > JMA 7
     )
 
     // Exit Conditions check

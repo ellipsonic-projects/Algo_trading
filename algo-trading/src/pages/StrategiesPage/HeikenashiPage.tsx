@@ -312,7 +312,7 @@ export default function HeikenashiPage() {
 
                 const scanExchange =
                     snapCe.exchange === 'BFO' ? 'BFO' :
-                    snapCe.exchange === 'MCX' ? 'MCX' : 'NFO'
+                        snapCe.exchange === 'MCX' ? 'MCX' : 'NFO'
 
                 const lookbackMap: Record<string, number> = {
                     ONE_MINUTE: 100,
@@ -443,8 +443,8 @@ export default function HeikenashiPage() {
 
         const contract =
             ceContract?.tradingsymbol === activeTradePremium ? ceContract :
-            peContract?.tradingsymbol === activeTradePremium ? peContract :
-            null
+                peContract?.tradingsymbol === activeTradePremium ? peContract :
+                    null
 
         if (!contract) return
 
@@ -453,7 +453,7 @@ export default function HeikenashiPage() {
             if (cancelled) return
             try {
                 const res = await apiGet<{ ltp: number }>(
-                    `/market/ltp?exchange=${encodeURIComponent(contract.exchange)}&symboltoken=${encodeURIComponent(contract.symboltoken)}`
+                    `/market/ltp?exchange=${encodeURIComponent(contract.exchange)}&tradingsymbol=${encodeURIComponent(contract.tradingsymbol)}&symboltoken=${encodeURIComponent(contract.symboltoken)}`
                 )
                 if (!cancelled) setCurrentLtp(res.ltp)
             } catch (e) {
@@ -682,11 +682,10 @@ export default function HeikenashiPage() {
                                     </div>
                                     <div>
                                         <p className="text-[10px] font-bold text-slate-400 uppercase">P&amp;L</p>
-                                        <p className={`text-xl font-black mt-1 ${
-                                            currentLtp && entryPrice
+                                        <p className={`text-xl font-black mt-1 ${currentLtp && entryPrice
                                                 ? currentLtp >= entryPrice ? 'text-emerald-500' : 'text-rose-500'
                                                 : 'text-slate-400'
-                                        }`}>
+                                            }`}>
                                             {currentLtp && entryPrice
                                                 ? `₹${((currentLtp - entryPrice) * quantity).toFixed(2)}`
                                                 : '---'}
@@ -721,11 +720,10 @@ export default function HeikenashiPage() {
                                             key={mode}
                                             onClick={() => setStrikeMode(mode)}
                                             disabled={isRunning}
-                                            className={`py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                                                strikeMode === mode
+                                            className={`py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${strikeMode === mode
                                                     ? 'bg-cyan-500 text-white shadow-lg shadow-cyan-500/20'
                                                     : 'bg-slate-50 dark:bg-white/5 text-slate-400 hover:text-slate-600'
-                                            }`}
+                                                }`}
                                         >
                                             {mode}
                                         </button>
@@ -793,22 +791,20 @@ export default function HeikenashiPage() {
                                 Live Strategy Monitor
                             </h3>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div className={`border rounded-2xl p-6 backdrop-blur-xl transition-all ${
-                                    activeTradePremium === ceContract?.tradingsymbol
+                                <div className={`border rounded-2xl p-6 backdrop-blur-xl transition-all ${activeTradePremium === ceContract?.tradingsymbol
                                         ? 'bg-cyan-500/20 border-cyan-500/40'
                                         : 'bg-white/5 border-white/10'
-                                }`}>
+                                    }`}>
                                     <p className="text-[10px] font-black text-cyan-500 uppercase tracking-widest mb-1">Analyzed CE</p>
                                     {activeTradePremium === ceContract?.tradingsymbol && (
                                         <p className="text-[9px] font-black text-cyan-400 uppercase tracking-widest mb-2">● ACTIVE TRADE</p>
                                     )}
                                     <p className="text-xl font-black text-white">{monitoredPremiums.ce}</p>
                                 </div>
-                                <div className={`border rounded-2xl p-6 backdrop-blur-xl transition-all ${
-                                    activeTradePremium === peContract?.tradingsymbol
+                                <div className={`border rounded-2xl p-6 backdrop-blur-xl transition-all ${activeTradePremium === peContract?.tradingsymbol
                                         ? 'bg-rose-500/20 border-rose-500/40'
                                         : 'bg-white/5 border-white/10'
-                                }`}>
+                                    }`}>
                                     <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest mb-1">Analyzed PE</p>
                                     {activeTradePremium === peContract?.tradingsymbol && (
                                         <p className="text-[9px] font-black text-rose-400 uppercase tracking-widest mb-2">● ACTIVE TRADE</p>
@@ -823,13 +819,12 @@ export default function HeikenashiPage() {
                             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                                 {checkpoints.map(cp => (
                                     <div key={cp.id} className="flex items-center gap-3 bg-white/[0.02] border border-white/5 p-4 rounded-xl">
-                                        <div className={`w-2 h-2 rounded-full ${
-                                            cp.status === 'success'
+                                        <div className={`w-2 h-2 rounded-full ${cp.status === 'success'
                                                 ? 'bg-emerald-500 shadow-lg shadow-emerald-500/50'
                                                 : cp.status === 'error'
-                                                ? 'bg-rose-500'
-                                                : 'bg-white/20'
-                                        }`} />
+                                                    ? 'bg-rose-500'
+                                                    : 'bg-white/20'
+                                            }`} />
                                         <span className="text-[11px] font-bold text-white/60 uppercase">{cp.label}</span>
                                     </div>
                                 ))}

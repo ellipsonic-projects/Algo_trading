@@ -136,6 +136,8 @@ export default function HeikenashiPage() {
         premium: null,
     })
 
+    const lastEntryTimeRef = useRef<string | null>(null)
+
     /** Single helper that keeps state + ref in sync atomically. */
     const setActiveTrade = useCallback((tradeId: string | null, premium: string | null) => {
         activeTradeRef.current = { tradeId, premium }
@@ -198,6 +200,7 @@ export default function HeikenashiPage() {
         setActiveTrade(null, null)
         setEntryPrice(null)
         setCurrentLtp(null)
+        lastEntryTimeRef.current = null
     }, [setActiveTrade])
 
     // ─── Recover open trade on mount ─────────────────────────────────────────
@@ -350,18 +353,23 @@ export default function HeikenashiPage() {
                 const ceSignal = analyzeHeikenAshiStrategy(ceHa)
                 const peSignal = analyzeHeikenAshiStrategy(peHa)
 
+                const ceLastClosedTs = ceHa.length >= 2 ? ceHa[ceHa.length - 2].ts : null
+                const peLastClosedTs = peHa.length >= 2 ? peHa[peHa.length - 2].ts : null
+
                 console.log(`[HA SCAN] CE Signal:`, JSON.stringify(ceSignal))
                 console.log(`[HA SCAN] PE Signal:`, JSON.stringify(peSignal))
                 console.log(`[HA SCAN] ActiveTradeId (ref): ${currentTradeId}, Premium (ref): ${currentPremium}`)
 
                 if (!currentTradeId) {
                     // ── ENTRY LOGIC ──────────────────────────────────────────
-                    if (ceSignal.isEntry) {
+                    if (ceSignal.isEntry && ceLastClosedTs !== lastEntryTimeRef.current) {
                         console.log(`[HA ENTRY] CE @ ${ceSignal.haClose}`)
                         setMessage(`HA Long Entry CE @ ${ceSignal.haClose}`)
                         setState('IN_POSITION')
                         setEntryPrice(ceSignal.haClose)
                         setTrend('BULLISH')
+
+                        lastEntryTimeRef.current = ceLastClosedTs
 
                         // Mark premium immediately in the ref so the next interval
                         // tick sees it even before the API call completes.
@@ -376,12 +384,14 @@ export default function HeikenashiPage() {
                         })
                         setActiveTrade(res.data.trade._id, snapCe.tradingsymbol)
 
-                    } else if (peSignal.isEntry) {
+                    } else if (peSignal.isEntry && peLastClosedTs !== lastEntryTimeRef.current) {
                         console.log(`[HA ENTRY] PE @ ${peSignal.haClose}`)
                         setMessage(`HA Long Entry PE @ ${peSignal.haClose}`)
                         setState('IN_POSITION')
                         setEntryPrice(peSignal.haClose)
                         setTrend('BEARISH')
+
+                        lastEntryTimeRef.current = peLastClosedTs
 
                         // Mark premium immediately in the ref
                         setActiveTrade(null, snapPe.tradingsymbol)

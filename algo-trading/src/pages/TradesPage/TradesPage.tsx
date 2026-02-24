@@ -11,7 +11,6 @@ import {
     Target
 } from 'lucide-react'
 import { apiGet } from '../../trading'
-import StrategyPlaceholderLayout from '../StrategiesPage/StrategyPlaceholderLayout'
 
 type Trade = {
     _id: string
@@ -87,7 +86,6 @@ export default function TradesPage() {
     }
 
     return (
-        <StrategyPlaceholderLayout title="Trade Ledger">
             <div className="space-y-6">
                 {/* Filters Panel */}
                 <div className="bg-white dark:bg-slate-900 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm p-6 overflow-hidden relative">
@@ -143,7 +141,8 @@ export default function TradesPage() {
                                 <tr className="border-b border-slate-100 dark:border-white/5">
                                     <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">Timestamp</th>
                                     <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">Strategy</th>
-                                    <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">Asset</th>
+                                    <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">Index</th>
+                                    <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">Premium</th>
                                     <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400 text-right">Qty</th>
                                     <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400 text-right">Entry</th>
                                     <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400 text-right">Exit</th>
@@ -154,7 +153,7 @@ export default function TradesPage() {
                             <tbody className="divide-y divide-slate-100 dark:divide-white/5">
                                 {loading ? (
                                     <tr>
-                                        <td colSpan={8} className="px-8 py-20 text-center">
+                                        <td colSpan={9} className="px-8 py-20 text-center">
                                             <div className="flex flex-col items-center gap-4">
                                                 <div className="w-12 h-12 border-4 border-cyan-500/20 border-t-cyan-500 rounded-full animate-spin" />
                                                 <p className="text-sm font-black text-slate-500 uppercase tracking-widest">Synchronizing Ledger...</p>
@@ -163,7 +162,7 @@ export default function TradesPage() {
                                     </tr>
                                 ) : trades.length === 0 ? (
                                     <tr>
-                                        <td colSpan={8} className="px-8 py-20 text-center">
+                                        <td colSpan={9} className="px-8 py-20 text-center">
                                             <p className="text-sm font-black text-slate-400 uppercase tracking-widest">No transaction records found</p>
                                         </td>
                                     </tr>
@@ -186,6 +185,11 @@ export default function TradesPage() {
                                             <td className="px-8 py-5">
                                                 <span className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tighter">
                                                     {trade.index}
+                                                </span>
+                                            </td>
+                                            <td className="px-8 py-5">
+                                                <span className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tighter">
+                                                    {trade.premium}
                                                 </span>
                                             </td>
                                             <td className="px-8 py-5 text-right">
@@ -256,6 +260,5 @@ export default function TradesPage() {
                     </div>
                 </div>
             </div>
-        </StrategyPlaceholderLayout>
     )
 }

@@ -28,6 +28,7 @@ const INDEX_CONFIG: Record<Underlying, { qty: number, step: number, exchange: Ex
 type StrategyState = 'WAITING' | 'SCANNING' | 'IN_POSITION' | 'COOLDOWN' | 'STOPPED'
 type Trend = 'BULLISH' | 'BEARISH' | 'NEUTRAL'
 type StrikeMode = 'ATM' | 'ITM' | 'OTM'
+type ExitStrategy = 'CANDLES' | 'TARGET'
 
 type IndexOptionContract = {
     exchange: Exchange
@@ -103,6 +104,10 @@ export default function HeikenashiPage() {
     const [strikeDepth, setStrikeDepth] = useState<number>(1)
     const [premiumMin, setPremiumMin] = useState<number>(300)
     const [premiumMax, setPremiumMax] = useState<number>(400)
+
+    // Exit Strategy Configuration
+    const [exitStrategy, setExitStrategy] = useState<ExitStrategy>('CANDLES')
+    const [targetPoints, setTargetPoints] = useState<number>(20)
 
     const [liveTradingConsent, setLiveTradingConsent] = useState(false)
 
@@ -399,20 +404,55 @@ export default function HeikenashiPage() {
                     const isCeTrade = currentPremium === snapCe.tradingsymbol
                     const isPeTrade = currentPremium === snapPe.tradingsymbol
 
-                    const shouldExit =
-                        (isCeTrade && ceSignal.isExit) ||
-                        (isPeTrade && peSignal.isExit)
+                    let shouldExit = false
+                    let exitPrice = currentLtp || (isCeTrade ? ceSignal.haClose : peSignal.haClose)
+                    let exitReason = ''
 
-                    const exitPrice = isCeTrade ? ceSignal.haClose : peSignal.haClose
+                    if (exitStrategy === 'CANDLES') {
+                        shouldExit = (isCeTrade && ceSignal.isExit) || (isPeTrade && peSignal.isExit)
+                        if (shouldExit) {
+                            exitPrice = isCeTrade ? ceSignal.haClose : peSignal.haClose
+                            exitReason = 'HA_TREND_REVERSAL'
+                        }
+                    } else if (exitStrategy === 'TARGET') {
+                        // We need the current LTP of the specific option to check targets.
+                        // We can fetch it directly here if currentLtp is stale, or rely on the monitor.
+                        // For safety inside the loop, let's do a quick fetch of the active instrument's LTP 
+                        // to guarantee we have the absolute latest price for SL/Target checking.
+                        const activeToken = isCeTrade ? snapCe.symboltoken : snapPe.symboltoken
+                        const activeExchange = isCeTrade ? snapCe.exchange : snapPe.exchange
+
+                        try {
+                            const ltpRes = await apiGet<{ ltp: number }>(`/market/ltp?exchange=${encodeURIComponent(activeExchange)}&tradingsymbol=${encodeURIComponent(currentPremium || '')}&symboltoken=${encodeURIComponent(activeToken)}`)
+                            const livePrice = ltpRes.ltp
+
+                            if (entryPrice) {
+                                const targetPrice = entryPrice + targetPoints
+                                const slPrice = entryPrice - (targetPoints * 2)
+
+                                if (livePrice >= targetPrice) {
+                                    shouldExit = true
+                                    exitPrice = livePrice
+                                    exitReason = 'Target'
+                                } else if (livePrice <= slPrice) {
+                                    shouldExit = true
+                                    exitPrice = livePrice
+                                    exitReason = 'SL'
+                                }
+                            }
+                        } catch (err) {
+                            console.error('LTP fetch failed during target check', err)
+                        }
+                    }
 
                     if (shouldExit) {
-                        console.log(`[HA EXIT] @ ${exitPrice}`)
-                        setMessage(`HA Exit Signal @ ${exitPrice}`)
+                        console.log(`[HA EXIT] @ ${exitPrice} Reason: ${exitReason}`)
+                        setMessage(`HA Exit Signal @ ${exitPrice} (${exitReason})`)
 
                         await apiPost('/trades/update-exit', {
                             tradeId: currentTradeId,
                             exitPrice,
-                            exitReason: 'HA_TREND_REVERSAL',
+                            exitReason,
                         })
 
                         setActiveTrade(null, null)
@@ -435,7 +475,7 @@ export default function HeikenashiPage() {
 
         // ✅ activeTradeId / activeTradePremium intentionally excluded —
         //    we read live values from activeTradeRef inside the closure instead.
-    }, [isRunning, state, underlying, ceContract, peContract, baseTimeframe, quantity, setActiveTrade])
+    }, [isRunning, state, underlying, ceContract, peContract, baseTimeframe, quantity, setActiveTrade, exitStrategy, targetPoints, currentLtp, entryPrice])
 
     // ─── LTP Monitor for active position ─────────────────────────────────────
     useEffect(() => {
@@ -683,8 +723,8 @@ export default function HeikenashiPage() {
                                     <div>
                                         <p className="text-[10px] font-bold text-slate-400 uppercase">P&amp;L</p>
                                         <p className={`text-xl font-black mt-1 ${currentLtp && entryPrice
-                                                ? currentLtp >= entryPrice ? 'text-emerald-500' : 'text-rose-500'
-                                                : 'text-slate-400'
+                                            ? currentLtp >= entryPrice ? 'text-emerald-500' : 'text-rose-500'
+                                            : 'text-slate-400'
                                             }`}>
                                             {currentLtp && entryPrice
                                                 ? `₹${((currentLtp - entryPrice) * quantity).toFixed(2)}`
@@ -721,8 +761,8 @@ export default function HeikenashiPage() {
                                             onClick={() => setStrikeMode(mode)}
                                             disabled={isRunning}
                                             className={`py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${strikeMode === mode
-                                                    ? 'bg-cyan-500 text-white shadow-lg shadow-cyan-500/20'
-                                                    : 'bg-slate-50 dark:bg-white/5 text-slate-400 hover:text-slate-600'
+                                                ? 'bg-cyan-500 text-white shadow-lg shadow-cyan-500/20'
+                                                : 'bg-slate-50 dark:bg-white/5 text-slate-400 hover:text-slate-600'
                                                 }`}
                                         >
                                             {mode}
@@ -772,6 +812,47 @@ export default function HeikenashiPage() {
                                     />
                                 </div>
                             </div>
+                            <div>
+                                <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 block">Exit Strategy</label>
+                                <div className="space-y-3">
+                                    <label className="flex items-center gap-3 cursor-pointer group" onClick={() => setExitStrategy('CANDLES')}>
+                                        <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${exitStrategy === 'CANDLES' ? 'border-cyan-500 bg-cyan-500/10' : 'border-slate-300 dark:border-white/20'}`}>
+                                            <div className={`w-2.5 h-2.5 rounded-full bg-cyan-500 transition-all ${exitStrategy === 'CANDLES' ? 'scale-100 opacity-100' : 'scale-0 opacity-0'}`} />
+                                        </div>
+                                        <span className={`text-sm font-bold transition-all ${exitStrategy === 'CANDLES' ? 'text-cyan-500' : 'text-slate-500 group-hover:text-slate-700 dark:group-hover:text-slate-300'}`}>
+                                            2 Consecutive Red Candles
+                                        </span>
+                                    </label>
+                                    <label className="flex items-center gap-3 cursor-pointer group" onClick={() => setExitStrategy('TARGET')}>
+                                        <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${exitStrategy === 'TARGET' ? 'border-cyan-500 bg-cyan-500/10' : 'border-slate-300 dark:border-white/20'}`}>
+                                            <div className={`w-2.5 h-2.5 rounded-full bg-cyan-500 transition-all ${exitStrategy === 'TARGET' ? 'scale-100 opacity-100' : 'scale-0 opacity-0'}`} />
+                                        </div>
+                                        <span className={`text-sm font-bold transition-all ${exitStrategy === 'TARGET' ? 'text-cyan-500' : 'text-slate-500 group-hover:text-slate-700 dark:group-hover:text-slate-300'}`}>
+                                            Target Points
+                                        </span>
+                                    </label>
+                                </div>
+                            </div>
+
+                            {exitStrategy === 'TARGET' && (
+                                <div className="animate-in slide-in-from-top-2 duration-300">
+                                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 block">Points to Target</label>
+                                    <div className="flex items-center gap-3">
+                                        <input
+                                            type="number"
+                                            value={targetPoints}
+                                            onChange={(e) => setTargetPoints(parseFloat(e.target.value) || 0)}
+                                            disabled={isRunning}
+                                            placeholder="e.g. 20"
+                                            className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-xs font-bold text-slate-900 dark:text-white outline-none focus:ring-1 focus:ring-cyan-500/20"
+                                        />
+                                        <div className="text-[10px] font-black text-rose-500 uppercase tracking-widest whitespace-nowrap">
+                                            SL: {targetPoints * 2} pts
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
                         </div>
                     </div>
                 </div>
@@ -792,8 +873,8 @@ export default function HeikenashiPage() {
                             </h3>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div className={`border rounded-2xl p-6 backdrop-blur-xl transition-all ${activeTradePremium === ceContract?.tradingsymbol
-                                        ? 'bg-cyan-500/20 border-cyan-500/40'
-                                        : 'bg-white/5 border-white/10'
+                                    ? 'bg-cyan-500/20 border-cyan-500/40'
+                                    : 'bg-white/5 border-white/10'
                                     }`}>
                                     <p className="text-[10px] font-black text-cyan-500 uppercase tracking-widest mb-1">Analyzed CE</p>
                                     {activeTradePremium === ceContract?.tradingsymbol && (
@@ -802,8 +883,8 @@ export default function HeikenashiPage() {
                                     <p className="text-xl font-black text-white">{monitoredPremiums.ce}</p>
                                 </div>
                                 <div className={`border rounded-2xl p-6 backdrop-blur-xl transition-all ${activeTradePremium === peContract?.tradingsymbol
-                                        ? 'bg-rose-500/20 border-rose-500/40'
-                                        : 'bg-white/5 border-white/10'
+                                    ? 'bg-rose-500/20 border-rose-500/40'
+                                    : 'bg-white/5 border-white/10'
                                     }`}>
                                     <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest mb-1">Analyzed PE</p>
                                     {activeTradePremium === peContract?.tradingsymbol && (
@@ -820,10 +901,10 @@ export default function HeikenashiPage() {
                                 {checkpoints.map(cp => (
                                     <div key={cp.id} className="flex items-center gap-3 bg-white/[0.02] border border-white/5 p-4 rounded-xl">
                                         <div className={`w-2 h-2 rounded-full ${cp.status === 'success'
-                                                ? 'bg-emerald-500 shadow-lg shadow-emerald-500/50'
-                                                : cp.status === 'error'
-                                                    ? 'bg-rose-500'
-                                                    : 'bg-white/20'
+                                            ? 'bg-emerald-500 shadow-lg shadow-emerald-500/50'
+                                            : cp.status === 'error'
+                                                ? 'bg-rose-500'
+                                                : 'bg-white/20'
                                             }`} />
                                         <span className="text-[11px] font-bold text-white/60 uppercase">{cp.label}</span>
                                     </div>

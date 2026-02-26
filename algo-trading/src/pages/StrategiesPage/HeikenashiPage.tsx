@@ -443,6 +443,23 @@ export default function HeikenashiPage() {
                         // tick sees it even before the API call completes.
                         setActiveTrade(null, snapCe.tradingsymbol)
 
+                        if (liveTradingConsent) {
+                            try {
+                                await apiPost('/angel/orders/simple', {
+                                    exchange: snapCe.exchange,
+                                    tradingsymbol: snapCe.tradingsymbol,
+                                    symboltoken: snapCe.symboltoken,
+                                    transactiontype: 'BUY',
+                                    producttype: 'CARRYFORWARD',
+                                    quantity: quantity,
+                                    ordertype: 'MARKET',
+                                })
+                                console.log('[HA LIVE] CE Entry order placed via Angel')
+                            } catch (err) {
+                                console.error('[HA LIVE] CE Entry failed', err)
+                            }
+                        }
+
                         const res = await apiPost<{ data: { trade: { _id: string } } }>('/trades/record', {
                             strategyName: 'HeikenAshi',
                             index: underlying,
@@ -463,6 +480,23 @@ export default function HeikenashiPage() {
 
                         // Mark premium immediately in the ref
                         setActiveTrade(null, snapPe.tradingsymbol)
+
+                        if (liveTradingConsent) {
+                            try {
+                                await apiPost('/angel/orders/simple', {
+                                    exchange: snapPe.exchange,
+                                    tradingsymbol: snapPe.tradingsymbol,
+                                    symboltoken: snapPe.symboltoken,
+                                    transactiontype: 'BUY',
+                                    producttype: 'CARRYFORWARD',
+                                    quantity: quantity,
+                                    ordertype: 'MARKET',
+                                })
+                                console.log('[HA LIVE] PE Entry order placed via Angel')
+                            } catch (err) {
+                                console.error('[HA LIVE] PE Entry failed', err)
+                            }
+                        }
 
                         const res = await apiPost<{ data: { trade: { _id: string } } }>('/trades/record', {
                             strategyName: 'HeikenAshi',
@@ -526,6 +560,27 @@ export default function HeikenashiPage() {
                     if (shouldExit) {
                         console.log(`[HA EXIT] @ ${exitPrice} Reason: ${exitReason}`)
                         setMessage(`HA Exit Signal @ ${exitPrice} (${exitReason})`)
+
+                        if (liveTradingConsent) {
+                            const activeToken = isCeTrade ? snapCe.symboltoken : snapPe.symboltoken
+                            const activeExchange = isCeTrade ? snapCe.exchange : snapPe.exchange
+                            const activeSymbol = currentPremium || (isCeTrade ? snapCe.tradingsymbol : snapPe.tradingsymbol)
+
+                            try {
+                                await apiPost('/angel/orders/simple', {
+                                    exchange: activeExchange,
+                                    tradingsymbol: activeSymbol,
+                                    symboltoken: activeToken,
+                                    transactiontype: 'SELL',
+                                    producttype: 'CARRYFORWARD',
+                                    quantity: quantity,
+                                    ordertype: 'MARKET',
+                                })
+                                console.log('[HA LIVE] Exit order placed via Angel')
+                            } catch (err) {
+                                console.error('[HA LIVE] Exit failed', err)
+                            }
+                        }
 
                         await apiPost('/trades/update-exit', {
                             tradeId: currentTradeId,

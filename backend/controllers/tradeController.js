@@ -155,6 +155,40 @@ exports.getAllTrades = async (req, res) => {
             .skip((page - 1) * limit)
             .limit(parseInt(limit));
 
+        // Calculate analytics based on the SAME query used for filtering
+        const analytics = await Trade.aggregate([
+            { $match: query },
+            {
+                $group: {
+                    _id: null,
+                    totalPnl: { $sum: '$pnl' },
+                    totalTrades: { $sum: 1 }
+                }
+            }
+        ]);
+
+        let stats = {
+            totalPnl: 0,
+            totalTrades: 0,
+            taxes: 0,
+            netPnl: 0
+        };
+
+        if (analytics.length > 0) {
+            const totalPnl = analytics[0].totalPnl || 0;
+            // Assuming tax calculation is around Rs. 60 per trade (Brokerage + STT + other charges for options usually averages out here for small quantities)
+            // Or we could use a flat percentage. Let's use a standard Rs. 50 per executed trade (buy+sell) as an approximation 
+            // since actual taxes aren't stored in the DB row.
+            const estimatedTaxes = analytics[0].totalTrades * 58;
+
+            stats = {
+                totalPnl: totalPnl,
+                totalTrades: analytics[0].totalTrades,
+                taxes: estimatedTaxes,
+                netPnl: totalPnl - estimatedTaxes
+            };
+        }
+
         const total = await Trade.countDocuments(query);
 
         res.status(200).json({
@@ -162,6 +196,7 @@ exports.getAllTrades = async (req, res) => {
             results: trades.length,
             total,
             pages: Math.ceil(total / limit),
+            analytics: stats,
             data: {
                 trades
             }

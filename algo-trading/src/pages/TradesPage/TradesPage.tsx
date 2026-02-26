@@ -34,6 +34,12 @@ type TradesResponse = {
     results: number
     total: number
     pages: number
+    analytics?: {
+        totalPnl: number
+        totalTrades: number
+        taxes: number
+        netPnl: number
+    }
     data: {
         trades: Trade[]
     }
@@ -60,6 +66,13 @@ export default function TradesPage() {
         endDate: ''
     })
 
+    const [analytics, setAnalytics] = useState({
+        totalPnl: 0,
+        totalTrades: 0,
+        taxes: 0,
+        netPnl: 0
+    })
+
     const fetchTrades = useCallback(async () => {
         setLoading(true)
         try {
@@ -74,6 +87,9 @@ export default function TradesPage() {
                 setTrades(response.data.trades)
                 setTotalPages(response.pages)
                 setTotalResults(response.total)
+                if (response.analytics) {
+                    setAnalytics(response.analytics)
+                }
             }
         } catch (error) {
             console.error('Error fetching trades:', error)
@@ -185,6 +201,51 @@ export default function TradesPage() {
                                 <RefreshCw className="w-4 h-4" />
                             </button>
                         </div>
+                    </div>
+                </div>
+            </div>
+
+            {/* Analytics Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <div className="bg-white dark:bg-slate-900 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm p-6 relative overflow-hidden group">
+                    <div className="absolute top-0 right-0 p-6 opacity-[0.02] group-hover:opacity-[0.05] transition-opacity pointer-events-none">
+                        <TrendingUp className="w-24 h-24 rotate-12" />
+                    </div>
+                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-2">Total PNL</p>
+                    <div className={`flex items-baseline gap-2 ${analytics.totalPnl >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                        <span className="text-3xl font-black tracking-tighter">₹{Math.abs(analytics.totalPnl).toFixed(2)}</span>
+                        {analytics.totalPnl >= 0 ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
+                    </div>
+                </div>
+
+                <div className="bg-white dark:bg-slate-900 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm p-6 relative overflow-hidden group">
+                    <div className="absolute top-0 right-0 p-6 opacity-[0.02] group-hover:opacity-[0.05] transition-opacity pointer-events-none">
+                        <Target className="w-24 h-24 rotate-12" />
+                    </div>
+                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-2">Total Trades</p>
+                    <div className="text-3xl font-black tracking-tighter text-slate-900 dark:text-white">
+                        {analytics.totalTrades}
+                    </div>
+                </div>
+
+                <div className="bg-white dark:bg-slate-900 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm p-6 relative overflow-hidden group">
+                    <div className="absolute top-0 right-0 p-6 opacity-[0.02] group-hover:opacity-[0.05] transition-opacity pointer-events-none">
+                        <Filter className="w-24 h-24 rotate-12" />
+                    </div>
+                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-2">Est. Taxes & Fees</p>
+                    <div className="text-3xl font-black tracking-tighter text-rose-500">
+                        ₹{analytics.taxes.toFixed(2)}
+                    </div>
+                </div>
+
+                <div className="bg-white dark:bg-slate-900 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm p-6 relative overflow-hidden group">
+                    <div className="absolute top-0 right-0 p-6 opacity-[0.02] group-hover:opacity-[0.05] transition-opacity pointer-events-none">
+                        <TrendingUp className="w-24 h-24 rotate-12" />
+                    </div>
+                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-2">Net PNL</p>
+                    <div className={`flex items-baseline gap-2 ${analytics.netPnl >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                        <span className="text-3xl font-black tracking-tighter">₹{Math.abs(analytics.netPnl).toFixed(2)}</span>
+                        {analytics.netPnl >= 0 ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
                     </div>
                 </div>
             </div>

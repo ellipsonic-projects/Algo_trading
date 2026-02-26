@@ -431,21 +431,14 @@ export default function HeikenashiPage() {
                 if (!currentTradeId) {
                     // ── ENTRY LOGIC ──────────────────────────────────────────
                     if (ceSignal.isEntry && ceLastClosedTs !== lastEntryTimeRef.current) {
-                        console.log(`[HA ENTRY] CE @ ${ceSignal.haClose}`)
-                        setMessage(`HA Long Entry CE @ ${ceSignal.haClose}`)
-                        setState('IN_POSITION')
-                        setEntryPrice(ceSignal.haClose)
-                        setTrend('BULLISH')
-
                         lastEntryTimeRef.current = ceLastClosedTs
-
-                        // Mark premium immediately in the ref so the next interval
-                        // tick sees it even before the API call completes.
                         setActiveTrade(null, snapCe.tradingsymbol)
+
+                        let actualEntryPrice = ceSignal.haClose
 
                         if (liveTradingConsent) {
                             try {
-                                await apiPost('/angel/orders/simple', {
+                                const orderRes = await apiPost<any>('/angel/orders/simple', {
                                     exchange: snapCe.exchange,
                                     tradingsymbol: snapCe.tradingsymbol,
                                     symboltoken: snapCe.symboltoken,
@@ -455,35 +448,50 @@ export default function HeikenashiPage() {
                                     ordertype: 'MARKET',
                                 })
                                 console.log('[HA LIVE] CE Entry order placed via Angel')
+                                const orderId = orderRes?.item?.response?.data?.orderid || orderRes?.item?.response?.orderid
+                                if (orderId) {
+                                    for (let i = 0; i < 4; i++) {
+                                        await new Promise(r => setTimeout(r, 1000))
+                                        const ob = await apiGet<any>('/angel/orderbook')
+                                        const order = (ob?.data || []).find((o: any) => String(o.orderid) === String(orderId))
+                                        if (order && (order.status === 'complete' || order.status === 'executed' || order.orderstatus === 'complete')) {
+                                            const execPrice = parseFloat(order.averageprice || order.price)
+                                            if (!isNaN(execPrice) && execPrice > 0) {
+                                                actualEntryPrice = execPrice
+                                                break
+                                            }
+                                        }
+                                    }
+                                }
                             } catch (err) {
                                 console.error('[HA LIVE] CE Entry failed', err)
                             }
                         }
+
+                        console.log(`[HA ENTRY] CE @ ${actualEntryPrice}`)
+                        setMessage(`HA Long Entry CE @ ${actualEntryPrice}`)
+                        setState('IN_POSITION')
+                        setEntryPrice(actualEntryPrice)
+                        setTrend('BULLISH')
 
                         const res = await apiPost<{ data: { trade: { _id: string } } }>('/trades/record', {
                             strategyName: 'HeikenAshi',
                             index: underlying,
                             premium: snapCe.tradingsymbol,
                             qty: quantity,
-                            buyPrice: ceSignal.haClose,
+                            buyPrice: actualEntryPrice,
                         })
                         setActiveTrade(res.data.trade._id, snapCe.tradingsymbol)
 
                     } else if (peSignal.isEntry && peLastClosedTs !== lastEntryTimeRef.current) {
-                        console.log(`[HA ENTRY] PE @ ${peSignal.haClose}`)
-                        setMessage(`HA Long Entry PE @ ${peSignal.haClose}`)
-                        setState('IN_POSITION')
-                        setEntryPrice(peSignal.haClose)
-                        setTrend('BEARISH')
-
                         lastEntryTimeRef.current = peLastClosedTs
-
-                        // Mark premium immediately in the ref
                         setActiveTrade(null, snapPe.tradingsymbol)
+
+                        let actualEntryPrice = peSignal.haClose
 
                         if (liveTradingConsent) {
                             try {
-                                await apiPost('/angel/orders/simple', {
+                                const orderRes = await apiPost<any>('/angel/orders/simple', {
                                     exchange: snapPe.exchange,
                                     tradingsymbol: snapPe.tradingsymbol,
                                     symboltoken: snapPe.symboltoken,
@@ -493,17 +501,38 @@ export default function HeikenashiPage() {
                                     ordertype: 'MARKET',
                                 })
                                 console.log('[HA LIVE] PE Entry order placed via Angel')
+                                const orderId = orderRes?.item?.response?.data?.orderid || orderRes?.item?.response?.orderid
+                                if (orderId) {
+                                    for (let i = 0; i < 4; i++) {
+                                        await new Promise(r => setTimeout(r, 1000))
+                                        const ob = await apiGet<any>('/angel/orderbook')
+                                        const order = (ob?.data || []).find((o: any) => String(o.orderid) === String(orderId))
+                                        if (order && (order.status === 'complete' || order.status === 'executed' || order.orderstatus === 'complete')) {
+                                            const execPrice = parseFloat(order.averageprice || order.price)
+                                            if (!isNaN(execPrice) && execPrice > 0) {
+                                                actualEntryPrice = execPrice
+                                                break
+                                            }
+                                        }
+                                    }
+                                }
                             } catch (err) {
                                 console.error('[HA LIVE] PE Entry failed', err)
                             }
                         }
+
+                        console.log(`[HA ENTRY] PE @ ${actualEntryPrice}`)
+                        setMessage(`HA Long Entry PE @ ${actualEntryPrice}`)
+                        setState('IN_POSITION')
+                        setEntryPrice(actualEntryPrice)
+                        setTrend('BEARISH')
 
                         const res = await apiPost<{ data: { trade: { _id: string } } }>('/trades/record', {
                             strategyName: 'HeikenAshi',
                             index: underlying,
                             premium: snapPe.tradingsymbol,
                             qty: quantity,
-                            buyPrice: peSignal.haClose,
+                            buyPrice: actualEntryPrice,
                         })
                         setActiveTrade(res.data.trade._id, snapPe.tradingsymbol)
 
@@ -558,8 +587,7 @@ export default function HeikenashiPage() {
                     }
 
                     if (shouldExit) {
-                        console.log(`[HA EXIT] @ ${exitPrice} Reason: ${exitReason}`)
-                        setMessage(`HA Exit Signal @ ${exitPrice} (${exitReason})`)
+                        let actualExitPrice = exitPrice
 
                         if (liveTradingConsent) {
                             const activeToken = isCeTrade ? snapCe.symboltoken : snapPe.symboltoken
@@ -567,7 +595,7 @@ export default function HeikenashiPage() {
                             const activeSymbol = currentPremium || (isCeTrade ? snapCe.tradingsymbol : snapPe.tradingsymbol)
 
                             try {
-                                await apiPost('/angel/orders/simple', {
+                                const orderRes = await apiPost<any>('/angel/orders/simple', {
                                     exchange: activeExchange,
                                     tradingsymbol: activeSymbol,
                                     symboltoken: activeToken,
@@ -577,14 +605,32 @@ export default function HeikenashiPage() {
                                     ordertype: 'MARKET',
                                 })
                                 console.log('[HA LIVE] Exit order placed via Angel')
+                                const orderId = orderRes?.item?.response?.data?.orderid || orderRes?.item?.response?.orderid
+                                if (orderId) {
+                                    for (let i = 0; i < 4; i++) {
+                                        await new Promise(r => setTimeout(r, 1000))
+                                        const ob = await apiGet<any>('/angel/orderbook')
+                                        const order = (ob?.data || []).find((o: any) => String(o.orderid) === String(orderId))
+                                        if (order && (order.status === 'complete' || order.status === 'executed' || order.orderstatus === 'complete')) {
+                                            const execPrice = parseFloat(order.averageprice || order.price)
+                                            if (!isNaN(execPrice) && execPrice > 0) {
+                                                actualExitPrice = execPrice
+                                                break
+                                            }
+                                        }
+                                    }
+                                }
                             } catch (err) {
                                 console.error('[HA LIVE] Exit failed', err)
                             }
                         }
 
+                        console.log(`[HA EXIT] @ ${actualExitPrice} Reason: ${exitReason}`)
+                        setMessage(`HA Exit Signal @ ${actualExitPrice} (${exitReason})`)
+
                         await apiPost('/trades/update-exit', {
                             tradeId: currentTradeId,
-                            exitPrice,
+                            exitPrice: actualExitPrice,
                             exitReason,
                         })
 

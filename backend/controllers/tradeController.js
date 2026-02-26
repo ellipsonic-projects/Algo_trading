@@ -119,11 +119,26 @@ exports.getStats = async (req, res) => {
 };
 exports.getAllTrades = async (req, res) => {
     try {
-        const { strategyId, startDate, endDate, page = 1, limit = 10 } = req.query;
+        const { strategyId, startDate, endDate, page = 1, limit = 10, searchQuery, exitReason } = req.query;
         const query = { userId: req.user._id };
 
         if (strategyId) {
             query.strategyId = strategyId;
+        }
+
+        if (searchQuery) {
+            query.$or = [
+                { index: { $regex: searchQuery, $options: "i" } },
+                { premium: { $regex: searchQuery, $options: "i" } }
+            ];
+
+            if (!isNaN(searchQuery)) {
+                query.$or.push({ premium: Number(searchQuery) });
+            }
+        }
+
+        if (exitReason) {
+            query.exitReason = { $regex: new RegExp(`^${exitReason}$`, 'i') };
         }
 
         if (startDate || endDate) {
@@ -131,6 +146,8 @@ exports.getAllTrades = async (req, res) => {
             if (startDate) query.createdAt.$gte = new Date(startDate);
             if (endDate) query.createdAt.$lte = new Date(endDate);
         }
+
+        console.log("Trades Query Built:", JSON.stringify(query, null, 2));
 
         const trades = await Trade.find(query)
             .populate('strategyId', 'name')

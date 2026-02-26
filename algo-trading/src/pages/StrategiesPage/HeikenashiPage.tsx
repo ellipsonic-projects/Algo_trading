@@ -122,6 +122,7 @@ export default function HeikenashiPage() {
     // Exit Strategy Configuration
     const [exitStrategy, setExitStrategy] = useState<ExitStrategy>(() => getSavedState('ha_exitStrategy', 'CANDLES'))
     const [targetPoints, setTargetPoints] = useState<number>(() => getSavedState('ha_targetPoints', 20))
+    const [slPoints, setSlPoints] = useState<number>(() => getSavedState('ha_slPoints', 30))
 
     const [liveTradingConsent, setLiveTradingConsent] = useState<boolean>(() => getSavedState('ha_liveTradingConsent', false))
 
@@ -140,8 +141,9 @@ export default function HeikenashiPage() {
         localStorage.setItem('ha_premiumMax', JSON.stringify(premiumMax))
         localStorage.setItem('ha_exitStrategy', JSON.stringify(exitStrategy))
         localStorage.setItem('ha_targetPoints', JSON.stringify(targetPoints))
+        localStorage.setItem('ha_slPoints', JSON.stringify(slPoints))
         localStorage.setItem('ha_liveTradingConsent', JSON.stringify(liveTradingConsent))
-    }, [isRunning, state, underlying, quantity, baseTimeframe, needConfirmation, confirmationTimeframe, strikeMode, strikeDepth, premiumMin, premiumMax, exitStrategy, targetPoints, liveTradingConsent])
+    }, [isRunning, state, underlying, quantity, baseTimeframe, needConfirmation, confirmationTimeframe, strikeMode, strikeDepth, premiumMin, premiumMax, exitStrategy, targetPoints, slPoints, liveTradingConsent])
 
     // Strategy Execution State
     const [selectedExpiry, setSelectedExpiry] = useState<string | null>(null)
@@ -569,7 +571,7 @@ export default function HeikenashiPage() {
 
                             if (entryPrice) {
                                 const targetPrice = entryPrice + targetPoints
-                                const slPrice = entryPrice - (targetPoints * 2)
+                                const slPrice = entryPrice - slPoints
 
                                 if (livePrice >= targetPrice) {
                                     shouldExit = true
@@ -1016,9 +1018,9 @@ export default function HeikenashiPage() {
                             </div>
 
                             {exitStrategy === 'TARGET' && (
-                                <div className="animate-in slide-in-from-top-2 duration-300">
-                                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 block">Points to Target</label>
-                                    <div className="flex items-center gap-3">
+                                <div className="space-y-4 animate-in slide-in-from-top-2 duration-300">
+                                    <div>
+                                        <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 block">Points to Target</label>
                                         <input
                                             type="number"
                                             value={targetPoints}
@@ -1027,9 +1029,17 @@ export default function HeikenashiPage() {
                                             placeholder="e.g. 20"
                                             className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-xs font-bold text-slate-900 dark:text-white outline-none focus:ring-1 focus:ring-cyan-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
                                         />
-                                        <div className="text-[10px] font-black text-rose-500 uppercase tracking-widest whitespace-nowrap">
-                                            SL: {targetPoints * 2} pts
-                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 block">Stop Loss Points</label>
+                                        <input
+                                            type="number"
+                                            value={slPoints}
+                                            onChange={(e) => setSlPoints(parseFloat(e.target.value) || 0)}
+                                            disabled={isRunning}
+                                            placeholder="e.g. 30"
+                                            className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-xs font-bold text-slate-900 dark:text-white outline-none focus:ring-1 focus:ring-rose-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        />
                                     </div>
                                 </div>
                             )}

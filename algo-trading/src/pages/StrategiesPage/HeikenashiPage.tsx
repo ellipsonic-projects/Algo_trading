@@ -6,7 +6,8 @@ import {
     ChevronRight,
     Play,
     Square,
-    TrendingUp
+    TrendingUp,
+    XCircle
 } from 'lucide-react'
 import { useAngelConnection } from '../../shared/angel/AngelConnectionProvider'
 import { apiGet, apiPost } from '../../trading'
@@ -236,6 +237,90 @@ export default function HeikenashiPage() {
         setCurrentLtp(null)
         lastEntryTimeRef.current = null
     }, [setActiveTrade])
+
+    const [isExiting, setIsExiting] = useState(false)
+
+    const manualExitPosition = useCallback(async () => {
+        const { tradeId, premium: currentPremium } = activeTradeRef.current
+        if (!tradeId || !currentPremium) return
+        if (isExiting) return
+        setIsExiting(true)
+        setMessage('Manual exit initiated...')
+
+        try {
+            // Determine which contract we're holding
+            const contract =
+                ceContract?.tradingsymbol === currentPremium ? ceContract :
+                    peContract?.tradingsymbol === currentPremium ? peContract :
+                        null
+
+            // 1. Fetch live LTP for accurate exit price
+            let exitPrice = currentLtp ?? entryPrice ?? 0
+            if (contract) {
+                try {
+                    const ltpRes = await apiGet<{ ltp: number }>(
+                        `/market/ltp?exchange=${encodeURIComponent(contract.exchange)}&tradingsymbol=${encodeURIComponent(contract.tradingsymbol)}&symboltoken=${encodeURIComponent(contract.symboltoken)}`
+                    )
+                    if (ltpRes.ltp > 0) exitPrice = ltpRes.ltp
+                } catch (e) {
+                    console.warn('[HA MANUAL EXIT] LTP fetch failed, using last known price', e)
+                }
+            }
+
+            // 2. Fire SELL order on Angel One if live trading consent is given
+            if (liveTradingConsent && contract) {
+                try {
+                    const orderRes = await apiPost<any>('/angel/orders/simple', {
+                        exchange: contract.exchange,
+                        tradingsymbol: contract.tradingsymbol,
+                        symboltoken: contract.symboltoken,
+                        transactiontype: 'SELL',
+                        producttype: 'CARRYFORWARD',
+                        quantity: quantity,
+                        ordertype: 'MARKET',
+                    })
+                    console.log('[HA MANUAL EXIT] SELL order placed via Angel')
+                    const orderId = orderRes?.item?.response?.data?.orderid || orderRes?.item?.response?.orderid
+                    if (orderId) {
+                        for (let i = 0; i < 4; i++) {
+                            await new Promise(r => setTimeout(r, 1000))
+                            const ob = await apiGet<any>('/angel/orderbook')
+                            const order = (ob?.data || []).find((o: any) => String(o.orderid) === String(orderId))
+                            if (order && (order.status === 'complete' || order.status === 'executed' || order.orderstatus === 'complete')) {
+                                const execPrice = parseFloat(order.averageprice || order.price)
+                                if (!isNaN(execPrice) && execPrice > 0) {
+                                    exitPrice = execPrice
+                                    break
+                                }
+                            }
+                        }
+                    }
+                } catch (err) {
+                    console.error('[HA MANUAL EXIT] SELL order failed', err)
+                }
+            }
+
+            // 3. Save exit price + PnL to MongoDB
+            await apiPost('/trades/update-exit', {
+                tradeId,
+                exitPrice,
+                exitReason: 'Strategy',
+            })
+
+            console.log(`[HA MANUAL EXIT] Exited @ ${exitPrice}`)
+            setMessage(`Manual exit @ ${exitPrice} saved to DB.`)
+            setActiveTrade(null, null)
+            setEntryPrice(null)
+            setCurrentLtp(null)
+            setState('SCANNING')
+            setTrend('NEUTRAL')
+        } catch (err) {
+            console.error('[HA MANUAL EXIT] Failed', err)
+            setMessage('Manual exit failed. Check console.')
+        } finally {
+            setIsExiting(false)
+        }
+    }, [isExiting, ceContract, peContract, currentLtp, entryPrice, liveTradingConsent, quantity, setActiveTrade])
 
     // ─── Recover open trade on mount ─────────────────────────────────────────
     useEffect(() => {
@@ -919,6 +1004,19 @@ export default function HeikenashiPage() {
                                         </p>
                                     </div>
                                 </div>
+
+                                {state === 'IN_POSITION' && activeTradeId && (
+                                    <div className="mt-6 pt-6 border-t border-slate-100 dark:border-white/5 flex justify-end">
+                                        <button
+                                            onClick={manualExitPosition}
+                                            disabled={isExiting}
+                                            className="flex items-center gap-2 px-6 py-3 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-black uppercase tracking-widest rounded-2xl transition-all shadow-lg shadow-amber-500/20 active:scale-95"
+                                        >
+                                            <XCircle className="w-4 h-4" />
+                                            {isExiting ? 'Exiting...' : 'Exit Position'}
+                                        </button>
+                                    </div>
+                                )}
                             </div>
                         )}
                     </div>

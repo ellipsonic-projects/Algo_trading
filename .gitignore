@@ -14,7 +14,7 @@
 **/.turbo/
 **/.eslintcache
 **/.parcel-cache/
-
+websocket-documentation.txt
 # Logs
 **/logs/
 **/*.log

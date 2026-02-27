@@ -179,7 +179,7 @@ exports.getAllTrades = async (req, res) => {
             // Assuming tax calculation is around Rs. 60 per trade (Brokerage + STT + other charges for options usually averages out here for small quantities)
             // Or we could use a flat percentage. Let's use a standard Rs. 50 per executed trade (buy+sell) as an approximation 
             // since actual taxes aren't stored in the DB row.
-            const estimatedTaxes = analytics[0].totalTrades * 58;
+            const estimatedTaxes = analytics[0].totalTrades * 60;
 
             stats = {
                 totalPnl: totalPnl,

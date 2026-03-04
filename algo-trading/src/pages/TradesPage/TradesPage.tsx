@@ -12,6 +12,7 @@ import {
     RefreshCw
 } from 'lucide-react'
 import { apiGet } from '../../trading'
+import { buildTradesUrl } from './tradesQuery'
 
 type Trade = {
     _id: string
@@ -57,13 +58,17 @@ export default function TradesPage() {
     const [exitReasonFilter, setExitReasonFilter] = useState('')
     const [startDate, setStartDate] = useState('')
     const [endDate, setEndDate] = useState('')
+    const [timeFrom, setTimeFrom] = useState('')
+    const [timeTo, setTimeTo] = useState('')
 
     // Applied Filters (used for fetching)
     const [appliedFilters, setAppliedFilters] = useState({
         searchQuery: '',
         exitReasonFilter: '',
         startDate: '',
-        endDate: ''
+        endDate: '',
+        timeFrom: '',
+        timeTo: ''
     })
 
     const [analytics, setAnalytics] = useState({
@@ -76,11 +81,7 @@ export default function TradesPage() {
     const fetchTrades = useCallback(async () => {
         setLoading(true)
         try {
-            let url = `/trades?page=${page}&limit=10`
-            if (appliedFilters.searchQuery) url += `&searchQuery=${encodeURIComponent(appliedFilters.searchQuery)}`
-            if (appliedFilters.exitReasonFilter) url += `&exitReason=${encodeURIComponent(appliedFilters.exitReasonFilter)}`
-            if (appliedFilters.startDate) url += `&startDate=${appliedFilters.startDate}`
-            if (appliedFilters.endDate) url += `&endDate=${appliedFilters.endDate}`
+            const url = buildTradesUrl({ page, limit: 10, filters: appliedFilters })
 
             const response = await apiGet<TradesResponse>(url)
             if (response.status === 'success') {
@@ -125,7 +126,7 @@ export default function TradesPage() {
                         <input
                             type="text"
                             placeholder="Search by Index or Premium..."
-                            className="w-full h-full bg-slate-50 dark:bg-white/5 border-none rounded-2xl pl-12 pr-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black"
+                            className="w-full h-full bg-slate-50 dark:bg-white/5 border-none rounded-2xl pl-12 pr-4 py-3 text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black"
                             value={searchQuery}
                             onChange={(e) => setSearchQuery(e.target.value)}
                         />
@@ -134,7 +135,7 @@ export default function TradesPage() {
                         <select
                             value={exitReasonFilter}
                             onChange={(e) => setExitReasonFilter(e.target.value)}
-                            className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-2xl px-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black"
+                            className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-2xl px-4 py-3 text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black"
                         >
                             <option value="">All Exit Reasons</option>
                             <option value="Target">Target</option>
@@ -148,7 +149,7 @@ export default function TradesPage() {
                             <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                             <input
                                 type="date"
-                                className="bg-slate-50 dark:bg-white/5 border-none rounded-2xl pl-12 pr-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black w-full"
+                                className="bg-slate-50 dark:bg-white/5 border-none rounded-2xl pl-12 pr-4 py-3 text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black w-full"
                                 value={startDate}
                                 onChange={(e) => setStartDate(e.target.value)}
                             />
@@ -157,9 +158,27 @@ export default function TradesPage() {
                             <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                             <input
                                 type="date"
-                                className="bg-slate-50 dark:bg-white/5 border-none rounded-2xl pl-12 pr-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black w-full"
+                                className="bg-slate-50 dark:bg-white/5 border-none rounded-2xl pl-12 pr-4 py-3 text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black w-full"
                                 value={endDate}
                                 onChange={(e) => setEndDate(e.target.value)}
+                            />
+                        </div>
+                        <div className="relative">
+                            <Clock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                            <input
+                                type="time"
+                                className="bg-slate-50 dark:bg-white/5 border-none rounded-2xl pl-12 pr-4 py-3 text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black w-full"
+                                value={timeFrom}
+                                onChange={(e) => setTimeFrom(e.target.value)}
+                            />
+                        </div>
+                        <div className="relative">
+                            <Clock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                            <input
+                                type="time"
+                                className="bg-slate-50 dark:bg-white/5 border-none rounded-2xl pl-12 pr-4 py-3 text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black w-full"
+                                value={timeTo}
+                                onChange={(e) => setTimeTo(e.target.value)}
                             />
                         </div>
                     </div>
@@ -171,7 +190,9 @@ export default function TradesPage() {
                                     searchQuery,
                                     exitReasonFilter,
                                     startDate,
-                                    endDate
+                                    endDate,
+                                    timeFrom,
+                                    timeTo
                                 })
                             }}
                             className="w-full sm:w-auto px-6 py-3 bg-cyan-500 hover:bg-cyan-600 text-white text-xs font-black uppercase tracking-widest rounded-2xl transition-all shadow-xl shadow-cyan-500/20 active:scale-95 flex items-center justify-center gap-2"
@@ -186,8 +207,10 @@ export default function TradesPage() {
                                     setExitReasonFilter('')
                                     setStartDate('')
                                     setEndDate('')
+                                    setTimeFrom('')
+                                    setTimeTo('')
                                     setPage(1)
-                                    setAppliedFilters({ searchQuery: '', exitReasonFilter: '', startDate: '', endDate: '' })
+                                    setAppliedFilters({ searchQuery: '', exitReasonFilter: '', startDate: '', endDate: '', timeFrom: '', timeTo: '' })
                                 }}
                                 className="flex-1 sm:flex-none px-6 py-3 bg-slate-50 dark:bg-white/5 hover:bg-slate-100 dark:hover:bg-white/10 text-slate-600 dark:text-slate-400 text-xs font-black uppercase tracking-widest rounded-2xl transition-all active:scale-95 flex items-center justify-center gap-2"
                             >
@@ -256,7 +279,7 @@ export default function TradesPage() {
                     <table className="w-full text-left border-collapse">
                         <thead>
                             <tr className="border-b border-slate-100 dark:border-white/5">
-                                <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">Timestamp</th>
+                                <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">Entry date and time</th>
                                 <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">Strategy</th>
                                 <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">Index</th>
                                 <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">Premium</th>

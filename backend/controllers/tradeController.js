@@ -119,8 +119,32 @@ exports.getStats = async (req, res) => {
 };
 exports.getAllTrades = async (req, res) => {
     try {
-        const { strategyId, startDate, endDate, page = 1, limit = 10, searchQuery, exitReason } = req.query;
+        const { strategyId, startDate, endDate, page = 1, limit = 10, searchQuery, exitReason, timeFrom, timeTo } = req.query;
         const query = { userId: req.user._id };
+
+        const parseTimeToMinutes = (value) => {
+            if (typeof value !== 'string' || value.trim() === '') return null;
+            const match = value.match(/^(\d{2}):(\d{2})$/);
+            if (!match) return null;
+            const hours = Number(match[1]);
+            const minutes = Number(match[2]);
+            if (Number.isNaN(hours) || Number.isNaN(minutes)) return null;
+            if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+            return hours * 60 + minutes;
+        };
+
+        const timeFromMinutes = parseTimeToMinutes(timeFrom);
+        const timeToMinutes = parseTimeToMinutes(timeTo);
+
+        if (timeFrom && timeFromMinutes === null) {
+            return res.status(400).json({ status: 'fail', message: 'Invalid timeFrom. Expected HH:mm' });
+        }
+        if (timeTo && timeToMinutes === null) {
+            return res.status(400).json({ status: 'fail', message: 'Invalid timeTo. Expected HH:mm' });
+        }
+        if (timeFromMinutes !== null && timeToMinutes !== null && timeFromMinutes > timeToMinutes) {
+            return res.status(400).json({ status: 'fail', message: 'Invalid time range. timeFrom must be less than or equal to timeTo' });
+        }
 
         if (strategyId) {
             query.strategyId = strategyId;
@@ -143,8 +167,34 @@ exports.getAllTrades = async (req, res) => {
 
         if (startDate || endDate) {
             query.createdAt = {};
-            if (startDate) query.createdAt.$gte = new Date(startDate);
-            if (endDate) query.createdAt.$lte = new Date(endDate);
+            if (startDate) query.createdAt.$gte = new Date(`${startDate}T00:00:00.000+05:30`);
+            if (endDate) query.createdAt.$lte = new Date(`${endDate}T23:59:59.999+05:30`);
+        }
+
+        if (timeFromMinutes !== null || timeToMinutes !== null) {
+            const istMinutesExpr = {
+                $let: {
+                    vars: {
+                        parts: {
+                            $dateToParts: {
+                                date: '$createdAt',
+                                timezone: 'Asia/Kolkata'
+                            }
+                        }
+                    },
+                    in: {
+                        $add: [
+                            { $multiply: ['$$parts.hour', 60] },
+                            '$$parts.minute'
+                        ]
+                    }
+                }
+            };
+
+            const exprConditions = [];
+            if (timeFromMinutes !== null) exprConditions.push({ $gte: [istMinutesExpr, timeFromMinutes] });
+            if (timeToMinutes !== null) exprConditions.push({ $lte: [istMinutesExpr, timeToMinutes] });
+            query.$expr = { $and: exprConditions };
         }
 
         console.log("Trades Query Built:", JSON.stringify(query, null, 2));

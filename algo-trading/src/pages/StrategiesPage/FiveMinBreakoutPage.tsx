@@ -158,15 +158,47 @@ function getLastCompletedCandleWindow(candles: Candle[], lookback: 4 | 5): { ran
 export default function FiveMinBreakoutPage() {
   const { connectStatus } = useAngelConnection()
 
-  const [isRunning, setIsRunning] = useState(false)
-  const [state, setState] = useState<StrategyState>('STOPPED')
+  const [isRunning, setIsRunning] = useState<boolean>(() => getSavedState('fmb_isRunning', false))
+  const [state, setState] = useState<StrategyState>(() => getSavedState('fmb_state', 'STOPPED'))
   const [message, setMessage] = useState<string>('')
 
-  const [lookback, setLookback] = useState<4 | 5>(5)
-  const [underlying, setUnderlying] = useState<Underlying>('SENSEX')
-  const [exchange, setExchange] = useState<Exchange>('BFO')
-  const [quantity, setQuantity] = useState<number>(INDEX_CONFIG.SENSEX.qty)
-  const [liveTradingConsent, setLiveTradingConsent] = useState(false)
+  const [lookback, setLookback] = useState<4 | 5>(() => getSavedState('fmb_lookback', 5))
+  const [underlying, setUnderlying] = useState<Underlying>(() => getSavedState('fmb_underlying', 'SENSEX'))
+  const [exchange, setExchange] = useState<Exchange>(() => getSavedState('fmb_exchange', 'BFO'))
+  const [quantity, setQuantity] = useState<number>(() => getSavedState('fmb_quantity', INDEX_CONFIG.SENSEX.qty))
+  const [liveTradingConsent, setLiveTradingConsent] = useState(() => getSavedState('fmb_liveTradingConsent', false))
+
+  // New Strategy Configuration Parameters
+  function getSavedState<T>(key: string, fallback: T): T {
+    try {
+      const item = localStorage.getItem(key)
+      if (item === null) return fallback
+      try {
+        return JSON.parse(item) as T
+      } catch {
+        return item as unknown as T
+      }
+    } catch {
+      return fallback
+    }
+  }
+
+  const [targetPoints, setTargetPoints] = useState<number>(() => getSavedState('fmb_targetPoints', 20))
+  const [bufferPoints, setBufferPoints] = useState<number>(() => getSavedState('fmb_bufferPoints', 2))
+  const [maxRangeLimit, setMaxRangeLimit] = useState<number>(() => getSavedState('fmb_maxRangeLimit', 30))
+
+  useEffect(() => {
+    localStorage.setItem('fmb_isRunning', JSON.stringify(isRunning))
+    localStorage.setItem('fmb_state', JSON.stringify(state))
+    localStorage.setItem('fmb_lookback', JSON.stringify(lookback))
+    localStorage.setItem('fmb_underlying', JSON.stringify(underlying))
+    localStorage.setItem('fmb_exchange', JSON.stringify(exchange))
+    localStorage.setItem('fmb_quantity', JSON.stringify(quantity))
+    localStorage.setItem('fmb_targetPoints', JSON.stringify(targetPoints))
+    localStorage.setItem('fmb_bufferPoints', JSON.stringify(bufferPoints))
+    localStorage.setItem('fmb_maxRangeLimit', JSON.stringify(maxRangeLimit))
+    localStorage.setItem('fmb_liveTradingConsent', JSON.stringify(liveTradingConsent))
+  }, [isRunning, state, lookback, underlying, exchange, quantity, targetPoints, bufferPoints, maxRangeLimit, liveTradingConsent])
 
   // Live Monitor State
   const [monitoredPremiums, setMonitoredPremiums] = useState<{ ce: string, pe: string }>({ ce: '---', pe: '---' })
@@ -200,6 +232,14 @@ export default function FiveMinBreakoutPage() {
   const lastProcessedCandleTsRef = useRef<string | null>(null)
   const stopRequestedRef = useRef(false)
 
+  // Mirror activeTradeId so intervals can see the latest without re-running on every render
+  const activeTradeRef = useRef<{ tradeId: string | null; premium: string | null }>({ tradeId: null, premium: null })
+
+  const setActiveTrade = useCallback((tradeId: string | null, premium: string | null) => {
+    activeTradeRef.current = { tradeId, premium }
+    setActiveTradeId(tradeId)
+  }, [])
+
   const resetForNextRun = useCallback((nextState: StrategyState) => {
     inFlightRef.current = false
     lastProcessedCandleTsRef.current = null
@@ -210,8 +250,8 @@ export default function FiveMinBreakoutPage() {
     setStopLoss(null)
     setTarget(null)
     setCurrentLtp(null)
-    setActiveTradeId(null)
-  }, [])
+    setActiveTrade(null, null)
+  }, [setActiveTrade])
 
   const stopStrategy = useCallback(() => {
     stopRequestedRef.current = true
@@ -221,6 +261,76 @@ export default function FiveMinBreakoutPage() {
     setMonitoredPremiums({ ce: '---', pe: '---' })
     setCheckpoints(prev => prev.map(cp => ({ ...cp, status: 'pending' })))
   }, [])
+
+  const [isExiting, setIsExiting] = useState(false)
+
+  const manualExitPosition = useCallback(async () => {
+    const { tradeId, premium: activeSymbol } = activeTradeRef.current
+    if (!tradeId || !activeSymbol || isExiting) return
+
+    setIsExiting(true)
+    setMessage('Manual exit initiated...')
+
+    try {
+      const contract = rangeSide === 'CE' ? ceContract : peContract
+
+      let exitPx = currentLtp ?? entryPrice ?? 0
+      if (contract) {
+        try {
+          const ltpRes = await apiGet<{ ltp: number }>(`/market/ltp?exchange=${encodeURIComponent(contract.exchange)}&tradingsymbol=${encodeURIComponent(contract.tradingsymbol)}&symboltoken=${encodeURIComponent(contract.symboltoken)}`)
+          if (ltpRes.ltp > 0) exitPx = ltpRes.ltp
+        } catch (e) {
+          console.warn('LTP fetch failed for manual exit', e)
+        }
+      }
+
+      if (liveTradingConsent && contract) {
+        try {
+          const orderRes = await apiPost<any>('/angel/orders/simple', {
+            exchange: contract.exchange,
+            tradingsymbol: contract.tradingsymbol,
+            symboltoken: contract.symboltoken,
+            transactiontype: 'SELL',
+            producttype: 'CARRYFORWARD',
+            quantity: quantity,
+            ordertype: 'MARKET',
+          })
+          const orderId = orderRes?.item?.response?.data?.orderid || orderRes?.item?.response?.orderid
+          if (orderId) {
+            for (let i = 0; i < 4; i++) {
+              await new Promise(r => setTimeout(r, 1000))
+              const ob = await apiGet<any>('/angel/orderbook')
+              const order = (ob?.data || []).find((o: any) => String(o.orderid) === String(orderId))
+              if (order && ['complete', 'executed'].includes(order.status || order.orderstatus)) {
+                const execPrice = parseFloat(order.averageprice || order.price)
+                if (!isNaN(execPrice) && execPrice > 0) {
+                  exitPx = execPrice
+                  break
+                }
+              }
+            }
+          }
+        } catch (err) {
+          console.error('LIVE SELL failed', err)
+        }
+      }
+
+      await apiPost('/trades/update-exit', {
+        tradeId,
+        exitPrice: exitPx,
+        exitReason: 'Strategy'
+      })
+
+      setMessage(`Manual exit @ ${exitPx} saved to DB.`)
+      resetForNextRun('COOLDOWN')
+      setTimeout(() => resetForNextRun('WAITING'), 60000)
+    } catch (err) {
+      console.error('Manual exit failed', err)
+      setMessage('Manual exit failed. Check console.')
+    } finally {
+      setIsExiting(false)
+    }
+  }, [isExiting, rangeSide, ceContract, peContract, currentLtp, entryPrice, liveTradingConsent, quantity, resetForNextRun])
 
   const handleUnderlyingChange = (val: Underlying) => {
     setUnderlying(val)
@@ -245,20 +355,26 @@ export default function FiveMinBreakoutPage() {
   useEffect(() => {
     if (connectStatus !== 'connected') return
     let disposed = false
-    apiGet<{ data: { trade?: { _id: string, buyPrice: number, index: Underlying, strategyName: string } } }>(`/trades/latest-open?strategyName=5minBreakout`)
+    apiGet<{ data: { trade?: { _id: string, buyPrice: number, index: Underlying, strategyName: string, premium?: string } } }>(`/trades/latest-open?strategyName=5minBreakout`)
       .then(res => {
         if (disposed) return
         if (res.data?.trade) {
-          setActiveTradeId(res.data.trade._id)
-          setEntryPrice(res.data.trade.buyPrice)
-          setUnderlying(res.data.trade.index as Underlying)
+          const t = res.data.trade
+          setActiveTrade(t._id, t.premium || null)
+          setEntryPrice(t.buyPrice)
+
+          // Optionally guess side by premium string if it exists
+          if (t.premium) {
+            if (t.premium.endsWith('CE')) setRangeSide('CE')
+            else if (t.premium.endsWith('PE')) setRangeSide('PE')
+          }
           setState('IN_POSITION')
           setMessage('Recovered active 5minBreakout trade.')
         }
       })
       .catch(console.error)
     return () => { disposed = true }
-  }, [connectStatus])
+  }, [connectStatus, setActiveTrade])
 
   // Context-aware initialization
   useEffect(() => {
@@ -349,6 +465,7 @@ export default function FiveMinBreakoutPage() {
   // Scan loop
   useEffect(() => {
     if (!isRunning || connectStatus !== 'connected' || state !== 'WAITING' || !ceContract || !peContract) return
+    if (activeTradeRef.current.tradeId) return // Single position per strategy check
 
     let cancelled = false
     const scan = async () => {
@@ -364,31 +481,71 @@ export default function FiveMinBreakoutPage() {
         const peWindow = getLastCompletedCandleWindow(peCandles.items ?? [], lookback)
         if (!ceWindow || !peWindow) return
 
-        const ceRange = computePremiumRange(ceWindow.rangeCandles, lookback)
-        const peRange = computePremiumRange(peWindow.rangeCandles, lookback)
+        const ceRange = computePremiumRange(ceWindow.rangeCandles, lookback, maxRangeLimit)
+        const peRange = computePremiumRange(peWindow.rangeCandles, lookback, maxRangeLimit)
 
         const nextTs = ceWindow.breakoutCandle.ts
         if (!shouldProcessCandle({ lastProcessedTs: lastProcessedCandleTsRef.current, nextTs })) return
         lastProcessedCandleTsRef.current = nextTs
 
-        const ceBreakout = detectBreakoutCloseOnly({ candleClose: ceWindow.breakoutCandle.close, range: ceRange! })
-        const peBreakout = detectBreakoutCloseOnly({ candleClose: peWindow.breakoutCandle.close, range: peRange! })
+        const ceBreakout = ceRange ? detectBreakoutCloseOnly({ candleClose: ceWindow.breakoutCandle.close, range: ceRange }) : false
+        const peBreakout = peRange ? detectBreakoutCloseOnly({ candleClose: peWindow.breakoutCandle.close, range: peRange }) : false
 
         if (ceBreakout || peBreakout) {
-          const entryPx = ceBreakout ? ceWindow.breakoutCandle.close : peWindow.breakoutCandle.close
-          setEntryPrice(entryPx)
-          setRangeSide(ceBreakout ? 'CE' : 'PE')
-          setState('SIGNAL')
+          const isCE = ceBreakout
+          const contractToTrade = isCE ? ceContract : peContract
+          let actualEntryPx = isCE ? ceWindow.breakoutCandle.close : peWindow.breakoutCandle.close
+          const activeRange = isCE ? ceRange! : peRange!
+
+          // Execute Live Entry
+          if (liveTradingConsent) {
+            try {
+              const orderRes = await apiPost<any>('/angel/orders/simple', {
+                exchange: contractToTrade.exchange,
+                tradingsymbol: contractToTrade.tradingsymbol,
+                symboltoken: contractToTrade.symboltoken,
+                transactiontype: 'BUY',
+                producttype: 'CARRYFORWARD',
+                quantity: quantity,
+                ordertype: 'MARKET',
+              })
+              const orderId = orderRes?.item?.response?.data?.orderid || orderRes?.item?.response?.orderid
+              if (orderId) {
+                for (let i = 0; i < 4; i++) {
+                  await new Promise(r => setTimeout(r, 1000))
+                  const ob = await apiGet<any>('/angel/orderbook')
+                  const order = (ob?.data || []).find((o: any) => String(o.orderid) === String(orderId))
+                  if (order && ['complete', 'executed'].includes(order.status || order.orderstatus)) {
+                    const execPrice = parseFloat(order.averageprice || order.price)
+                    if (!isNaN(execPrice) && execPrice > 0) {
+                      actualEntryPx = execPrice
+                      break
+                    }
+                  }
+                }
+              }
+            } catch (err) {
+              console.error('LIVE BUY failed', err)
+            }
+          }
+
+          setEntryPrice(actualEntryPx)
+          setStopLoss(activeRange.rangeLow - bufferPoints)
+          setTarget(actualEntryPx + targetPoints)
+          setRangeSide(isCE ? 'CE' : 'PE')
+          setState('IN_POSITION')
+
+          setActiveTrade(null, contractToTrade.tradingsymbol)
 
           // Record Trade to DB
           apiPost<{ data: { trade: { _id: string } } }>('/trades/record', {
             strategyName: '5minBreakout',
             index: underlying,
-            premium: ceBreakout ? ceContract.tradingsymbol : peContract.tradingsymbol,
+            premium: contractToTrade.tradingsymbol,
             qty: quantity,
-            buyPrice: entryPx
+            buyPrice: actualEntryPx
           }).then(res => {
-            setActiveTradeId(res.data.trade._id)
+            setActiveTrade(res.data.trade._id, contractToTrade.tradingsymbol)
           }).catch(console.error)
         }
       } catch (e) {
@@ -398,21 +555,25 @@ export default function FiveMinBreakoutPage() {
     const t = setInterval(scan, 7000)
     scan()
     return () => { cancelled = true; clearInterval(t) }
-  }, [ceContract, connectStatus, isRunning, lookback, peContract, state, underlying, quantity])
+  }, [ceContract, connectStatus, isRunning, lookback, peContract, state, underlying, quantity, maxRangeLimit, bufferPoints, targetPoints, liveTradingConsent, setActiveTrade])
 
   // Position Monitoring Loop
   useEffect(() => {
-    if (!isRunning || state !== 'IN_POSITION' || !activeTradeId) return
+    if (!isRunning || state !== 'IN_POSITION' || !activeTradeRef.current.tradeId) return
 
     let cancelled = false
     const monitor = async () => {
       if (cancelled || inFlightRef.current) return
       inFlightRef.current = true
       try {
-        const activeContract = rangeSide === 'CE' ? ceContract : peContract
-        if (!activeContract) return
+        const activeToken = rangeSide === 'CE' ? ceContract?.symboltoken : peContract?.symboltoken
+        const activeExchange = rangeSide === 'CE' ? ceContract?.exchange : peContract?.exchange
+        const activeTs = rangeSide === 'CE' ? ceContract?.tradingsymbol : peContract?.tradingsymbol
+        const currentRef = activeTradeRef.current
 
-        const res = await apiGet<{ ltp: number }>(`/market/ltp?exchange=${encodeURIComponent(activeContract.exchange)}&symboltoken=${encodeURIComponent(activeContract.symboltoken)}`)
+        if (!activeToken || !activeExchange || !currentRef.tradeId) return
+
+        const res = await apiGet<{ ltp: number }>(`/market/ltp?exchange=${encodeURIComponent(activeExchange)}&tradingsymbol=${encodeURIComponent(activeTs || '')}&symboltoken=${encodeURIComponent(activeToken)}`)
         if (cancelled) return
 
         const ltp = res.ltp
@@ -423,22 +584,55 @@ export default function FiveMinBreakoutPage() {
 
         if (stopLoss && ltp <= stopLoss) {
           exitPrice = ltp
-          exitReason = 'STOP_LOSS'
+          exitReason = 'SL'
         } else if (target && ltp >= target) {
           exitPrice = ltp
-          exitReason = 'TARGET'
+          exitReason = 'Target'
         }
 
         if (exitPrice && exitReason) {
+          let actualExitPx = exitPrice
+
+          if (liveTradingConsent) {
+            try {
+              const orderRes = await apiPost<any>('/angel/orders/simple', {
+                exchange: activeExchange,
+                tradingsymbol: activeTs,
+                symboltoken: activeToken,
+                transactiontype: 'SELL',
+                producttype: 'CARRYFORWARD',
+                quantity: quantity,
+                ordertype: 'MARKET',
+              })
+              const orderId = orderRes?.item?.response?.data?.orderid || orderRes?.item?.response?.orderid
+              if (orderId) {
+                for (let i = 0; i < 4; i++) {
+                  await new Promise(r => setTimeout(r, 1000))
+                  const ob = await apiGet<any>('/angel/orderbook')
+                  const order = (ob?.data || []).find((o: any) => String(o.orderid) === String(orderId))
+                  if (order && ['complete', 'executed'].includes(order.status || order.orderstatus)) {
+                    const execPrice = parseFloat(order.averageprice || order.price)
+                    if (!isNaN(execPrice) && execPrice > 0) {
+                      actualExitPx = execPrice
+                      break
+                    }
+                  }
+                }
+              }
+            } catch (err) {
+              console.error('LIVE SELL failed', err)
+            }
+          }
+
           if (isStopLossExitReason(exitReason)) {
             playSlAudio()
           }
           await apiPost('/trades/update-exit', {
-            tradeId: activeTradeId,
-            exitPrice,
+            tradeId: currentRef.tradeId,
+            exitPrice: actualExitPx,
             exitReason
           })
-          setMessage(`${exitReason} hit @ ${exitPrice}`)
+          setMessage(`${exitReason} hit @ ${actualExitPx}`)
           resetForNextRun('COOLDOWN')
           setTimeout(() => resetForNextRun('WAITING'), 60000) // 1 min cooldown
         }
@@ -450,7 +644,7 @@ export default function FiveMinBreakoutPage() {
     const t = setInterval(monitor, 2000)
     monitor()
     return () => { cancelled = true; clearInterval(t) }
-  }, [activeTradeId, ceContract, isRunning, peContract, rangeSide, state, stopLoss, target, resetForNextRun])
+  }, [ceContract, peContract, isRunning, rangeSide, state, stopLoss, target, resetForNextRun, liveTradingConsent, quantity])
 
   return (
     <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500 pb-12">
@@ -481,6 +675,15 @@ export default function FiveMinBreakoutPage() {
           </div>
 
           <div className="flex items-center gap-4">
+            {state === 'IN_POSITION' && activeTradeId && (
+              <button
+                disabled={isExiting}
+                onClick={manualExitPosition}
+                className="flex items-center gap-2 px-6 py-4 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-xs font-black uppercase tracking-widest rounded-2xl transition-all shadow-xl shadow-orange-500/20 active:scale-95"
+              >
+                Exit Position
+              </button>
+            )}
             {!isRunning ? (
               <button
                 onClick={startStrategy}
@@ -550,6 +753,36 @@ export default function FiveMinBreakoutPage() {
               </div>
 
               <div className="space-y-6">
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 block truncate">Target (Pts)</label>
+                    <input
+                      type="number"
+                      value={targetPoints}
+                      onChange={(e) => setTargetPoints(parseFloat(e.target.value) || 0)}
+                      className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-black text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 block truncate">SL Buffer</label>
+                    <input
+                      type="number"
+                      value={bufferPoints}
+                      onChange={(e) => setBufferPoints(parseFloat(e.target.value) || 0)}
+                      className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-black text-rose-500 dark:text-rose-400 outline-none focus:ring-2 focus:ring-rose-500/20 transition-all font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 block truncate">Max Limit</label>
+                    <input
+                      type="number"
+                      value={maxRangeLimit}
+                      onChange={(e) => setMaxRangeLimit(parseFloat(e.target.value) || 0)}
+                      className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-black text-cyan-500 dark:text-cyan-400 outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-mono"
+                    />
+                  </div>
+                </div>
+
                 <div className="p-6 bg-slate-50 dark:bg-white/5 rounded-3xl border border-transparent">
                   <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-4">Live Execution</h4>
                   <div className="flex items-center justify-between">

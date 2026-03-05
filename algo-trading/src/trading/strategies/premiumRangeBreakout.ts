@@ -15,7 +15,7 @@ export type RangeSnapshot = {
 
 export type BreakoutSide = 'CE' | 'PE'
 
-export function computePremiumRange(candles: Candle[], lookback: 4 | 5): RangeSnapshot | null {
+export function computePremiumRange(candles: Candle[], lookback: 4 | 5, maxRangeLimit: number = 30): RangeSnapshot | null {
   if (!Array.isArray(candles) || candles.length < lookback) return null
 
   const slice = candles.slice(-lookback)
@@ -48,7 +48,7 @@ export function computePremiumRange(candles: Candle[], lookback: 4 | 5): RangeSn
     rangeHigh,
     rangeLow,
     size,
-    isValid: insideRuleOk && Number.isFinite(size) && size <= 30,
+    isValid: insideRuleOk && Number.isFinite(size) && size <= maxRangeLimit,
   }
 }
 

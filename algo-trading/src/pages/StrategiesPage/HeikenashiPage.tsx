@@ -15,6 +15,7 @@ import {
     computeHeikenAshi,
     analyzeHeikenAshiStrategy
 } from '../../trading/strategies/heikenAshi'
+import { isStopLossExitReason, playSlAudio, primeSlAudio } from '../../shared/audio/slAudio'
 
 type Underlying = 'SENSEX' | 'NIFTY' | 'BANKNIFTY' | 'CRUDEOILM'
 type Exchange = 'BFO' | 'NFO' | 'MCX'
@@ -216,6 +217,7 @@ export default function HeikenashiPage() {
 
     // ─── Strategy controls ───────────────────────────────────────────────────
     const startStrategy = () => {
+        primeSlAudio()
         setIsRunning(true)
         setState('SCANNING')
         setMessage('Market scan initialized...')
@@ -715,6 +717,10 @@ export default function HeikenashiPage() {
                         console.log(`[HA EXIT] @ ${actualExitPrice} Reason: ${exitReason}`)
                         setMessage(`HA Exit Signal @ ${actualExitPrice} (${exitReason})`)
 
+                        if (isStopLossExitReason(exitReason)) {
+                            playSlAudio()
+                        }
+
                         await apiPost('/trades/update-exit', {
                             tradeId: currentTradeId,
                             exitPrice: actualExitPrice,
@@ -929,7 +935,7 @@ export default function HeikenashiPage() {
                                                 value={confirmationTimeframe}
                                                 onChange={(e) => setConfirmationTimeframe(e.target.value)}
                                                 disabled={isRunning}
-                                                className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black disabled:opacity-50 disabled:cursor-not-allowed"
+                                                className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-black text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                                             >
                                                 {TIMEFRAME_OPTIONS.map(opt => (
                                                     <option key={opt.value} value={opt.value}>{opt.label}</option>

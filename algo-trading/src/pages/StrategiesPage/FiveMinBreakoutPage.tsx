@@ -16,6 +16,8 @@ import {
   type BreakoutSide,
   type Candle
 } from '../../trading/strategies/premiumRangeBreakout'
+// import { computeStopLossAndTarget } from '../../trading/strategies/premiumRangeBreakout'
+import { isStopLossExitReason, playSlAudio, primeSlAudio } from '../../shared/audio/slAudio'
 import { apiGet, apiPost } from '../../trading'
 
 type Underlying = 'SENSEX' | 'NIFTY' | 'BANKNIFTY'
@@ -228,6 +230,7 @@ export default function FiveMinBreakoutPage() {
 
   const startStrategy = useCallback(() => {
     stopRequestedRef.current = false
+    primeSlAudio()
     setIsRunning(true)
     resetForNextRun('WAITING')
   }, [resetForNextRun])
@@ -427,6 +430,9 @@ export default function FiveMinBreakoutPage() {
         }
 
         if (exitPrice && exitReason) {
+          if (isStopLossExitReason(exitReason)) {
+            playSlAudio()
+          }
           await apiPost('/trades/update-exit', {
             tradeId: activeTradeId,
             exitPrice,
@@ -538,7 +544,7 @@ export default function FiveMinBreakoutPage() {
                     value={quantity}
                     step={INDEX_CONFIG[underlying].step}
                     onChange={(e) => setQuantity(Number(e.target.value))}
-                    className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black"
+                    className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-black text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all"
                   />
                 </div>
               </div>

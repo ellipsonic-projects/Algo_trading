@@ -6,6 +6,7 @@ const router = express.Router();
 
 router.use(authController.protect);
 
+router.get('/', strategyController.getAllStrategies);
 router.get('/count', strategyController.getStrategyCount);
 
 module.exports = router;

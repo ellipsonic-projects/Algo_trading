@@ -48,6 +48,7 @@ type TradesResponse = {
 
 export default function TradesPage() {
     const [trades, setTrades] = useState<Trade[]>([])
+    const [strategies, setStrategies] = useState<{ _id: string, name: string }[]>([])
     const [loading, setLoading] = useState(true)
     const [page, setPage] = useState(1)
     const [totalPages, setTotalPages] = useState(1)
@@ -56,6 +57,7 @@ export default function TradesPage() {
     // Filters inputs
     const [searchQuery, setSearchQuery] = useState('')
     const [exitReasonFilter, setExitReasonFilter] = useState('')
+    const [strategyIdFilter, setStrategyIdFilter] = useState('')
     const [startDate, setStartDate] = useState('')
     const [endDate, setEndDate] = useState('')
     const [timeFrom, setTimeFrom] = useState('')
@@ -65,6 +67,7 @@ export default function TradesPage() {
     const [appliedFilters, setAppliedFilters] = useState({
         searchQuery: '',
         exitReasonFilter: '',
+        strategyIdFilter: '',
         startDate: '',
         endDate: '',
         timeFrom: '',
@@ -103,6 +106,16 @@ export default function TradesPage() {
         fetchTrades()
     }, [fetchTrades])
 
+    useEffect(() => {
+        apiGet<{ status: string, data: { strategies: { _id: string, name: string }[] } }>('/strategies')
+            .then(res => {
+                if (res.status === 'success') {
+                    setStrategies(res.data.strategies)
+                }
+            })
+            .catch(console.error)
+    }, [])
+
     const formatDate = (dateString: string) => {
         return new Date(dateString).toLocaleString('en-IN', {
             day: '2-digit',
@@ -132,6 +145,16 @@ export default function TradesPage() {
                         />
                     </div>
                     <div className="flex-1 min-w-[150px]">
+                        <select
+                            value={strategyIdFilter}
+                            onChange={(e) => setStrategyIdFilter(e.target.value)}
+                            className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-2xl px-4 py-3 text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black mb-2"
+                        >
+                            <option value="">All Strategies</option>
+                            {strategies.map(s => (
+                                <option key={s._id} value={s._id}>{s.name}</option>
+                            ))}
+                        </select>
                         <select
                             value={exitReasonFilter}
                             onChange={(e) => setExitReasonFilter(e.target.value)}
@@ -189,6 +212,7 @@ export default function TradesPage() {
                                 setAppliedFilters({
                                     searchQuery,
                                     exitReasonFilter,
+                                    strategyIdFilter,
                                     startDate,
                                     endDate,
                                     timeFrom,
@@ -205,12 +229,13 @@ export default function TradesPage() {
                                 onClick={() => {
                                     setSearchQuery('')
                                     setExitReasonFilter('')
+                                    setStrategyIdFilter('')
                                     setStartDate('')
                                     setEndDate('')
                                     setTimeFrom('')
                                     setTimeTo('')
                                     setPage(1)
-                                    setAppliedFilters({ searchQuery: '', exitReasonFilter: '', startDate: '', endDate: '', timeFrom: '', timeTo: '' })
+                                    setAppliedFilters({ searchQuery: '', exitReasonFilter: '', strategyIdFilter: '', startDate: '', endDate: '', timeFrom: '', timeTo: '' })
                                 }}
                                 className="flex-1 sm:flex-none px-6 py-3 bg-slate-50 dark:bg-white/5 hover:bg-slate-100 dark:hover:bg-white/10 text-slate-600 dark:text-slate-400 text-xs font-black uppercase tracking-widest rounded-2xl transition-all active:scale-95 flex items-center justify-center gap-2"
                             >
@@ -379,15 +404,35 @@ export default function TradesPage() {
                             <ChevronLeft className="w-5 h-5 text-slate-600 dark:text-slate-400" />
                         </button>
                         <div className="flex items-center gap-1">
-                            {[...Array(totalPages)].map((_, i) => (
-                                <button
-                                    key={i + 1}
-                                    onClick={() => setPage(i + 1)}
-                                    className={`w-10 h-10 text-[10px] font-black rounded-xl transition-all ${page === i + 1 ? 'bg-cyan-500 text-white shadow-lg shadow-cyan-500/20' : 'bg-slate-50 dark:bg-white/5 text-slate-400 hover:text-slate-600'}`}
-                                >
-                                    {i + 1}
-                                </button>
-                            ))}
+                            {(() => {
+                                const pages: (number | string)[] = [];
+                                if (totalPages <= 5) {
+                                    for (let i = 1; i <= totalPages; i++) pages.push(i);
+                                } else {
+                                    if (page <= 3) {
+                                        pages.push(1, 2, 3, 4, '...', totalPages - 1, totalPages);
+                                    } else if (page >= totalPages - 2) {
+                                        pages.push(1, 2, '...', totalPages - 3, totalPages - 2, totalPages - 1, totalPages);
+                                    } else {
+                                        pages.push(1, '...', page - 1, page, page + 1, '...', totalPages);
+                                    }
+                                }
+                                return pages.map((p, i) => (
+                                    p === '...' ? (
+                                        <span key={`ellipsis-${i}`} className="w-10 h-10 flex items-center justify-center text-slate-400 font-black">
+                                            ...
+                                        </span>
+                                    ) : (
+                                        <button
+                                            key={`page-${p}`}
+                                            onClick={() => setPage(p as number)}
+                                            className={`w-10 h-10 text-[10px] font-black rounded-xl transition-all ${page === p ? 'bg-cyan-500 text-white shadow-lg shadow-cyan-500/20' : 'bg-slate-50 dark:bg-white/5 text-slate-400 hover:text-slate-600'}`}
+                                        >
+                                            {p}
+                                        </button>
+                                    )
+                                ));
+                            })()}
                         </div>
                         <button
                             disabled={page === totalPages}

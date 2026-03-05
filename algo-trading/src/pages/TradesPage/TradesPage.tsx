@@ -9,8 +9,12 @@ import {
     Calendar,
     Clock,
     Target,
-    RefreshCw
+    RefreshCw,
+    ChevronDown,
+    Check
 } from 'lucide-react'
+import DatePicker from 'react-datepicker'
+import 'react-datepicker/dist/react-datepicker.css'
 import { apiGet } from '../../trading'
 import { buildTradesUrl } from './tradesQuery'
 
@@ -74,6 +78,10 @@ export default function TradesPage() {
         timeTo: ''
     })
 
+    // Custom Select Dropdown states
+    const [isStrategyDropdownOpen, setIsStrategyDropdownOpen] = useState(false)
+    const [isExitReasonDropdownOpen, setIsExitReasonDropdownOpen] = useState(false)
+
     const [analytics, setAnalytics] = useState({
         totalPnl: 0,
         totalTrades: 0,
@@ -129,102 +137,196 @@ export default function TradesPage() {
     return (
         <div className="space-y-6">
             {/* Filters Panel */}
-            <div className="bg-white dark:bg-slate-900 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm p-6 overflow-hidden relative">
+            <div className="bg-white dark:bg-slate-900 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm p-6 relative">
                 <div className="absolute top-0 right-0 p-8 opacity-[0.02] pointer-events-none">
                     <Target className="w-48 h-48 rotate-12" />
                 </div>
-                <div className="flex flex-col xl:flex-row gap-4 relative z-10 w-full">
-                    <div className="flex-1 relative min-w-[200px]">
-                        <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                        <input
-                            type="text"
-                            placeholder="Search by Index or Premium..."
-                            className="w-full h-full bg-slate-50 dark:bg-white/5 border-none rounded-2xl pl-12 pr-4 py-3 text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black"
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                        />
+
+                <div className="relative z-10 w-full flex flex-col gap-6">
+                    {/* Top Row: Search & Dropdowns */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div className="relative md:col-span-1">
+                            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                            <input
+                                type="text"
+                                placeholder="Search by Index or Premium..."
+                                className="w-full h-full bg-slate-50 dark:bg-white/5 border-none rounded-2xl pl-12 pr-4 py-3 text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black"
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                            />
+                        </div>
+
+                        {/* Custom Strategy Dropdown */}
+                        <div className="relative md:col-span-1">
+                            <div
+                                className="w-full bg-slate-50 dark:bg-white/5 rounded-2xl px-4 py-3 cursor-pointer flex items-center justify-between text-sm font-black transition-all hover:bg-slate-100 dark:hover:bg-white/10"
+                                onClick={() => {
+                                    setIsStrategyDropdownOpen(!isStrategyDropdownOpen)
+                                    setIsExitReasonDropdownOpen(false)
+                                }}
+                            >
+                                <span className={strategyIdFilter ? 'text-cyan-500' : 'text-slate-500 dark:text-slate-400'}>
+                                    {strategyIdFilter ? strategies.find(s => s._id === strategyIdFilter)?.name || 'Unknown Strategy' : 'All Strategies'}
+                                </span>
+                                <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${isStrategyDropdownOpen ? 'rotate-180' : ''}`} />
+                            </div>
+
+                            {isStrategyDropdownOpen && (
+                                <>
+                                    <div className="fixed inset-0 z-[100]" onClick={() => setIsStrategyDropdownOpen(false)} />
+                                    <div className="absolute top-[105%] -mt-1 left-0 w-full z-[110] bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700/50 rounded-2xl shadow-xl shadow-slate-200/50 dark:shadow-none py-2 animate-in fade-in slide-in-from-top-1">
+                                        <div
+                                            className={`px-4 py-2 hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer text-sm font-black flex items-center justify-between transition-colors ${!strategyIdFilter ? 'text-slate-900 dark:text-white bg-slate-50/50 dark:bg-slate-700/20' : 'text-slate-500 dark:text-slate-400'}`}
+                                            onClick={() => {
+                                                setStrategyIdFilter('');
+                                                setIsStrategyDropdownOpen(false);
+                                            }}
+                                        >
+                                            All Strategies
+                                            {!strategyIdFilter && <Check className="w-4 h-4 text-cyan-500" />}
+                                        </div>
+                                        {strategies.map(s => (
+                                            <div
+                                                key={s._id}
+                                                className={`px-4 py-2 hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer text-sm font-black flex items-center justify-between transition-colors ${strategyIdFilter === s._id ? 'text-cyan-500 bg-cyan-50 dark:bg-cyan-500/10' : 'text-slate-600 dark:text-slate-300'}`}
+                                                onClick={() => {
+                                                    setStrategyIdFilter(s._id);
+                                                    setIsStrategyDropdownOpen(false);
+                                                }}
+                                            >
+                                                {s.name}
+                                                {strategyIdFilter === s._id && <Check className="w-4 h-4 text-cyan-500" />}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </>
+                            )}
+                        </div>
+
+                        {/* Custom Exit Reason Dropdown */}
+                        <div className="relative md:col-span-1">
+                            <div
+                                className="w-full bg-slate-50 dark:bg-white/5 rounded-2xl px-4 py-3 cursor-pointer flex items-center justify-between text-sm font-black transition-all hover:bg-slate-100 dark:hover:bg-white/10"
+                                onClick={() => {
+                                    setIsExitReasonDropdownOpen(!isExitReasonDropdownOpen)
+                                    setIsStrategyDropdownOpen(false)
+                                }}
+                            >
+                                <span className={exitReasonFilter ? 'text-cyan-500' : 'text-slate-500 dark:text-slate-400'}>
+                                    {exitReasonFilter || 'All Exit Reasons'}
+                                </span>
+                                <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${isExitReasonDropdownOpen ? 'rotate-180' : ''}`} />
+                            </div>
+
+                            {isExitReasonDropdownOpen && (
+                                <>
+                                    <div className="fixed inset-0 z-[100]" onClick={() => setIsExitReasonDropdownOpen(false)} />
+                                    <div className="absolute top-[105%] -mt-1 left-0 w-full z-[110] bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700/50 rounded-2xl shadow-xl shadow-slate-200/50 dark:shadow-none py-2 animate-in fade-in slide-in-from-top-1">
+                                        {[
+                                            { value: '', label: 'All Exit Reasons' },
+                                            { value: 'Target', label: 'Target' },
+                                            { value: 'SL', label: 'SL' },
+                                            { value: 'Strategy', label: 'Strategy' },
+                                            { value: 'HA_TREND_REVERSAL', label: 'HA_TREND_REVERSAL' }
+                                        ].map(option => (
+                                            <div
+                                                key={option.value}
+                                                className={`px-4 py-2 hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer text-sm font-black flex items-center justify-between transition-colors ${exitReasonFilter === option.value ? 'text-cyan-500 bg-cyan-50 dark:bg-cyan-500/10' : (option.value === '' ? 'text-slate-900 dark:text-white' : 'text-slate-600 dark:text-slate-300')}`}
+                                                onClick={() => {
+                                                    setExitReasonFilter(option.value);
+                                                    setIsExitReasonDropdownOpen(false);
+                                                }}
+                                            >
+                                                {option.label}
+                                                {exitReasonFilter === option.value && <Check className="w-4 h-4 text-cyan-500" />}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </>
+                            )}
+                        </div>
                     </div>
-                    <div className="flex-1 min-w-[150px]">
-                        <select
-                            value={strategyIdFilter}
-                            onChange={(e) => setStrategyIdFilter(e.target.value)}
-                            className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-2xl px-4 py-3 text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black mb-2"
-                        >
-                            <option value="">All Strategies</option>
-                            {strategies.map(s => (
-                                <option key={s._id} value={s._id}>{s.name}</option>
-                            ))}
-                        </select>
-                        <select
-                            value={exitReasonFilter}
-                            onChange={(e) => setExitReasonFilter(e.target.value)}
-                            className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-2xl px-4 py-3 text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black"
-                        >
-                            <option value="">All Exit Reasons</option>
-                            <option value="Target">Target</option>
-                            <option value="SL">SL</option>
-                            <option value="Strategy">Strategy</option>
-                            <option value="HA_TREND_REVERSAL">HA_TREND_REVERSAL</option>
-                        </select>
-                    </div>
-                    <div className="flex gap-4">
-                        <div className="relative">
-                            <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                            <input
-                                type="date"
-                                className="bg-slate-50 dark:bg-white/5 border-none rounded-2xl pl-12 pr-4 py-3 text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black w-full"
-                                value={startDate}
-                                onChange={(e) => setStartDate(e.target.value)}
-                            />
+
+                    {/* Bottom Row: Date/Time Pickers & Actions */}
+                    <div className="flex flex-col xl:flex-row gap-4 justify-between items-center">
+                        {/* Time & Date Range */}
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 w-full xl:w-auto">
+                            <div className="relative">
+                                <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 z-10" />
+                                <DatePicker
+                                    selected={startDate ? new Date(startDate) : null}
+                                    onChange={(date: Date | null) => {
+                                        if (date) {
+                                            const offset = date.getTimezoneOffset()
+                                            const localDate = new Date(date.getTime() - (offset * 60 * 1000))
+                                            setStartDate(localDate.toISOString().split('T')[0])
+                                        } else {
+                                            setStartDate('')
+                                        }
+                                    }}
+                                    dateFormat="yyyy-MM-dd"
+                                    placeholderText="Start Date"
+                                    className="bg-slate-50 dark:bg-white/5 border-none rounded-2xl pl-10 pr-2 py-3 text-xs md:text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black w-full"
+                                />
+                            </div>
+                            <div className="relative">
+                                <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 z-10" />
+                                <DatePicker
+                                    selected={endDate ? new Date(endDate) : null}
+                                    onChange={(date: Date | null) => {
+                                        if (date) {
+                                            const offset = date.getTimezoneOffset()
+                                            const localDate = new Date(date.getTime() - (offset * 60 * 1000))
+                                            setEndDate(localDate.toISOString().split('T')[0])
+                                        } else {
+                                            setEndDate('')
+                                        }
+                                    }}
+                                    dateFormat="yyyy-MM-dd"
+                                    placeholderText="End Date"
+                                    className="bg-slate-50 dark:bg-white/5 border-none rounded-2xl pl-10 pr-2 py-3 text-xs md:text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black w-full"
+                                />
+                            </div>
+                            <div className="relative z-[90]">
+                                <Clock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 z-10" />
+                                <input
+                                    type="time"
+                                    value={timeFrom}
+                                    onChange={(e) => setTimeFrom(e.target.value)}
+                                    className="bg-slate-50 dark:bg-white/5 border-none rounded-2xl pl-10 pr-2 py-3 text-xs md:text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black w-full dark:[color-scheme:dark]"
+                                />
+                            </div>
+                            <div className="relative z-[90]">
+                                <Clock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 z-10" />
+                                <input
+                                    type="time"
+                                    value={timeTo}
+                                    onChange={(e) => setTimeTo(e.target.value)}
+                                    className="bg-slate-50 dark:bg-white/5 border-none rounded-2xl pl-10 pr-2 py-3 text-xs md:text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black w-full dark:[color-scheme:dark]"
+                                />
+                            </div>
                         </div>
-                        <div className="relative">
-                            <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                            <input
-                                type="date"
-                                className="bg-slate-50 dark:bg-white/5 border-none rounded-2xl pl-12 pr-4 py-3 text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black w-full"
-                                value={endDate}
-                                onChange={(e) => setEndDate(e.target.value)}
-                            />
-                        </div>
-                        <div className="relative">
-                            <Clock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                            <input
-                                type="time"
-                                className="bg-slate-50 dark:bg-white/5 border-none rounded-2xl pl-12 pr-4 py-3 text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black w-full"
-                                value={timeFrom}
-                                onChange={(e) => setTimeFrom(e.target.value)}
-                            />
-                        </div>
-                        <div className="relative">
-                            <Clock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                            <input
-                                type="time"
-                                className="bg-slate-50 dark:bg-white/5 border-none rounded-2xl pl-12 pr-4 py-3 text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black w-full"
-                                value={timeTo}
-                                onChange={(e) => setTimeTo(e.target.value)}
-                            />
-                        </div>
-                    </div>
-                    <div className="flex flex-col sm:flex-row items-center gap-4 w-full xl:w-auto">
-                        <button
-                            onClick={() => {
-                                setPage(1)
-                                setAppliedFilters({
-                                    searchQuery,
-                                    exitReasonFilter,
-                                    strategyIdFilter,
-                                    startDate,
-                                    endDate,
-                                    timeFrom,
-                                    timeTo
-                                })
-                            }}
-                            className="w-full sm:w-auto px-6 py-3 bg-cyan-500 hover:bg-cyan-600 text-white text-xs font-black uppercase tracking-widest rounded-2xl transition-all shadow-xl shadow-cyan-500/20 active:scale-95 flex items-center justify-center gap-2"
-                        >
-                            <Filter className="w-4 h-4 fill-current" />
-                            Apply
-                        </button>
-                        <div className="flex items-center gap-4 w-full sm:w-auto">
+
+                        {/* Actions */}
+                        <div className="flex w-full xl:w-auto items-center gap-3">
+                            <button
+                                onClick={() => {
+                                    setPage(1)
+                                    setAppliedFilters({
+                                        searchQuery,
+                                        exitReasonFilter,
+                                        strategyIdFilter,
+                                        startDate,
+                                        endDate,
+                                        timeFrom,
+                                        timeTo
+                                    })
+                                }}
+                                className="flex-1 xl:flex-none px-6 py-3 bg-cyan-500 hover:bg-cyan-600 text-white text-xs font-black uppercase tracking-widest rounded-2xl transition-all shadow-xl shadow-cyan-500/20 active:scale-95 flex items-center justify-center gap-2"
+                            >
+                                <Filter className="w-4 h-4 fill-current" />
+                                Apply
+                            </button>
                             <button
                                 onClick={() => {
                                     setSearchQuery('')
@@ -237,14 +339,15 @@ export default function TradesPage() {
                                     setPage(1)
                                     setAppliedFilters({ searchQuery: '', exitReasonFilter: '', strategyIdFilter: '', startDate: '', endDate: '', timeFrom: '', timeTo: '' })
                                 }}
-                                className="flex-1 sm:flex-none px-6 py-3 bg-slate-50 dark:bg-white/5 hover:bg-slate-100 dark:hover:bg-white/10 text-slate-600 dark:text-slate-400 text-xs font-black uppercase tracking-widest rounded-2xl transition-all active:scale-95 flex items-center justify-center gap-2"
+                                className="flex-1 xl:flex-none px-6 py-3 bg-slate-50 dark:bg-white/5 hover:bg-slate-100 dark:hover:bg-white/10 text-slate-600 dark:text-slate-400 text-xs font-black uppercase tracking-widest rounded-2xl transition-all active:scale-95 flex items-center justify-center gap-2"
                             >
                                 <Filter className="w-4 h-4" />
                                 Reset
                             </button>
                             <button
                                 onClick={() => fetchTrades()}
-                                className="flex-1 sm:flex-none px-6 py-3 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-500 text-xs font-black uppercase tracking-widest rounded-2xl transition-all active:scale-95 flex items-center justify-center gap-2"
+                                className="px-4 py-3 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-500 text-xs font-black uppercase tracking-widest rounded-2xl transition-all active:scale-95 flex items-center justify-center"
+                                title="Refresh"
                             >
                                 <RefreshCw className="w-4 h-4" />
                             </button>

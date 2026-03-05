@@ -1,3 +1,58 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+.react-datepicker-wrapper {
+  width: 100%;
+}
+
+.react-datepicker {
+  @apply font-sans border border-slate-200 shadow-xl shadow-slate-200/50 bg-white dark:bg-slate-800 dark:border-slate-700/50 dark:shadow-none overflow-hidden rounded-xl !important;
+}
+
+.react-datepicker__header {
+  @apply bg-slate-50 border-b border-slate-200 dark:bg-slate-900/50 dark:border-slate-700/50 pt-3 pb-2 !important;
+}
+
+.react-datepicker__current-month, .react-datepicker-time__header, .react-datepicker-year-header {
+  @apply text-slate-800 dark:text-slate-200 font-black text-sm uppercase tracking-wider mb-2 !important;
+}
+
+.react-datepicker__day-name {
+  @apply text-slate-400 dark:text-slate-500 font-black text-xs uppercase w-8 !important;
+}
+
+.react-datepicker__day {
+  @apply text-slate-600 dark:text-slate-300 font-bold text-sm w-8 h-8 leading-8 rounded-lg hover:bg-slate-100 hover:text-slate-900 dark:hover:bg-white/10 dark:hover:text-white transition-colors !important;
+}
+
+.react-datepicker__day--outside-month {
+  @apply opacity-30 !important;
+}
+
+.react-datepicker__day--selected, .react-datepicker__day--keyboard-selected, .react-datepicker__time-list-item--selected {
+  @apply bg-cyan-500 text-white font-black hover:bg-cyan-600 hover:text-white dark:bg-cyan-500/20 dark:text-cyan-400 !important;
+}
+
+.react-datepicker__time-container {
+  @apply border-l border-slate-200 dark:border-slate-700/50 w-28 !important;
+}
+
+.react-datepicker__time-box {
+  @apply rounded-none w-full !important;
+}
+
+.react-datepicker__time-list-item {
+  @apply text-slate-600 dark:text-slate-300 font-bold text-sm h-10 leading-10 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors flex items-center justify-center !important;
+}
+
+.react-datepicker__navigation-icon::before {
+  @apply border-slate-500 dark:border-slate-400 !important;
+}
+
+.react-datepicker-popper[data-placement^=bottom] .react-datepicker__triangle::before {
+  @apply border-b-slate-200 dark:border-b-slate-700/50 !important;
+}
+.react-datepicker-popper[data-placement^=bottom] .react-datepicker__triangle::after {
+  @apply border-b-white dark:border-b-slate-800 !important;
+}

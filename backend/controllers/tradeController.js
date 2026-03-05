@@ -147,7 +147,8 @@ exports.getAllTrades = async (req, res) => {
         }
 
         if (strategyId) {
-            query.strategyId = strategyId;
+            const mongoose = require('mongoose');
+            query.strategyId = new mongoose.Types.ObjectId(strategyId);
         }
 
         if (searchQuery) {

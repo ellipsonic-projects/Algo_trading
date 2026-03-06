@@ -187,6 +187,12 @@ export default function FiveMinBreakoutPage() {
   const [bufferPoints, setBufferPoints] = useState<number>(() => getSavedState('fmb_bufferPoints', 2))
   const [maxRangeLimit, setMaxRangeLimit] = useState<number>(() => getSavedState('fmb_maxRangeLimit', 30))
 
+  const [premiumMin, setPremiumMin] = useState<number>(() => getSavedState('fmb_premiumMin', 300))
+  const [premiumMax, setPremiumMax] = useState<number>(() => getSavedState('fmb_premiumMax', 400))
+
+  const [strikeMode, setStrikeMode] = useState<StrikeMode>(() => getSavedState('fmb_strikeMode', 'ATM'))
+  const [strikeDepth, setStrikeDepth] = useState<number>(() => getSavedState('fmb_strikeDepth', 1))
+
   useEffect(() => {
     localStorage.setItem('fmb_isRunning', JSON.stringify(isRunning))
     localStorage.setItem('fmb_state', JSON.stringify(state))
@@ -198,7 +204,11 @@ export default function FiveMinBreakoutPage() {
     localStorage.setItem('fmb_bufferPoints', JSON.stringify(bufferPoints))
     localStorage.setItem('fmb_maxRangeLimit', JSON.stringify(maxRangeLimit))
     localStorage.setItem('fmb_liveTradingConsent', JSON.stringify(liveTradingConsent))
-  }, [isRunning, state, lookback, underlying, exchange, quantity, targetPoints, bufferPoints, maxRangeLimit, liveTradingConsent])
+    localStorage.setItem('fmb_strikeMode', JSON.stringify(strikeMode))
+    localStorage.setItem('fmb_strikeDepth', JSON.stringify(strikeDepth))
+    localStorage.setItem('fmb_premiumMin', JSON.stringify(premiumMin))
+    localStorage.setItem('fmb_premiumMax', JSON.stringify(premiumMax))
+  }, [isRunning, state, lookback, underlying, exchange, quantity, targetPoints, bufferPoints, maxRangeLimit, liveTradingConsent, strikeMode, strikeDepth, premiumMin, premiumMax])
 
   // Live Monitor State
   const [monitoredPremiums, setMonitoredPremiums] = useState<{ ce: string, pe: string }>({ ce: '---', pe: '---' })
@@ -209,12 +219,6 @@ export default function FiveMinBreakoutPage() {
     { id: 'range', label: '5-Min Range Lock', status: 'pending' },
     { id: 'breakout', label: 'Breakout Vigil', status: 'pending' }
   ])
-
-  const [premiumMin, setPremiumMin] = useState<number>(300)
-  const [premiumMax, setPremiumMax] = useState<number>(400)
-
-  const [strikeMode, setStrikeMode] = useState<StrikeMode>('ATM')
-  const [strikeDepth, setStrikeDepth] = useState<number>(1)
 
   const [selectedExpiry, setSelectedExpiry] = useState<string | null>(null)
   const [atmStrike, setAtmStrike] = useState<number | null>(null)
@@ -227,6 +231,7 @@ export default function FiveMinBreakoutPage() {
   const [target, setTarget] = useState<number | null>(null)
   const [currentLtp, setCurrentLtp] = useState<number | null>(null)
   const [activeTradeId, setActiveTradeId] = useState<string | null>(null)
+  const [activeTradePremium, setActiveTradePremium] = useState<string | null>(null)
 
   const inFlightRef = useRef(false)
   const lastProcessedCandleTsRef = useRef<string | null>(null)
@@ -238,6 +243,7 @@ export default function FiveMinBreakoutPage() {
   const setActiveTrade = useCallback((tradeId: string | null, premium: string | null) => {
     activeTradeRef.current = { tradeId, premium }
     setActiveTradeId(tradeId)
+    setActiveTradePremium(premium)
   }, [])
 
   const resetForNextRun = useCallback((nextState: StrategyState) => {
@@ -561,6 +567,9 @@ export default function FiveMinBreakoutPage() {
   useEffect(() => {
     if (!isRunning || state !== 'IN_POSITION' || !activeTradeRef.current.tradeId) return
 
+    // Ensure SL audio is primed (covers recovery-on-load case)
+    primeSlAudio()
+
     let cancelled = false
     const monitor = async () => {
       if (cancelled || inFlightRef.current) return
@@ -722,7 +731,8 @@ export default function FiveMinBreakoutPage() {
                   <select
                     value={underlying}
                     onChange={(e) => handleUnderlyingChange(e.target.value as Underlying)}
-                    className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all"
+                    disabled={isRunning}
+                    className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <option value="SENSEX">SENSEX (BSE)</option>
                     <option value="NIFTY">NIFTY (NSE)</option>
@@ -734,7 +744,8 @@ export default function FiveMinBreakoutPage() {
                   <select
                     value={lookback}
                     onChange={(e) => setLookback(Number(e.target.value) as 4 | 5)}
-                    className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all"
+                    disabled={isRunning}
+                    className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <option value={4}>4 Candles (Fast)</option>
                     <option value={5}>5 Candles (Balanced)</option>
@@ -747,7 +758,8 @@ export default function FiveMinBreakoutPage() {
                     value={quantity}
                     step={INDEX_CONFIG[underlying].step}
                     onChange={(e) => setQuantity(Number(e.target.value))}
-                    className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-black text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all"
+                    disabled={isRunning}
+                    className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-black text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                   />
                 </div>
               </div>
@@ -760,7 +772,8 @@ export default function FiveMinBreakoutPage() {
                       type="number"
                       value={targetPoints}
                       onChange={(e) => setTargetPoints(parseFloat(e.target.value) || 0)}
-                      className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-black text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all font-mono"
+                      disabled={isRunning}
+                      className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-black text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all font-mono disabled:opacity-50 disabled:cursor-not-allowed"
                     />
                   </div>
                   <div>
@@ -769,7 +782,8 @@ export default function FiveMinBreakoutPage() {
                       type="number"
                       value={bufferPoints}
                       onChange={(e) => setBufferPoints(parseFloat(e.target.value) || 0)}
-                      className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-black text-rose-500 dark:text-rose-400 outline-none focus:ring-2 focus:ring-rose-500/20 transition-all font-mono"
+                      disabled={isRunning}
+                      className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-black text-rose-500 dark:text-rose-400 outline-none focus:ring-2 focus:ring-rose-500/20 transition-all font-mono disabled:opacity-50 disabled:cursor-not-allowed"
                     />
                   </div>
                   <div>
@@ -778,7 +792,8 @@ export default function FiveMinBreakoutPage() {
                       type="number"
                       value={maxRangeLimit}
                       onChange={(e) => setMaxRangeLimit(parseFloat(e.target.value) || 0)}
-                      className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-black text-cyan-500 dark:text-cyan-400 outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-mono"
+                      disabled={isRunning}
+                      className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-sm font-black text-cyan-500 dark:text-cyan-400 outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-mono disabled:opacity-50 disabled:cursor-not-allowed"
                     />
                   </div>
                 </div>
@@ -792,7 +807,8 @@ export default function FiveMinBreakoutPage() {
                         type="checkbox"
                         checked={liveTradingConsent}
                         onChange={(e) => setLiveTradingConsent(e.target.checked)}
-                        className="sr-only peer"
+                        disabled={isRunning}
+                        className="sr-only peer disabled:opacity-50 disabled:cursor-not-allowed"
                       />
                       <div className="w-11 h-6 bg-slate-200 dark:bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-rose-500"></div>
                     </label>
@@ -851,9 +867,10 @@ export default function FiveMinBreakoutPage() {
                     <button
                       key={mode}
                       onClick={() => setStrikeMode(mode)}
+                      disabled={isRunning}
                       className={`py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${strikeMode === mode
                         ? 'bg-cyan-500 text-white shadow-lg shadow-cyan-500/20'
-                        : 'bg-slate-50 dark:bg-white/5 text-slate-400 hover:text-slate-600'}`}
+                        : 'bg-slate-50 dark:bg-white/5 text-slate-400 hover:text-slate-600 disabled:opacity-50 disabled:cursor-not-allowed'}`}
                     >
                       {mode}
                     </button>
@@ -867,12 +884,14 @@ export default function FiveMinBreakoutPage() {
                   <div className="flex items-center justify-between p-1 bg-slate-50 dark:bg-white/5 rounded-xl">
                     <button
                       onClick={() => setStrikeDepth(Math.max(1, strikeDepth - 1))}
-                      className="w-10 h-10 flex items-center justify-center text-slate-400 hover:text-cyan-500 font-black text-xl transition-colors"
+                      disabled={isRunning}
+                      className="w-10 h-10 flex items-center justify-center text-slate-400 hover:text-cyan-500 font-black text-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >-</button>
                     <span className="text-sm font-black text-slate-900 dark:text-white">{strikeDepth}</span>
                     <button
                       onClick={() => setStrikeDepth(strikeDepth + 1)}
-                      className="w-10 h-10 flex items-center justify-center text-slate-400 hover:text-cyan-500 font-black text-xl transition-colors"
+                      disabled={isRunning}
+                      className="w-10 h-10 flex items-center justify-center text-slate-400 hover:text-cyan-500 font-black text-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >+</button>
                   </div>
                 </div>
@@ -885,7 +904,8 @@ export default function FiveMinBreakoutPage() {
                     type="number"
                     value={premiumMin}
                     onChange={(e) => setPremiumMin(Number(e.target.value))}
-                    className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-xs font-bold text-slate-900 dark:text-white outline-none focus:ring-1 focus:ring-cyan-500/20"
+                    disabled={isRunning}
+                    className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-xs font-bold text-slate-900 dark:text-white outline-none focus:ring-1 focus:ring-cyan-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
                     placeholder="Min"
                   />
                   <ChevronRight className="w-4 h-4 text-slate-300" />
@@ -893,7 +913,8 @@ export default function FiveMinBreakoutPage() {
                     type="number"
                     value={premiumMax}
                     onChange={(e) => setPremiumMax(Number(e.target.value))}
-                    className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-xs font-bold text-slate-900 dark:text-white outline-none focus:ring-1 focus:ring-cyan-500/20"
+                    disabled={isRunning}
+                    className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-xs font-bold text-slate-900 dark:text-white outline-none focus:ring-1 focus:ring-cyan-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
                     placeholder="Max"
                   />
                 </div>
@@ -917,12 +938,24 @@ export default function FiveMinBreakoutPage() {
                 Live Breakout Monitor
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl">
+                <div className={`border rounded-2xl p-6 backdrop-blur-xl transition-all ${activeTradePremium === ceContract?.tradingsymbol
+                    ? 'bg-cyan-500/20 border-cyan-500/40'
+                    : 'bg-white/5 border-white/10'
+                    }`}>
                   <p className="text-[10px] font-black text-cyan-500 uppercase tracking-widest mb-3">Analyzed CE</p>
+                  {activeTradePremium === ceContract?.tradingsymbol && (
+                    <p className="text-[9px] font-black text-cyan-400 uppercase tracking-widest mb-2">● ACTIVE TRADE</p>
+                  )}
                   <p className="text-xl font-black text-white">{monitoredPremiums.ce}</p>
                 </div>
-                <div className="bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl">
+                <div className={`border rounded-2xl p-6 backdrop-blur-xl transition-all ${activeTradePremium === peContract?.tradingsymbol
+                    ? 'bg-rose-500/20 border-rose-500/40'
+                    : 'bg-white/5 border-white/10'
+                    }`}>
                   <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest mb-3">Analyzed PE</p>
+                  {activeTradePremium === peContract?.tradingsymbol && (
+                    <p className="text-[9px] font-black text-rose-400 uppercase tracking-widest mb-2">● ACTIVE TRADE</p>
+                  )}
                   <p className="text-xl font-black text-white">{monitoredPremiums.pe}</p>
                 </div>
               </div>

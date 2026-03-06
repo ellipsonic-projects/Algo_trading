@@ -1,4 +1,5 @@
 let slAudio: HTMLAudioElement | null = null
+let globalPrimed = false
 
 export function getSlAudioSrc(): string {
   return '/assets/music/fah.mp3'
@@ -38,12 +39,27 @@ export function primeSlAudio(): void {
   }
 }
 
+// Prime on first user interaction to satisfy autoplay policy
+if (typeof window !== 'undefined' && !globalPrimed) {
+  const once = () => {
+    primeSlAudio()
+    globalPrimed = true
+  }
+  document.addEventListener('pointerdown', once, { once: true, capture: true })
+  document.addEventListener('keydown', once, { once: true, capture: true })
+}
+
 export function playSlAudio(): void {
   const audio = ensureAudio()
   audio.currentTime = 0
+  audio.volume = 1
+  audio.muted = false
+  audio.load()
   const p = audio.play()
   if (p && typeof (p as Promise<void>).catch === 'function') {
-    ;(p as Promise<void>).catch(() => {})
+    ;(p as Promise<void>).catch((err) => {
+      console.warn('[SL AUDIO] Playback failed:', err)
+    })
   }
 }
 

@@ -829,7 +829,7 @@ export default function FiveMinBreakoutPage() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-8">
+              <div className="grid grid-cols-2 lg:grid-cols-5 gap-8">
                 <div>
                   <p className="text-[10px] font-bold text-slate-400 uppercase">Premium LTP</p>
                   <p className="text-xl font-black text-slate-900 dark:text-white mt-1">₹{currentLtp?.toFixed(2) || '---'}</p>
@@ -837,6 +837,17 @@ export default function FiveMinBreakoutPage() {
                 <div>
                   <p className="text-[10px] font-bold text-slate-400 uppercase">Entry Trigger</p>
                   <p className="text-xl font-black text-slate-900 dark:text-white mt-1">₹{entryPrice?.toFixed(2) || '---'}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase">P&amp;L</p>
+                  <p className={`text-xl font-black mt-1 ${currentLtp && entryPrice
+                    ? currentLtp >= entryPrice ? 'text-emerald-500' : 'text-rose-500'
+                    : 'text-slate-400'
+                    }`}>
+                    {currentLtp && entryPrice
+                      ? `₹${((currentLtp - entryPrice) * quantity).toFixed(2)}`
+                      : '---'}
+                  </p>
                 </div>
                 <div>
                   <p className="text-[10px] font-bold text-slate-400 uppercase">Stop Loss</p>

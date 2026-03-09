@@ -739,7 +739,7 @@ export default function ModifiedHeikenashiPage() {
                                 } else if (livePrice <= activeTrailingSl) {
                                     shouldExit = true
                                     exitPrice = livePrice
-                                    exitReason = 'Trailing SL'
+                                    exitReason = activeTrailingSl === entryPrice - initialSlPoints ? 'SL' : 'Trailing SL'
                                 } else {
                                     // Calculate if we need to trail up
                                     const pointsGained = livePrice - entryPrice
@@ -884,7 +884,7 @@ export default function ModifiedHeikenashiPage() {
                             exitReason = 'Target'
                         } else if (ltp <= activeTrailingSl) {
                             shouldExit = true
-                            exitReason = 'Trailing SL'
+                            exitReason = activeTrailingSl === entryPrice - initialSlPoints ? 'SL' : 'Trailing SL'
                         } else {
                             const pointsGained = ltp - entryPrice
                             if (pointsGained >= trailingStopPoints) {

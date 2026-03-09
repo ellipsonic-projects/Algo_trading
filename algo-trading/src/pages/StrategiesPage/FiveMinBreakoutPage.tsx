@@ -650,7 +650,7 @@ export default function FiveMinBreakoutPage() {
       } finally { inFlightRef.current = false }
     }
 
-    const t = setInterval(monitor, 2000)
+    const t = setInterval(monitor, 1000)
     monitor()
     return () => { cancelled = true; clearInterval(t) }
   }, [ceContract, peContract, isRunning, rangeSide, state, stopLoss, target, resetForNextRun, liveTradingConsent, quantity])

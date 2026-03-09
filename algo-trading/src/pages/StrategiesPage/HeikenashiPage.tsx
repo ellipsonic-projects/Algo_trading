@@ -772,7 +772,7 @@ export default function HeikenashiPage() {
                 console.error('HA Monitor error:', e)
             }
         }
-        const t = setInterval(monitor, 2_000)
+        const t = setInterval(monitor, 1000)
         monitor()
         return () => { cancelled = true; clearInterval(t) }
     }, [isRunning, state, activeTradeId, activeTradePremium, ceContract, peContract])

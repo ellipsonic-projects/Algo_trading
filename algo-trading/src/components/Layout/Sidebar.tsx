@@ -21,6 +21,7 @@ const Sidebar: React.FC = () => {
     const strategies = [
         { name: 'Manual Trading', path: '/strategies/manual-trading', icon: Activity },
         { name: 'Heikenashi', path: '/strategies/heikenashi', icon: TrendingUp },
+        { name: 'Mod Heikenashi', path: '/strategies/modified-heikenashi', icon: TrendingUp },
         { name: '5-Min Breakout', path: '/strategies/5-min-breakout', icon: Zap },
         { name: 'Ichimoku', path: '/strategies/ichimoku', icon: BarChart3 },
         { name: 'VWAP SMMA', path: '/strategies/vwap-smma', icon: Clock },

@@ -167,6 +167,9 @@ export default function ModifiedHeikenashiPage() {
     // Trailing SL State tracking during an active trade
     const [activeTrailingSl, setActiveTrailingSl] = useState<number | null>(null)
 
+    // Cooldown State tracking
+    const [cooldownUntil, setCooldownUntil] = useState<number | null>(null)
+
     // ─── Refs ────────────────────────────────────────────────────────────────
     const inFlightRef = useRef(false)
 
@@ -247,6 +250,7 @@ export default function ModifiedHeikenashiPage() {
         setEntryPrice(null)
         setCurrentLtp(null)
         setActiveTrailingSl(null)
+        setCooldownUntil(null)
         lastEntryTimeRef.current = null
     }, [setActiveTrade])
 
@@ -325,7 +329,12 @@ export default function ModifiedHeikenashiPage() {
             setEntryPrice(null)
             setCurrentLtp(null)
             setActiveTrailingSl(null)
-            setState('SCANNING')
+
+            // Manual exits shouldn't trigger a cooldown, but if we want it to map to 2 mins:
+            const cooldownTime = Date.now() + (2 * 60 * 1000)
+            setCooldownUntil(cooldownTime)
+            setState('COOLDOWN')
+
             setTrend('NEUTRAL')
         } catch (err) {
             console.error('[HA MANUAL EXIT] Failed', err)
@@ -468,10 +477,35 @@ export default function ModifiedHeikenashiPage() {
         return () => { cancelled = true; clearInterval(t) }
     }, [isRunning, underlying, selectedExpiry, atmStrike, strikeMode, strikeDepth])
 
+    // ─── Cooldown Monitor ─────────────────────────────────────────────────────
+    useEffect(() => {
+        if (!isRunning || !cooldownUntil) return
+        let cancelled = false
+        const tick = () => {
+            if (cancelled) return
+            if (Date.now() >= cooldownUntil) {
+                setCooldownUntil(null)
+                if (state === 'COOLDOWN') {
+                    setState('SCANNING')
+                    setMessage('Cooldown complete. Scanning resumed.')
+                }
+            } else {
+                if (state !== 'COOLDOWN') setState('COOLDOWN')
+                const remain = Math.ceil((cooldownUntil - Date.now()) / 1000)
+                setMessage(`Cooling period active. Resuming in ${remain}s...`)
+            }
+        }
+        const t = setInterval(tick, 1000)
+        tick()
+        return () => { cancelled = true; clearInterval(t) }
+    }, [isRunning, cooldownUntil, state])
+
     // ─── Strategy Scanning ────────────────────────────────────────────────────
     useEffect(() => {
         if (!isRunning || !ceContract || !peContract) return
         if (state !== 'SCANNING' && state !== 'IN_POSITION') return
+        if (cooldownUntil && Date.now() < cooldownUntil) return
+
         let cancelled = false
 
         // Snapshot contract references so the closure always has the correct tokens
@@ -639,6 +673,7 @@ export default function ModifiedHeikenashiPage() {
                         setActiveTrade(res.data.trade._id, snapPe.tradingsymbol)
 
                     } else {
+                        // Only change UI trend if not in position
                         setTrend(ceSignal.trend)
                     }
 
@@ -783,7 +818,19 @@ export default function ModifiedHeikenashiPage() {
                         setActiveTrade(null, null)
                         setEntryPrice(null)
                         setActiveTrailingSl(null)
-                        setState('SCANNING')
+
+                        // COOLDOWN LOGIC
+                        let cooldownMinutes = 0
+                        if (exitReason === 'SL') cooldownMinutes = 4
+                        else if (exitReason === 'Target' || exitReason === 'Trailing SL') cooldownMinutes = 2
+
+                        if (cooldownMinutes > 0) {
+                            setCooldownUntil(Date.now() + (cooldownMinutes * 60 * 1000))
+                            setState('COOLDOWN')
+                        } else {
+                            setState('SCANNING')
+                        }
+
                         setTrend('NEUTRAL')
                     }
                 }
@@ -904,7 +951,19 @@ export default function ModifiedHeikenashiPage() {
                             setActiveTrade(null, null)
                             setEntryPrice(null)
                             setActiveTrailingSl(null)
-                            setState('SCANNING')
+
+                            // COOLDOWN LOGIC
+                            let cooldownMinutes = 0
+                            if (exitReason === 'SL') cooldownMinutes = 4
+                            else if (exitReason === 'Target' || exitReason === 'Trailing SL') cooldownMinutes = 2
+
+                            if (cooldownMinutes > 0) {
+                                setCooldownUntil(Date.now() + (cooldownMinutes * 60 * 1000))
+                                setState('COOLDOWN')
+                            } else {
+                                setState('SCANNING')
+                            }
+
                             setTrend('NEUTRAL')
                             setIsExiting(false)
                         }

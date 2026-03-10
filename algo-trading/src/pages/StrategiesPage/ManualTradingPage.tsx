@@ -4,11 +4,13 @@ import {
   History,
   BarChart3,
   ArrowRightLeft,
-  Clock,
   Wallet
 } from 'lucide-react';
 
+import { usePageTitle } from '../../hooks/usePageTitle';
+
 const ManualTradingPage: React.FC = () => {
+  usePageTitle('Manual Trading');
   return (
     <div className="space-y-8 animate-in slide-in-from-bottom-4 duration-500">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">

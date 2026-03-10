@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 
 import { useAngelConnection } from '../../shared/angel/AngelConnectionProvider'
 import { useTheme } from '../../shared/theme/ThemeProvider'
+import { usePageTitle } from '../../hooks/usePageTitle'
 
 type Props = {
   title: string
@@ -13,6 +14,7 @@ type Props = {
 }
 
 export default function StrategiesLayout({ title, subtitle, backTo, children }: Props) {
+  usePageTitle(title)
   const navigate = useNavigate()
   const { theme, toggleTheme } = useTheme()
   const { connectStatus, connectMessage, openConnect, disconnect } = useAngelConnection()

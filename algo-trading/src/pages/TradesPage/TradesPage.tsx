@@ -17,6 +17,7 @@ import DatePicker from 'react-datepicker'
 import 'react-datepicker/dist/react-datepicker.css'
 import { apiGet } from '../../trading'
 import { buildTradesUrl } from './tradesQuery'
+import { usePageTitle } from '../../hooks/usePageTitle'
 
 type Trade = {
     _id: string
@@ -51,6 +52,7 @@ type TradesResponse = {
 }
 
 export default function TradesPage() {
+    usePageTitle('Trades');
     const [trades, setTrades] = useState<Trade[]>([])
     const [strategies, setStrategies] = useState<{ _id: string, name: string }[]>([])
     const [loading, setLoading] = useState(true)

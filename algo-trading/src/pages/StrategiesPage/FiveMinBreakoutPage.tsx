@@ -19,6 +19,7 @@ import {
 // import { computeStopLossAndTarget } from '../../trading/strategies/premiumRangeBreakout'
 import { isStopLossExitReason, playSlAudio, primeSlAudio } from '../../shared/audio/slAudio'
 import { apiGet, apiPost } from '../../trading'
+import { usePageTitle } from '../../hooks/usePageTitle'
 
 type Underlying = 'SENSEX' | 'NIFTY' | 'BANKNIFTY'
 type Exchange = 'BFO' | 'NFO'
@@ -156,6 +157,7 @@ function getLastCompletedCandleWindow(candles: Candle[], lookback: 4 | 5): { ran
 }
 
 export default function FiveMinBreakoutPage() {
+  usePageTitle('5 Min Breakout');
   const { connectStatus } = useAngelConnection()
 
   const [isRunning, setIsRunning] = useState<boolean>(() => getSavedState('fmb_isRunning', false))

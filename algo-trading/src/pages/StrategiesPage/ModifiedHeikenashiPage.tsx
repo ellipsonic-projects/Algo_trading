@@ -16,6 +16,7 @@ import {
     analyzeModifiedHeikenAshiStrategy
 } from '../../trading/strategies/modifiedHeikenAshi'
 import { isStopLossExitReason, playSlAudio, primeSlAudio } from '../../shared/audio/slAudio'
+import { usePageTitle } from '../../hooks/usePageTitle'
 
 type Underlying = 'SENSEX' | 'NIFTY' | 'BANKNIFTY' | 'CRUDEOILM'
 type Exchange = 'BFO' | 'NFO' | 'MCX'
@@ -91,6 +92,7 @@ function getSavedState<T>(key: string, fallback: T): T {
 }
 
 export default function ModifiedHeikenashiPage() {
+    usePageTitle('Modified Heikenashi');
     const { connectStatus } = useAngelConnection()
 
     const [isRunning, setIsRunning] = useState<boolean>(() => getSavedState('mha_isRunning', false))

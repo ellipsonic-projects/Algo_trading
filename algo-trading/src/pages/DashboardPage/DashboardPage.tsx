@@ -10,8 +10,10 @@ import {
 } from 'lucide-react';
 
 import { apiGet } from '../../trading';
+import { usePageTitle } from '../../hooks/usePageTitle';
 
 const DashboardPage: React.FC = () => {
+  usePageTitle('Dashboard');
   const [stats, setStats] = useState({
     totalPnl: 0,
     activeStrategies: 0,

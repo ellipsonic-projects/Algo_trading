@@ -535,15 +535,16 @@ export default function ModifiedHeikenashiPage() {
                 }
                 const lookback = lookbackMap[baseTimeframe] ?? 300
 
-                // ✅ Use the resolved option contract tokens (not the index token)
-                const [ceRes, peRes] = await Promise.all([
-                    apiGet<CandlesResponse>(
-                        `/market/candles?exchange=${scanExchange}&symboltoken=${snapCe.symboltoken}&interval=${baseTimeframe}&lookback_minutes=${lookback}`
-                    ),
-                    apiGet<CandlesResponse>(
-                        `/market/candles?exchange=${scanExchange}&symboltoken=${snapPe.symboltoken}&interval=${baseTimeframe}&lookback_minutes=${lookback}`
-                    ),
-                ])
+                // ✅ Fetch sequentially with delay to avoid rate limit (3 req/sec for candles)
+                const ceRes = await apiGet<CandlesResponse>(
+                    `/market/candles?exchange=${scanExchange}&symboltoken=${snapCe.symboltoken}&interval=${baseTimeframe}&lookback_minutes=${lookback}`
+                )
+
+                await new Promise(resolve => setTimeout(resolve, 400))
+
+                const peRes = await apiGet<CandlesResponse>(
+                    `/market/candles?exchange=${scanExchange}&symboltoken=${snapPe.symboltoken}&interval=${baseTimeframe}&lookback_minutes=${lookback}`
+                )
 
                 if (cancelled) return
 
@@ -746,12 +747,11 @@ export default function ModifiedHeikenashiPage() {
                                     // Calculate if we need to trail up
                                     const pointsGained = livePrice - entryPrice
                                     if (pointsGained >= trailingStopPoints) {
-                                        // How many trailing steps have we achieved?
+                                        // Every N points of gain directly shifts SL up by exactly N points.
+                                        // e.g. Entry 300, risk 30. Move to 360 (+60 pts). Steps = 3.
+                                        // New SL = 300 + (3 * 20) - 30 = 330. (Securing +30 pts perfectly).
                                         const steps = Math.floor(pointsGained / trailingStopPoints)
-                                        // New SL is entry + trailing steps, starting from entry price.
-                                        // E.g. 1st step: new SL = entry price
-                                        // 2nd step: new SL = entry price + trailing points
-                                        const proposedSl = entryPrice + ((steps - 1) * trailingStopPoints)
+                                        const proposedSl = entryPrice + (steps * trailingStopPoints) - initialSlPoints
 
                                         if (proposedSl > activeTrailingSl) {
                                             setActiveTrailingSl(proposedSl)

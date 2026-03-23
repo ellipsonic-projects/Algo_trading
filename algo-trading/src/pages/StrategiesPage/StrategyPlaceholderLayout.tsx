@@ -1,7 +1,10 @@
 import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 
+import { usePageTitle } from '../../hooks/usePageTitle'
+
 export default function StrategyPlaceholderLayout({ title, children }: { title: string; children: ReactNode }) {
+  usePageTitle(title)
   const navigate = useNavigate()
 
   return (

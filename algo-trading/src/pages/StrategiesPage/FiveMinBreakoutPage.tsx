@@ -19,6 +19,7 @@ import {
 // import { computeStopLossAndTarget } from '../../trading/strategies/premiumRangeBreakout'
 import { isStopLossExitReason, playSlAudio, primeSlAudio } from '../../shared/audio/slAudio'
 import { apiGet, apiPost } from '../../trading'
+import { usePageTitle } from '../../hooks/usePageTitle'
 
 type Underlying = 'SENSEX' | 'NIFTY' | 'BANKNIFTY'
 type Exchange = 'BFO' | 'NFO'
@@ -156,6 +157,7 @@ function getLastCompletedCandleWindow(candles: Candle[], lookback: 4 | 5): { ran
 }
 
 export default function FiveMinBreakoutPage() {
+  usePageTitle('5 Min Breakout');
   const { connectStatus } = useAngelConnection()
 
   const [isRunning, setIsRunning] = useState<boolean>(() => getSavedState('fmb_isRunning', false))
@@ -443,7 +445,7 @@ export default function FiveMinBreakoutPage() {
         console.error(e)
       } finally { inFlightRef.current = false }
     }
-    const t = setInterval(tick, 15000)
+    const t = setInterval(tick, 60000)
     tick()
     return () => { cancelled = true; clearInterval(t) }
   }, [atmStrike, connectStatus, exchange, isRunning, selectedExpiry, strikeDepth, strikeMode, underlying])
@@ -478,10 +480,16 @@ export default function FiveMinBreakoutPage() {
       if (cancelled || inFlightRef.current) return
       inFlightRef.current = true
       try {
-        const [ceCandles, peCandles] = await Promise.all([
-          apiGet<CandlesResponse>(`/market/candles?exchange=${encodeURIComponent(ceContract.exchange)}&symboltoken=${encodeURIComponent(ceContract.symboltoken)}&interval=ONE_MINUTE&lookback_minutes=20`),
-          apiGet<CandlesResponse>(`/market/candles?exchange=${encodeURIComponent(peContract.exchange)}&symboltoken=${encodeURIComponent(peContract.symboltoken)}&interval=ONE_MINUTE&lookback_minutes=20`),
-        ])
+        // Fetch sequentially with delay to avoid rate limit (3 req/sec for candles)
+        const ceCandles = await apiGet<CandlesResponse>(`/market/candles?exchange=${encodeURIComponent(ceContract.exchange)}&symboltoken=${encodeURIComponent(ceContract.symboltoken)}&interval=ONE_MINUTE&lookback_minutes=20`)
+
+        await new Promise(resolve => setTimeout(resolve, 400))
+
+        const peCandles = await apiGet<CandlesResponse>(`/market/candles?exchange=${encodeURIComponent(peContract.exchange)}&symboltoken=${encodeURIComponent(peContract.symboltoken)}&interval=ONE_MINUTE&lookback_minutes=20`)
+
+        console.log(`\n[5MIN SCAN] Index: ${underlying}, Time: ${new Date().toISOString()}`)
+        console.log(`[5MIN SCAN] CE token: ${ceContract.symboltoken} | candles: ${ceCandles.items?.length}`)
+        console.log(`[5MIN SCAN] PE token: ${peContract.symboltoken} | candles: ${peCandles.items?.length}`)
 
         const ceWindow = getLastCompletedCandleWindow(ceCandles.items ?? [], lookback)
         const peWindow = getLastCompletedCandleWindow(peCandles.items ?? [], lookback)
@@ -496,6 +504,9 @@ export default function FiveMinBreakoutPage() {
 
         const ceBreakout = ceRange ? detectBreakoutCloseOnly({ candleClose: ceWindow.breakoutCandle.close, range: ceRange }) : false
         const peBreakout = peRange ? detectBreakoutCloseOnly({ candleClose: peWindow.breakoutCandle.close, range: peRange }) : false
+
+        console.log(`[5MIN CE] Range [Low: ${ceRange?.rangeLow}, High: ${ceRange?.rangeHigh}], Close: ${ceWindow.breakoutCandle.close}, Breakout: ${ceBreakout}`)
+        console.log(`[5MIN PE] Range [Low: ${peRange?.rangeLow}, High: ${peRange?.rangeHigh}], Close: ${peWindow.breakoutCandle.close}, Breakout: ${peBreakout}`)
 
         if (ceBreakout || peBreakout) {
           const isCE = ceBreakout
@@ -558,7 +569,7 @@ export default function FiveMinBreakoutPage() {
         console.error(e)
       } finally { inFlightRef.current = false }
     }
-    const t = setInterval(scan, 7000)
+    const t = setInterval(scan, 15000)
     scan()
     return () => { cancelled = true; clearInterval(t) }
   }, [ceContract, connectStatus, isRunning, lookback, peContract, state, underlying, quantity, maxRangeLimit, bufferPoints, targetPoints, liveTradingConsent, setActiveTrade])
@@ -950,9 +961,9 @@ export default function FiveMinBreakoutPage() {
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className={`border rounded-2xl p-6 backdrop-blur-xl transition-all ${activeTradePremium === ceContract?.tradingsymbol
-                    ? 'bg-cyan-500/20 border-cyan-500/40'
-                    : 'bg-white/5 border-white/10'
-                    }`}>
+                  ? 'bg-cyan-500/20 border-cyan-500/40'
+                  : 'bg-white/5 border-white/10'
+                  }`}>
                   <p className="text-[10px] font-black text-cyan-500 uppercase tracking-widest mb-3">Analyzed CE</p>
                   {activeTradePremium === ceContract?.tradingsymbol && (
                     <p className="text-[9px] font-black text-cyan-400 uppercase tracking-widest mb-2">● ACTIVE TRADE</p>
@@ -960,9 +971,9 @@ export default function FiveMinBreakoutPage() {
                   <p className="text-xl font-black text-white">{monitoredPremiums.ce}</p>
                 </div>
                 <div className={`border rounded-2xl p-6 backdrop-blur-xl transition-all ${activeTradePremium === peContract?.tradingsymbol
-                    ? 'bg-rose-500/20 border-rose-500/40'
-                    : 'bg-white/5 border-white/10'
-                    }`}>
+                  ? 'bg-rose-500/20 border-rose-500/40'
+                  : 'bg-white/5 border-white/10'
+                  }`}>
                   <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest mb-3">Analyzed PE</p>
                   {activeTradePremium === peContract?.tradingsymbol && (
                     <p className="text-[9px] font-black text-rose-400 uppercase tracking-widest mb-2">● ACTIVE TRADE</p>

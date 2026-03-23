@@ -12,9 +12,9 @@ import {
 import { useAngelConnection } from '../../shared/angel/AngelConnectionProvider'
 import { apiGet, apiPost } from '../../trading'
 import {
-    computeHeikenAshi,
-    analyzeHeikenAshiStrategy
-} from '../../trading/strategies/heikenAshi'
+    computeModifiedHeikenAshi,
+    analyzeModifiedHeikenAshiStrategy
+} from '../../trading/strategies/modifiedHeikenAshi'
 import { isStopLossExitReason, playSlAudio, primeSlAudio } from '../../shared/audio/slAudio'
 import { usePageTitle } from '../../hooks/usePageTitle'
 
@@ -31,7 +31,7 @@ const INDEX_CONFIG: Record<Underlying, { qty: number, step: number, exchange: Ex
 type StrategyState = 'WAITING' | 'SCANNING' | 'IN_POSITION' | 'COOLDOWN' | 'STOPPED'
 type Trend = 'BULLISH' | 'BEARISH' | 'NEUTRAL'
 type StrikeMode = 'ATM' | 'ITM' | 'OTM'
-type ExitStrategy = 'CANDLES' | 'TARGET'
+type ExitStrategy = 'CANDLES' | 'TARGET' | 'TRAILING_SL'
 
 type IndexOptionContract = {
     exchange: Exchange
@@ -91,63 +91,69 @@ function getSavedState<T>(key: string, fallback: T): T {
     }
 }
 
-export default function HeikenashiPage() {
-    usePageTitle('Heikenashi');
+export default function ModifiedHeikenashiPage() {
+    usePageTitle('Modified Heikenashi');
     const { connectStatus } = useAngelConnection()
 
-    const [isRunning, setIsRunning] = useState<boolean>(() => getSavedState('ha_isRunning', false))
-    const [state, setState] = useState<StrategyState>(() => getSavedState('ha_state', 'STOPPED'))
+    const [isRunning, setIsRunning] = useState<boolean>(() => getSavedState('mha_isRunning', false))
+    const [state, setState] = useState<StrategyState>(() => getSavedState('mha_state', 'STOPPED'))
     const [message, setMessage] = useState<string>('')
     const [trend, setTrend] = useState<Trend>('NEUTRAL')
 
     // Core Configuration
-    const [underlying, setUnderlying] = useState<Underlying>(() => getSavedState('ha_underlying', 'SENSEX'))
-    const [quantity, setQuantity] = useState<number>(() => getSavedState('ha_quantity', INDEX_CONFIG.SENSEX.qty))
-    const [baseTimeframe, setBaseTimeframe] = useState<string>(() => getSavedState('ha_baseTimeframe', 'FIVE_MINUTE'))
-    const [needConfirmation, setNeedConfirmation] = useState<boolean>(() => getSavedState('ha_needConfirmation', false))
-    const [confirmationTimeframe, setConfirmationTimeframe] = useState<string>(() => getSavedState('ha_confirmationTimeframe', 'FIFTEEN_MINUTE'))
+    const [underlying, setUnderlying] = useState<Underlying>(() => getSavedState('mha_underlying', 'SENSEX'))
+    const [quantity, setQuantity] = useState<number>(() => getSavedState('mha_quantity', INDEX_CONFIG.SENSEX.qty))
+    const [baseTimeframe, setBaseTimeframe] = useState<string>(() => getSavedState('mha_baseTimeframe', 'FIVE_MINUTE'))
+    const [needConfirmation, setNeedConfirmation] = useState<boolean>(() => getSavedState('mha_needConfirmation', false))
+    const [confirmationTimeframe, setConfirmationTimeframe] = useState<string>(() => getSavedState('mha_confirmationTimeframe', 'FIFTEEN_MINUTE'))
 
     // Live Monitor State
     const [monitoredPremiums, setMonitoredPremiums] = useState<{ ce: string, pe: string }>({ ce: '---', pe: '---' })
     const [checkpoints, setCheckpoints] = useState([
         { id: 'broker', label: 'Broker Connection', status: 'pending' },
         { id: 'expiry', label: 'Next Expiry Locked', status: 'pending' },
-        { id: 'ha_trend', label: 'HA Trend Stability', status: 'pending' },
+        { id: 'mha_trend', label: 'HA Trend Stability', status: 'pending' },
         { id: 'confirmation', label: 'Timeframe Sync', status: 'pending' },
         { id: 'indicators', label: 'EMA/JMA Cross Check', status: 'pending' }
     ])
 
     // Strike Selection
-    const [strikeMode, setStrikeMode] = useState<StrikeMode>(() => getSavedState('ha_strikeMode', 'ATM'))
-    const [strikeDepth, setStrikeDepth] = useState<number>(() => getSavedState('ha_strikeDepth', 1))
-    const [premiumMin, setPremiumMin] = useState<number>(() => getSavedState('ha_premiumMin', 300))
-    const [premiumMax, setPremiumMax] = useState<number>(() => getSavedState('ha_premiumMax', 400))
+    const [strikeMode, setStrikeMode] = useState<StrikeMode>(() => getSavedState('mha_strikeMode', 'ATM'))
+    const [strikeDepth, setStrikeDepth] = useState<number>(() => getSavedState('mha_strikeDepth', 1))
+    const [premiumMin, setPremiumMin] = useState<number>(() => getSavedState('mha_premiumMin', 300))
+    const [premiumMax, setPremiumMax] = useState<number>(() => getSavedState('mha_premiumMax', 400))
 
     // Exit Strategy Configuration
-    const [exitStrategy, setExitStrategy] = useState<ExitStrategy>(() => getSavedState('ha_exitStrategy', 'CANDLES'))
-    const [targetPoints, setTargetPoints] = useState<number>(() => getSavedState('ha_targetPoints', 20))
-    const [slPoints, setSlPoints] = useState<number>(() => getSavedState('ha_slPoints', 30))
+    const [exitStrategy, setExitStrategy] = useState<ExitStrategy>(() => getSavedState('mha_exitStrategy', 'CANDLES'))
+    const [targetPoints, setTargetPoints] = useState<number>(() => getSavedState('mha_targetPoints', 20))
+    const [slPoints, setSlPoints] = useState<number>(() => getSavedState('mha_slPoints', 30))
+    const [trailingStopPoints, setTrailingStopPoints] = useState<number>(() => getSavedState('mha_trailingStopPoints', 20))
+    const [initialSlPoints, setInitialSlPoints] = useState<number>(() => getSavedState('mha_initialSlPoints', 30))
+    const [finalTargetPoints, setFinalTargetPoints] = useState<number>(() => getSavedState('mha_finalTargetPoints', 100))
 
-    const [liveTradingConsent, setLiveTradingConsent] = useState<boolean>(() => getSavedState('ha_liveTradingConsent', false))
+    const [liveTradingConsent, setLiveTradingConsent] = useState<boolean>(() => getSavedState('mha_liveTradingConsent', false))
 
     // Local Storage Sync
     useEffect(() => {
-        localStorage.setItem('ha_isRunning', JSON.stringify(isRunning))
-        localStorage.setItem('ha_state', JSON.stringify(state))
-        localStorage.setItem('ha_underlying', JSON.stringify(underlying))
-        localStorage.setItem('ha_quantity', JSON.stringify(quantity))
-        localStorage.setItem('ha_baseTimeframe', JSON.stringify(baseTimeframe))
-        localStorage.setItem('ha_needConfirmation', JSON.stringify(needConfirmation))
-        localStorage.setItem('ha_confirmationTimeframe', JSON.stringify(confirmationTimeframe))
-        localStorage.setItem('ha_strikeMode', JSON.stringify(strikeMode))
-        localStorage.setItem('ha_strikeDepth', JSON.stringify(strikeDepth))
-        localStorage.setItem('ha_premiumMin', JSON.stringify(premiumMin))
-        localStorage.setItem('ha_premiumMax', JSON.stringify(premiumMax))
-        localStorage.setItem('ha_exitStrategy', JSON.stringify(exitStrategy))
-        localStorage.setItem('ha_targetPoints', JSON.stringify(targetPoints))
-        localStorage.setItem('ha_slPoints', JSON.stringify(slPoints))
-        localStorage.setItem('ha_liveTradingConsent', JSON.stringify(liveTradingConsent))
-    }, [isRunning, state, underlying, quantity, baseTimeframe, needConfirmation, confirmationTimeframe, strikeMode, strikeDepth, premiumMin, premiumMax, exitStrategy, targetPoints, slPoints, liveTradingConsent])
+        localStorage.setItem('mha_isRunning', JSON.stringify(isRunning))
+        localStorage.setItem('mha_state', JSON.stringify(state))
+        localStorage.setItem('mha_underlying', JSON.stringify(underlying))
+        localStorage.setItem('mha_quantity', JSON.stringify(quantity))
+        localStorage.setItem('mha_baseTimeframe', JSON.stringify(baseTimeframe))
+        localStorage.setItem('mha_needConfirmation', JSON.stringify(needConfirmation))
+        localStorage.setItem('mha_confirmationTimeframe', JSON.stringify(confirmationTimeframe))
+        localStorage.setItem('mha_strikeMode', JSON.stringify(strikeMode))
+        localStorage.setItem('mha_strikeDepth', JSON.stringify(strikeDepth))
+        localStorage.setItem('mha_premiumMin', JSON.stringify(premiumMin))
+        localStorage.setItem('mha_premiumMax', JSON.stringify(premiumMax))
+        localStorage.setItem('mha_exitStrategy', JSON.stringify(exitStrategy))
+        localStorage.setItem('mha_targetPoints', JSON.stringify(targetPoints))
+        localStorage.setItem('mha_slPoints', JSON.stringify(slPoints))
+        localStorage.setItem('mha_trailingStopPoints', JSON.stringify(trailingStopPoints))
+        localStorage.setItem('mha_initialSlPoints', JSON.stringify(initialSlPoints))
+        localStorage.setItem('mha_finalTargetPoints', JSON.stringify(finalTargetPoints))
+        localStorage.setItem('mha_liveTradingConsent', JSON.stringify(liveTradingConsent))
+    }, [isRunning, state, underlying, quantity, baseTimeframe, needConfirmation, confirmationTimeframe, strikeMode, strikeDepth, premiumMin, premiumMax, exitStrategy, targetPoints, slPoints, trailingStopPoints, initialSlPoints, finalTargetPoints, liveTradingConsent])
 
     // Strategy Execution State
     const [selectedExpiry, setSelectedExpiry] = useState<string | null>(null)
@@ -159,6 +165,12 @@ export default function HeikenashiPage() {
     const [activeTradePremium, setActiveTradePremium] = useState<string | null>(null)
     const [entryPrice, setEntryPrice] = useState<number | null>(null)
     const [currentLtp, setCurrentLtp] = useState<number | null>(null)
+
+    // Trailing SL State tracking during an active trade
+    const [activeTrailingSl, setActiveTrailingSl] = useState<number | null>(null)
+
+    // Cooldown State tracking
+    const [cooldownUntil, setCooldownUntil] = useState<number | null>(null)
 
     // ─── Refs ────────────────────────────────────────────────────────────────
     const inFlightRef = useRef(false)
@@ -239,6 +251,8 @@ export default function HeikenashiPage() {
         setActiveTrade(null, null)
         setEntryPrice(null)
         setCurrentLtp(null)
+        setActiveTrailingSl(null)
+        setCooldownUntil(null)
         lastEntryTimeRef.current = null
     }, [setActiveTrade])
 
@@ -316,7 +330,13 @@ export default function HeikenashiPage() {
             setActiveTrade(null, null)
             setEntryPrice(null)
             setCurrentLtp(null)
-            setState('SCANNING')
+            setActiveTrailingSl(null)
+
+            // Manual exits shouldn't trigger a cooldown, but if we want it to map to 2 mins:
+            const cooldownTime = Date.now() + (2 * 60 * 1000)
+            setCooldownUntil(cooldownTime)
+            setState('COOLDOWN')
+
             setTrend('NEUTRAL')
         } catch (err) {
             console.error('[HA MANUAL EXIT] Failed', err)
@@ -340,7 +360,7 @@ export default function HeikenashiPage() {
                     premium?: string
                 }
             }
-        }>(`/trades/latest-open?strategyName=HeikenAshi`)
+        }>(`/trades/latest-open?strategyName=ModifiedHeikenAshi`)
             .then(res => {
                 if (disposed) return
                 if (res.data?.trade) {
@@ -350,7 +370,7 @@ export default function HeikenashiPage() {
                     // We DO NOT override 'underlying' from the trade because and it might desync with the active UI configs.
                     // The stored configurations from localStorage are sufficient.
                     setState('IN_POSITION')
-                    setMessage('Recovered active HeikenAshi trade.')
+                    setMessage('Recovered active ModifiedHeikenAshi trade.')
                 }
             })
             .catch(console.error)
@@ -459,10 +479,35 @@ export default function HeikenashiPage() {
         return () => { cancelled = true; clearInterval(t) }
     }, [isRunning, underlying, selectedExpiry, atmStrike, strikeMode, strikeDepth])
 
+    // ─── Cooldown Monitor ─────────────────────────────────────────────────────
+    useEffect(() => {
+        if (!isRunning || !cooldownUntil) return
+        let cancelled = false
+        const tick = () => {
+            if (cancelled) return
+            if (Date.now() >= cooldownUntil) {
+                setCooldownUntil(null)
+                if (state === 'COOLDOWN') {
+                    setState('SCANNING')
+                    setMessage('Cooldown complete. Scanning resumed.')
+                }
+            } else {
+                if (state !== 'COOLDOWN') setState('COOLDOWN')
+                const remain = Math.ceil((cooldownUntil - Date.now()) / 1000)
+                setMessage(`Cooling period active. Resuming in ${remain}s...`)
+            }
+        }
+        const t = setInterval(tick, 1000)
+        tick()
+        return () => { cancelled = true; clearInterval(t) }
+    }, [isRunning, cooldownUntil, state])
+
     // ─── Strategy Scanning ────────────────────────────────────────────────────
     useEffect(() => {
         if (!isRunning || !ceContract || !peContract) return
         if (state !== 'SCANNING' && state !== 'IN_POSITION') return
+        if (cooldownUntil && Date.now() < cooldownUntil) return
+
         let cancelled = false
 
         // Snapshot contract references so the closure always has the correct tokens
@@ -490,15 +535,16 @@ export default function HeikenashiPage() {
                 }
                 const lookback = lookbackMap[baseTimeframe] ?? 300
 
-                // ✅ Use the resolved option contract tokens (not the index token)
-                const [ceRes, peRes] = await Promise.all([
-                    apiGet<CandlesResponse>(
-                        `/market/candles?exchange=${scanExchange}&symboltoken=${snapCe.symboltoken}&interval=${baseTimeframe}&lookback_minutes=${lookback}`
-                    ),
-                    apiGet<CandlesResponse>(
-                        `/market/candles?exchange=${scanExchange}&symboltoken=${snapPe.symboltoken}&interval=${baseTimeframe}&lookback_minutes=${lookback}`
-                    ),
-                ])
+                // ✅ Fetch sequentially with delay to avoid rate limit (3 req/sec for candles)
+                const ceRes = await apiGet<CandlesResponse>(
+                    `/market/candles?exchange=${scanExchange}&symboltoken=${snapCe.symboltoken}&interval=${baseTimeframe}&lookback_minutes=${lookback}`
+                )
+
+                await new Promise(resolve => setTimeout(resolve, 400))
+
+                const peRes = await apiGet<CandlesResponse>(
+                    `/market/candles?exchange=${scanExchange}&symboltoken=${snapPe.symboltoken}&interval=${baseTimeframe}&lookback_minutes=${lookback}`
+                )
 
                 if (cancelled) return
 
@@ -506,11 +552,11 @@ export default function HeikenashiPage() {
                 console.log(`[HA SCAN] CE token: ${snapCe.symboltoken} | candles: ${ceRes.items?.length}`)
                 console.log(`[HA SCAN] PE token: ${snapPe.symboltoken} | candles: ${peRes.items?.length}`)
 
-                const ceHa = computeHeikenAshi(ceRes.items)
-                const peHa = computeHeikenAshi(peRes.items)
+                const ceHa = computeModifiedHeikenAshi(ceRes.items)
+                const peHa = computeModifiedHeikenAshi(peRes.items)
 
-                const ceSignal = analyzeHeikenAshiStrategy(ceHa)
-                const peSignal = analyzeHeikenAshiStrategy(peHa)
+                const ceSignal = analyzeModifiedHeikenAshiStrategy(ceHa)
+                const peSignal = analyzeModifiedHeikenAshiStrategy(peHa)
 
                 const ceLastClosedTs = ceHa.length >= 2 ? ceHa[ceHa.length - 2].ts : null
                 const peLastClosedTs = peHa.length >= 2 ? peHa[peHa.length - 2].ts : null
@@ -563,10 +609,11 @@ export default function HeikenashiPage() {
                         setMessage(`HA Long Entry CE @ ${actualEntryPrice}`)
                         setState('IN_POSITION')
                         setEntryPrice(actualEntryPrice)
+                        setActiveTrailingSl(actualEntryPrice - initialSlPoints)
                         setTrend('BULLISH')
 
                         const res = await apiPost<{ data: { trade: { _id: string } } }>('/trades/record', {
-                            strategyName: 'HeikenAshi',
+                            strategyName: 'ModifiedHeikenAshi',
                             index: underlying,
                             premium: snapCe.tradingsymbol,
                             qty: quantity,
@@ -616,10 +663,11 @@ export default function HeikenashiPage() {
                         setMessage(`HA Long Entry PE @ ${actualEntryPrice}`)
                         setState('IN_POSITION')
                         setEntryPrice(actualEntryPrice)
+                        setActiveTrailingSl(actualEntryPrice - initialSlPoints)
                         setTrend('BEARISH')
 
                         const res = await apiPost<{ data: { trade: { _id: string } } }>('/trades/record', {
-                            strategyName: 'HeikenAshi',
+                            strategyName: 'ModifiedHeikenAshi',
                             index: underlying,
                             premium: snapPe.tradingsymbol,
                             qty: quantity,
@@ -628,6 +676,7 @@ export default function HeikenashiPage() {
                         setActiveTrade(res.data.trade._id, snapPe.tradingsymbol)
 
                     } else {
+                        // Only change UI trend if not in position
                         setTrend(ceSignal.trend)
                     }
 
@@ -674,6 +723,45 @@ export default function HeikenashiPage() {
                             }
                         } catch (err) {
                             console.error('LTP fetch failed during target check', err)
+                        }
+                    } else if (exitStrategy === 'TRAILING_SL') {
+                        const activeToken = isCeTrade ? snapCe.symboltoken : snapPe.symboltoken
+                        const activeExchange = isCeTrade ? snapCe.exchange : snapPe.exchange
+
+                        try {
+                            const ltpRes = await apiGet<{ ltp: number }>(`/market/ltp?exchange=${encodeURIComponent(activeExchange)}&tradingsymbol=${encodeURIComponent(currentPremium || '')}&symboltoken=${encodeURIComponent(activeToken)}`)
+                            const livePrice = ltpRes.ltp
+
+                            if (entryPrice && activeTrailingSl !== null) {
+                                const targetPrice = entryPrice + finalTargetPoints
+
+                                if (livePrice >= targetPrice) {
+                                    shouldExit = true
+                                    exitPrice = livePrice
+                                    exitReason = 'Target'
+                                } else if (livePrice <= activeTrailingSl) {
+                                    shouldExit = true
+                                    exitPrice = livePrice
+                                    exitReason = activeTrailingSl === entryPrice - initialSlPoints ? 'SL' : 'Trailing SL'
+                                } else {
+                                    // Calculate if we need to trail up
+                                    const pointsGained = livePrice - entryPrice
+                                    if (pointsGained >= trailingStopPoints) {
+                                        // Every N points of gain directly shifts SL up by exactly N points.
+                                        // e.g. Entry 300, risk 30. Move to 360 (+60 pts). Steps = 3.
+                                        // New SL = 300 + (3 * 20) - 30 = 330. (Securing +30 pts perfectly).
+                                        const steps = Math.floor(pointsGained / trailingStopPoints)
+                                        const proposedSl = entryPrice + (steps * trailingStopPoints) - initialSlPoints
+
+                                        if (proposedSl > activeTrailingSl) {
+                                            setActiveTrailingSl(proposedSl)
+                                            console.log(`[HA TRAILING SL] Trailed SL up to ${proposedSl}`)
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (err) {
+                            console.error('LTP fetch failed during trailing SL check', err)
                         }
                     }
 
@@ -731,7 +819,20 @@ export default function HeikenashiPage() {
 
                         setActiveTrade(null, null)
                         setEntryPrice(null)
-                        setState('SCANNING')
+                        setActiveTrailingSl(null)
+
+                        // COOLDOWN LOGIC
+                        let cooldownMinutes = 0
+                        if (exitReason === 'SL') cooldownMinutes = 4
+                        else if (exitReason === 'Target' || exitReason === 'Trailing SL') cooldownMinutes = 2
+
+                        if (cooldownMinutes > 0) {
+                            setCooldownUntil(Date.now() + (cooldownMinutes * 60 * 1000))
+                            setState('COOLDOWN')
+                        } else {
+                            setState('SCANNING')
+                        }
+
                         setTrend('NEUTRAL')
                     }
                 }
@@ -749,7 +850,7 @@ export default function HeikenashiPage() {
 
         // ✅ activeTradeId / activeTradePremium intentionally excluded —
         //    we read live values from activeTradeRef inside the closure instead.
-    }, [isRunning, state, underlying, ceContract, peContract, baseTimeframe, quantity, setActiveTrade, exitStrategy, targetPoints, currentLtp, entryPrice])
+    }, [isRunning, state, underlying, ceContract, peContract, baseTimeframe, quantity, setActiveTrade, exitStrategy, targetPoints, slPoints, trailingStopPoints, initialSlPoints, finalTargetPoints, activeTrailingSl, currentLtp, entryPrice])
 
     // ─── LTP Monitor for active position ─────────────────────────────────────
     useEffect(() => {
@@ -769,7 +870,107 @@ export default function HeikenashiPage() {
                 const res = await apiGet<{ ltp: number }>(
                     `/market/ltp?exchange=${encodeURIComponent(contract.exchange)}&tradingsymbol=${encodeURIComponent(contract.tradingsymbol)}&symboltoken=${encodeURIComponent(contract.symboltoken)}`
                 )
-                if (!cancelled) setCurrentLtp(res.ltp)
+                if (!cancelled) {
+                    const ltp = res.ltp
+                    setCurrentLtp(ltp)
+
+                    // Also process Trailing SL checks rapidly on every tick if enabled
+                    if (exitStrategy === 'TRAILING_SL' && entryPrice && activeTrailingSl !== null && !isExiting) {
+                        let shouldExit = false
+                        let exitPrice = ltp
+                        let exitReason = ''
+
+                        const targetPrice = entryPrice + finalTargetPoints
+                        if (ltp >= targetPrice) {
+                            shouldExit = true
+                            exitReason = 'Target'
+                        } else if (ltp <= activeTrailingSl) {
+                            shouldExit = true
+                            exitReason = activeTrailingSl === entryPrice - initialSlPoints ? 'SL' : 'Trailing SL'
+                        } else {
+                            const pointsGained = ltp - entryPrice
+                            if (pointsGained >= trailingStopPoints) {
+                                const steps = Math.floor(pointsGained / trailingStopPoints)
+                                const proposedSl = entryPrice + ((steps - 1) * trailingStopPoints)
+                                if (proposedSl > activeTrailingSl) {
+                                    setActiveTrailingSl(proposedSl)
+                                    console.log(`[HA TRAILING SL FAST MONITOR] Trailed SL up to ${proposedSl}`)
+                                }
+                            }
+                        }
+
+                        // If the rapid monitor caught the exit, we need to trigger the sequence
+                        // However, to keep it clean and avoid duplicating the whole exit block here,
+                        // we can let the main scan interval handle the actual API exit calls, 
+                        // OR we duplicate the exit logic here for speed. Given options move fast, speed is better.
+                        if (shouldExit) {
+                            // Quick exit
+                            setIsExiting(true)
+                            setMessage(`Trailed SL / Target Hit @ ${exitPrice}`)
+
+                            if (isStopLossExitReason(exitReason)) {
+                                playSlAudio()
+                            }
+
+                            let actualExitPx = exitPrice
+                            if (liveTradingConsent) {
+                                try {
+                                    const orderRes = await apiPost<any>('/angel/orders/simple', {
+                                        exchange: contract.exchange,
+                                        tradingsymbol: contract.tradingsymbol,
+                                        symboltoken: contract.symboltoken,
+                                        transactiontype: 'SELL',
+                                        producttype: 'CARRYFORWARD',
+                                        quantity: quantity,
+                                        ordertype: 'MARKET',
+                                    })
+                                    const orderId = orderRes?.item?.response?.data?.orderid || orderRes?.item?.response?.orderid
+                                    if (orderId) {
+                                        for (let i = 0; i < 4; i++) {
+                                            await new Promise(r => setTimeout(r, 1000))
+                                            const ob = await apiGet<any>('/angel/orderbook')
+                                            const order = (ob?.data || []).find((o: any) => String(o.orderid) === String(orderId))
+                                            if (order && (order.status === 'complete' || order.status === 'executed' || order.orderstatus === 'complete')) {
+                                                const execPrice = parseFloat(order.averageprice || order.price)
+                                                if (!isNaN(execPrice) && execPrice > 0) {
+                                                    actualExitPx = execPrice
+                                                    break
+                                                }
+                                            }
+                                        }
+                                    }
+                                } catch (err) {
+                                    console.error('[HA LIVE FAST] Exit failed', err)
+                                }
+                            }
+
+                            await apiPost('/trades/update-exit', {
+                                tradeId: activeTradeId,
+                                exitPrice: actualExitPx,
+                                exitReason,
+                            })
+
+                            setActiveTrade(null, null)
+                            setEntryPrice(null)
+                            setActiveTrailingSl(null)
+
+                            // COOLDOWN LOGIC
+                            let cooldownMinutes = 0
+                            if (exitReason === 'SL') cooldownMinutes = 4
+                            else if (exitReason === 'Target' || exitReason === 'Trailing SL') cooldownMinutes = 2
+
+                            if (cooldownMinutes > 0) {
+                                setCooldownUntil(Date.now() + (cooldownMinutes * 60 * 1000))
+                                setState('COOLDOWN')
+                            } else {
+                                setState('SCANNING')
+                            }
+
+                            setTrend('NEUTRAL')
+                            setIsExiting(false)
+                        }
+                    }
+                }
             } catch (e) {
                 console.error('HA Monitor error:', e)
             }
@@ -777,7 +978,7 @@ export default function HeikenashiPage() {
         const t = setInterval(monitor, 1000)
         monitor()
         return () => { cancelled = true; clearInterval(t) }
-    }, [isRunning, state, activeTradeId, activeTradePremium, ceContract, peContract])
+    }, [isRunning, state, activeTradeId, activeTradePremium, ceContract, peContract, exitStrategy, entryPrice, activeTrailingSl, trailingStopPoints, finalTargetPoints, isExiting, liveTradingConsent, quantity, setActiveTrade])
 
     // ─── Checkpoint / monitor sync ────────────────────────────────────────────
     useEffect(() => {
@@ -785,7 +986,7 @@ export default function HeikenashiPage() {
         setCheckpoints([
             { id: 'broker', label: 'Broker Connection', status: connectStatus === 'connected' ? 'success' : 'error' },
             { id: 'expiry', label: 'Next Expiry Locked', status: selectedExpiry ? 'success' : 'pending' },
-            { id: 'ha_trend', label: 'HA Trend Stability', status: trend !== 'NEUTRAL' ? 'success' : 'pending' },
+            { id: 'mha_trend', label: 'HA Trend Stability', status: trend !== 'NEUTRAL' ? 'success' : 'pending' },
             { id: 'confirmation', label: 'ATM Strike Sync', status: atmStrike ? 'success' : 'pending' },
             { id: 'indicators', label: 'Premium Discovery', status: ceContract && peContract ? 'success' : 'pending' },
         ])
@@ -1005,6 +1206,14 @@ export default function HeikenashiPage() {
                                                 : '---'}
                                         </p>
                                     </div>
+                                    {exitStrategy === 'TRAILING_SL' && activeTrailingSl !== null && (
+                                        <div>
+                                            <p className="text-[10px] font-bold text-slate-400 uppercase">Active Tri-SL</p>
+                                            <p className="text-xl font-black text-amber-500 mt-1">
+                                                ₹{activeTrailingSl.toFixed(2)}
+                                            </p>
+                                        </div>
+                                    )}
                                     <div>
                                         <p className="text-[10px] font-bold text-slate-400 uppercase">Strategy Trend</p>
                                         <p className={`text-xl font-black mt-1 ${trend === 'BULLISH' ? 'text-emerald-500' : trend === 'BEARISH' ? 'text-rose-500' : 'text-slate-400'}`}>
@@ -1120,6 +1329,14 @@ export default function HeikenashiPage() {
                                             Target Points
                                         </span>
                                     </label>
+                                    <label className={`flex items-center gap-3 ${isRunning ? 'cursor-not-allowed opacity-50' : 'cursor-pointer group'}`} onClick={() => !isRunning && setExitStrategy('TRAILING_SL')}>
+                                        <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${exitStrategy === 'TRAILING_SL' ? 'border-cyan-500 bg-cyan-500/10' : 'border-slate-300 dark:border-white/20'}`}>
+                                            <div className={`w-2.5 h-2.5 rounded-full bg-cyan-500 transition-all ${exitStrategy === 'TRAILING_SL' ? 'scale-100 opacity-100' : 'scale-0 opacity-0'}`} />
+                                        </div>
+                                        <span className={`text-sm font-bold transition-all ${exitStrategy === 'TRAILING_SL' ? 'text-cyan-500' : 'text-slate-500 group-hover:text-slate-700 dark:group-hover:text-slate-300'}`}>
+                                            Trailing SL
+                                        </span>
+                                    </label>
                                 </div>
                             </div>
 
@@ -1145,6 +1362,44 @@ export default function HeikenashiPage() {
                                             disabled={isRunning}
                                             placeholder="e.g. 30"
                                             className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-xs font-bold text-slate-900 dark:text-white outline-none focus:ring-1 focus:ring-rose-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        />
+                                    </div>
+                                </div>
+                            )}
+
+                            {exitStrategy === 'TRAILING_SL' && (
+                                <div className="space-y-4 animate-in slide-in-from-top-2 duration-300">
+                                    <div>
+                                        <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 block">Trailing Points</label>
+                                        <input
+                                            type="number"
+                                            value={trailingStopPoints}
+                                            onChange={(e) => setTrailingStopPoints(parseFloat(e.target.value) || 0)}
+                                            disabled={isRunning}
+                                            placeholder="e.g. 20"
+                                            className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-xs font-bold text-slate-900 dark:text-white outline-none focus:ring-1 focus:ring-cyan-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 block">Initial SL</label>
+                                        <input
+                                            type="number"
+                                            value={initialSlPoints}
+                                            onChange={(e) => setInitialSlPoints(parseFloat(e.target.value) || 0)}
+                                            disabled={isRunning}
+                                            placeholder="e.g. 30"
+                                            className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-xs font-bold text-slate-900 dark:text-white outline-none focus:ring-1 focus:ring-rose-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 block">Final Target</label>
+                                        <input
+                                            type="number"
+                                            value={finalTargetPoints}
+                                            onChange={(e) => setFinalTargetPoints(parseFloat(e.target.value) || 0)}
+                                            disabled={isRunning}
+                                            placeholder="e.g. 100"
+                                            className="w-full bg-slate-50 dark:bg-white/5 border-none rounded-xl px-4 py-3 text-xs font-bold text-slate-900 dark:text-white outline-none focus:ring-1 focus:ring-emerald-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
                                         />
                                     </div>
                                 </div>

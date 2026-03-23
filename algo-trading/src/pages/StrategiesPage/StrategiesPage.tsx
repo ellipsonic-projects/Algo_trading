@@ -49,6 +49,12 @@ export default function StrategiesPage() {
       to: '/strategies/heikenashi',
       accentClassName: 'from-rose-400 to-orange-400',
     },
+    {
+      title: 'Modified Heikenashi',
+      description: 'Modified Heiken Ashi logic.',
+      to: '/strategies/modified-heikenashi',
+      accentClassName: 'from-orange-400 to-amber-400',
+    },
   ]
 
   return (

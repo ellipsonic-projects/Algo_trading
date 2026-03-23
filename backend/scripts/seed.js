@@ -30,7 +30,11 @@ const seed = async () => {
             name: '5minBreakout',
             userId: user._id
         });
-        console.log('Strategies created:', s1.name, s2.name);
+        const s3 = await Strategy.create({
+            name: 'ModifiedHeikenAshi',
+            userId: user._id
+        });
+        console.log('Strategies created:', s1.name, s2.name, s3.name);
 
         console.log('Seeding completed successfully!');
         process.exit();

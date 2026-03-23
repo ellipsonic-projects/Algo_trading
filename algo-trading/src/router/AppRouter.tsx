@@ -8,6 +8,7 @@ import StrategiesPage from '../pages/StrategiesPage/StrategiesPage'
 import ManualTradingPage from '../pages/StrategiesPage/ManualTradingPage'
 import VwapSmmaPage from '../pages/StrategiesPage/VwapSmmaPage'
 import HeikenashiPage from '../pages/StrategiesPage/HeikenashiPage'
+import ModifiedHeikenashiPage from '../pages/StrategiesPage/ModifiedHeikenashiPage'
 import DashboardPage from '../pages/DashboardPage/DashboardPage'
 import TradesPage from '../pages/TradesPage/TradesPage'
 import DashboardLayout from '../components/Layout/DashboardLayout'
@@ -29,6 +30,7 @@ export default function AppRouter() {
         <Route path="/strategies/vwap-smma" element={<VwapSmmaPage />} />
         <Route path="/strategies/expiry" element={<ExpiryStrategyPage />} />
         <Route path="/strategies/heikenashi" element={<HeikenashiPage />} />
+        <Route path="/strategies/modified-heikenashi" element={<ModifiedHeikenashiPage />} />
         <Route path="/trades" element={<TradesPage />} />
       </Route>
 

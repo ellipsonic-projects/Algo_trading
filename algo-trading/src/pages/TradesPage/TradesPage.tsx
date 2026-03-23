@@ -480,7 +480,7 @@ export default function TradesPage() {
                                         <td className="px-8 py-5 text-right">
                                             <div className={`flex items-center justify-end gap-2 text-sm font-black tracking-tight ${trade.pnl && trade.pnl >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
                                                 {trade.pnl && trade.pnl >= 0 ? <TrendingUp className="w-3 h-3" /> : (trade.pnl ? <TrendingDown className="w-3 h-3" /> : null)}
-                                                {trade.pnl ? `₹${trade.pnl.toFixed(2)}` : '---'}
+                                                {trade.pnl !== undefined ? `₹${trade.pnl.toFixed(2)}` : '---'}
                                             </div>
                                         </td>
                                         <td className="px-8 py-5">

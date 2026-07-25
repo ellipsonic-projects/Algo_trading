@@ -228,6 +228,7 @@ export default function TradesPage() {
                                             { value: '', label: 'All Exit Reasons' },
                                             { value: 'Target', label: 'Target' },
                                             { value: 'SL', label: 'SL' },
+                                            { value: 'Trailing SL', label: 'Trailing SL' },
                                             { value: 'Strategy', label: 'Strategy' },
                                             { value: 'HA_TREND_REVERSAL', label: 'HA_TREND_REVERSAL' }
                                         ].map(option => (
@@ -371,15 +372,25 @@ export default function TradesPage() {
                     </div>
                 </div>
 
-                <div className="bg-white dark:bg-slate-900 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm p-6 relative overflow-hidden group">
-                    <div className="absolute top-0 right-0 p-6 opacity-[0.02] group-hover:opacity-[0.05] transition-opacity pointer-events-none">
-                        <Target className="w-24 h-24 rotate-12" />
-                    </div>
-                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-2">Total Trades</p>
-                    <div className="text-3xl font-black tracking-tighter text-slate-900 dark:text-white">
-                        {analytics.totalTrades}
-                    </div>
-                </div>
+                {/* Win Rate Card */}
+                {(() => {
+                    const completedTrades = trades.filter((t) => t.pnl !== undefined);
+                    const winningTrades = completedTrades.filter((t) => (t.pnl || 0) > 0);
+                    const winRate = completedTrades.length > 0
+                        ? ((winningTrades.length / completedTrades.length) * 100).toFixed(1)
+                        : '0.0';
+                    return (
+                        <div className="bg-white dark:bg-slate-900 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm p-6 relative overflow-hidden group">
+                            <div className="absolute top-0 right-0 p-6 opacity-[0.02] group-hover:opacity-[0.05] transition-opacity pointer-events-none">
+                                <Target className="w-24 h-24 rotate-12" />
+                            </div>
+                            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-2">Win Rate</p>
+                            <div className="text-3xl font-black tracking-tighter text-emerald-500">
+                                {winRate}%
+                            </div>
+                        </div>
+                    );
+                })()}
 
                 <div className="bg-white dark:bg-slate-900 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm p-6 relative overflow-hidden group">
                     <div className="absolute top-0 right-0 p-6 opacity-[0.02] group-hover:opacity-[0.05] transition-opacity pointer-events-none">
@@ -478,8 +489,8 @@ export default function TradesPage() {
                                             </span>
                                         </td>
                                         <td className="px-8 py-5 text-right">
-                                            <div className={`flex items-center justify-end gap-2 text-sm font-black tracking-tight ${trade.pnl && trade.pnl >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                                                {trade.pnl && trade.pnl >= 0 ? <TrendingUp className="w-3 h-3" /> : (trade.pnl ? <TrendingDown className="w-3 h-3" /> : null)}
+                                            <div className={`flex items-center justify-end gap-2 text-sm font-black tracking-tight ${trade.pnl !== undefined ? (trade.pnl >= 0 ? 'text-emerald-500' : 'text-rose-500') : 'text-slate-400'}`}>
+                                                {trade.pnl !== undefined ? (trade.pnl >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />) : null}
                                                 {trade.pnl !== undefined ? `₹${trade.pnl.toFixed(2)}` : '---'}
                                             </div>
                                         </td>

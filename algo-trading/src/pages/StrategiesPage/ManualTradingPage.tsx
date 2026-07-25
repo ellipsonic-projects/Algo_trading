@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Plus,
   History,
@@ -8,9 +8,100 @@ import {
 } from 'lucide-react';
 
 import { usePageTitle } from '../../hooks/usePageTitle';
+import { useAngelConnection } from '../../shared/angel/AngelConnectionProvider';
+import { apiGet } from '../../trading';
+
+type MarginData = {
+  net: number;
+  available: number;
+  used: number;
+};
+
+type IndexPriceData = {
+  ltp: number;
+};
 
 const ManualTradingPage: React.FC = () => {
   usePageTitle('Manual Trading');
+  const { connectStatus } = useAngelConnection();
+
+  const [margins, setMargins] = useState<MarginData | null>(null);
+  const [indices, setIndices] = useState<Record<string, number>>({
+    'NIFTY 50': 0,
+    'SENSEX': 0,
+    'BANK NIFTY': 0
+  });
+
+  // Fetch live account margins
+  useEffect(() => {
+    if (connectStatus !== 'connected') {
+      setMargins(null);
+      return;
+    }
+
+    let active = true;
+    const fetchMargins = async () => {
+      try {
+        const response = await apiGet<any>('/angel/margins');
+        if (!active) return;
+        if (response && response.status && response.data) {
+          const d = response.data;
+          setMargins({
+            net: parseFloat(d.net || '0'),
+            available: parseFloat(d.availablecash || d.availablelimitmargin || '0'),
+            used: parseFloat(d.utiliseddebits || '0')
+          });
+        }
+      } catch (err) {
+        console.error('Failed to fetch broker margins:', err);
+      }
+    };
+
+    fetchMargins();
+    const interval = setInterval(fetchMargins, 10000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [connectStatus]);
+
+  // Fetch live index spot prices
+  useEffect(() => {
+    if (connectStatus !== 'connected') return;
+
+    let active = true;
+    const fetchIndices = async () => {
+      try {
+        const [nifty, sensex, banknifty] = await Promise.all([
+          apiGet<IndexPriceData>('/market/index-ltp?underlying=NIFTY').catch(() => ({ ltp: 0 })),
+          apiGet<IndexPriceData>('/market/index-ltp?underlying=SENSEX').catch(() => ({ ltp: 0 })),
+          apiGet<IndexPriceData>('/market/index-ltp?underlying=BANKNIFTY').catch(() => ({ ltp: 0 }))
+        ]);
+
+        if (!active) return;
+
+        setIndices({
+          'NIFTY 50': nifty.ltp,
+          'SENSEX': sensex.ltp,
+          'BANK NIFTY': banknifty.ltp
+        });
+      } catch (err) {
+        console.error('Failed to fetch indices LTP:', err);
+      }
+    };
+
+    fetchIndices();
+    const interval = setInterval(fetchIndices, 5000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [connectStatus]);
+
+  const formatRupees = (val: number) => {
+    return `₹${val.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
+
   return (
     <div className="space-y-8 animate-in slide-in-from-bottom-4 duration-500">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -51,8 +142,14 @@ const ManualTradingPage: React.FC = () => {
                     </div>
                   </div>
                   <div className="text-right">
-                    <p className="text-sm font-black text-slate-900 dark:text-white">₹24,350.40</p>
-                    <p className="text-[10px] text-emerald-500 font-bold uppercase tracking-tighter">+0.85%</p>
+                    <p className="text-sm font-black text-slate-900 dark:text-white">
+                      {connectStatus === 'connected' && indices[idx] > 0
+                        ? formatRupees(indices[idx])
+                        : '—'}
+                    </p>
+                    {connectStatus === 'connected' && indices[idx] > 0 && (
+                      <p className="text-[10px] text-emerald-500 font-bold uppercase tracking-tighter">Live</p>
+                    )}
                   </div>
                 </div>
               ))}
@@ -70,15 +167,21 @@ const ManualTradingPage: React.FC = () => {
               <Wallet className="w-8 h-8 text-cyan-500" />
               <span className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40">Equity Balance</span>
             </div>
-            <p className="text-4xl font-black tracking-tighter">₹1,24,500</p>
+            <p className="text-3xl font-black tracking-tighter">
+              {connectStatus === 'connected' && margins ? formatRupees(margins.net) : 'Not Connected'}
+            </p>
             <div className="mt-8 flex items-center justify-between py-4 border-t border-white/10">
               <div>
                 <p className="text-[10px] font-bold text-white/40 uppercase tracking-tighter">Margin Used</p>
-                <p className="text-sm font-black mt-1">₹45,000</p>
+                <p className="text-sm font-black mt-1">
+                  {connectStatus === 'connected' && margins ? formatRupees(margins.used) : '—'}
+                </p>
               </div>
               <div className="text-right">
                 <p className="text-[10px] font-bold text-white/40 uppercase tracking-tighter">Available</p>
-                <p className="text-sm font-black mt-1">₹79,500</p>
+                <p className="text-sm font-black mt-1">
+                  {connectStatus === 'connected' && margins ? formatRupees(margins.available) : '—'}
+                </p>
               </div>
             </div>
           </div>

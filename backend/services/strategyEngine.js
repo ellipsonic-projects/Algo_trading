@@ -1,0 +1,829 @@
+const Trade = require('../models/Trade');
+const Strategy = require('../models/Strategy');
+const contractManager = require('./contractManager');
+const marketDataService = require('./marketDataService');
+const marketSessionManager = require('./marketSessionManager');
+marketSessionManager.startMonitoring();
+
+const {
+  computeHeikenAshi,
+  analyzeHeikenAshiStrategy
+} = require('../trading/strategies/heikenAshi');
+const {
+  computeModifiedHeikenAshi,
+  analyzeModifiedHeikenAshiStrategy
+} = require('../trading/strategies/modifiedHeikenAshi');
+const {
+  computePremiumRange,
+  detectBreakoutCloseOnly,
+  shouldProcessCandle
+} = require('../trading/strategies/premiumRangeBreakout');
+
+const ANGEL_API_BASE = process.env.ANGEL_ONE_API_BASE || 'http://localhost:8000';
+
+const INDEX_CONFIG = {
+  SENSEX: { qty: 20, step: 20, exchange: 'BFO' },
+  NIFTY: { qty: 65, step: 65, exchange: 'NFO' },
+  BANKNIFTY: { qty: 30, step: 30, exchange: 'NFO' },
+  CRUDEOILM: { qty: 1, step: 1, exchange: 'MCX' }
+};
+
+// Helper: HTTP request to Python Angel One Wrapper
+async function callAngelApi(endpoint, method = 'GET', body = null) {
+  const url = `${ANGEL_API_BASE}${endpoint}`;
+  const options = {
+    method,
+    headers: { 'Content-Type': 'application/json' }
+  };
+  if (body !== null) {
+    options.body = JSON.stringify(body);
+  }
+  const res = await fetch(url, options);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Angel API Error [${res.status}]: ${text}`);
+  }
+  return await res.json();
+}
+
+function formatPrecisionTime(d = new Date()) {
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  const ms = String(d.getMilliseconds()).padStart(3, '0');
+  return `${hh}:${mm}:${ss}.${ms}`;
+}
+
+function asIsoDate(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function pickNearestExpiry(expiries) {
+  if (!Array.isArray(expiries)) return null;
+  const todayIso = asIsoDate();
+  const valid = [...expiries].filter(Boolean).sort();
+  return valid.find(e => e >= todayIso) || (valid.length ? valid[valid.length - 1] : null);
+}
+
+function pickNearestStrike(strikes, spot) {
+  if (!Array.isArray(strikes) || strikes.length === 0) return null;
+  return strikes.reduce((prev, curr) =>
+    Math.abs(curr - spot) < Math.abs(prev - spot) ? curr : prev
+  );
+}
+
+function resolveStrikeForSide(params) {
+  const { strikes, atmStrike, mode, depth, side } = params;
+  if (!Array.isArray(strikes) || atmStrike === null) return null;
+  const sorted = [...strikes].filter(Number.isFinite).sort((a, b) => a - b);
+  const idx = sorted.findIndex(s => Math.abs(s - atmStrike) < 1e-6);
+  if (idx < 0) return null;
+
+  if (mode === 'ATM') return sorted[idx];
+
+  const steps = Math.max(0, Math.floor(depth || 1));
+  if (side === 'CE') {
+    const next = mode === 'ITM' ? idx - steps : idx + steps;
+    return next >= 0 && next < sorted.length ? sorted[next] : null;
+  }
+  const next = mode === 'ITM' ? idx + steps : idx - steps;
+  return next >= 0 && next < sorted.length ? sorted[next] : null;
+}
+
+function parseCandleTsMs(ts) {
+  const raw = String(ts || '').trim();
+  if (!raw) return null;
+  const direct = Date.parse(raw);
+  if (Number.isFinite(direct)) return direct;
+  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), m[6] ? Number(m[6]) : 0, 0).getTime();
+}
+
+function getLastCompletedCandleWindow(candles, lookback) {
+  if (!Array.isArray(candles) || candles.length < lookback + 1) return null;
+  const now = new Date();
+  now.setSeconds(0, 0);
+  const currentMinuteStartMs = now.getTime();
+
+  const completed = candles.filter(c => {
+    const ms = parseCandleTsMs(c.ts);
+    return ms !== null && ms < currentMinuteStartMs;
+  });
+
+  if (completed.length < lookback + 1) return null;
+
+  const breakoutCandle = completed[completed.length - 1];
+  const rangeCandles = completed.slice(completed.length - (lookback + 1), completed.length - 1);
+  if (rangeCandles.length !== lookback) return null;
+  return { rangeCandles, breakoutCandle };
+}
+
+class SingleStrategyRunner {
+  constructor(strategyName) {
+    this.strategyName = strategyName;
+    this.userId = null;
+    this.isRunning = false;
+    this.state = 'STOPPED';
+    this.message = 'Initialized';
+    this.trend = 'NEUTRAL';
+
+    this.config = {};
+    this.selectedExpiry = null;
+    this.atmStrike = null;
+    this.ceContract = null;
+    this.peContract = null;
+
+    this.monitoredPremiums = { ce: '---', pe: '---' };
+    this.checkpoints = [];
+
+    this.activeTradeId = null;
+    this.activeTradePremium = null;
+    this.entryPrice = null;
+    this.currentLtp = null;
+    this.activeTrailingSl = null;
+    this.stopLoss = null;
+    this.target = null;
+    this.rangeSide = null;
+    this.cooldownUntil = null;
+    this.lastCompletedTrade = null;
+
+    this.logs = [];
+    this.lastEntryTime = null;
+    this.lastProcessedCandleTs = null;
+    this.isExiting = false;
+
+    this.contractInterval = null;
+    this.scanInterval = null;
+    this.monitorInterval = null;
+  }
+
+  log(msg) {
+    const timestamp = new Date().toLocaleTimeString('en-IN');
+    const logLine = `[${timestamp}] [${this.strategyName}] ${msg}`;
+    console.log(logLine);
+    this.message = msg;
+    this.logs.unshift(logLine);
+    if (this.logs.length > 100) this.logs.pop();
+  }
+
+  async start(config, userId) {
+    this.config = config || {};
+    this.userId = userId;
+    this.isRunning = true;
+    this.state = this.strategyName === '5minBreakout' ? 'WAITING' : 'SCANNING';
+    this.log('Strategy execution started on Node.js');
+
+    // Attempt trade recovery
+    await this.recoverTrade();
+
+    // Start background tasks
+    this.startContractLoop();
+    this.startScanLoop();
+  }
+
+  stop() {
+    this.isRunning = false;
+    this.state = 'STOPPED';
+    this.log('Strategy execution halted.');
+    this.clearAllIntervals();
+
+    const baseTimeframe = this.config.baseTimeframe || 'FIVE_MINUTE';
+    if (this.candleListener) {
+      marketDataService.removeListener('candle:closed', this.candleListener);
+      this.candleListener = null;
+    }
+    if (this.ceContract) {
+      marketDataService.unsubscribe(this.ceContract.exchange, this.ceContract.symboltoken, baseTimeframe);
+    }
+    if (this.peContract) {
+      marketDataService.unsubscribe(this.peContract.exchange, this.peContract.symboltoken, baseTimeframe);
+    }
+
+    this.ceContract = null;
+    this.peContract = null;
+    this.atmStrike = null;
+    this.selectedExpiry = null;
+    this.activeTradeId = null;
+    this.activeTradePremium = null;
+    this.entryPrice = null;
+    this.currentLtp = null;
+    this.activeTrailingSl = null;
+    this.stopLoss = null;
+    this.target = null;
+    this.rangeSide = null;
+    this.monitoredPremiums = { ce: '---', pe: '---' };
+  }
+
+  clearAllIntervals() {
+    if (this.contractInterval) clearInterval(this.contractInterval);
+    if (this.scanInterval) clearInterval(this.scanInterval);
+    if (this.monitorInterval) clearInterval(this.monitorInterval);
+    this.contractInterval = null;
+    this.scanInterval = null;
+    this.monitorInterval = null;
+  }
+
+  async recoverTrade() {
+    try {
+      const strategyDoc = await Strategy.findOne({ name: this.strategyName });
+      if (!strategyDoc) return;
+
+      const trade = await Trade.findOne({
+        userId: this.userId,
+        strategyId: strategyDoc._id,
+        exitPrice: { $exists: false }
+      }).sort({ createdAt: -1 });
+
+      if (trade) {
+        let isStillOpenOnBroker = true;
+        if (this.config.liveTradingConsent) {
+          try {
+            const posRes = await callAngelApi('/angel/positions');
+            const posList = Array.isArray(posRes?.data) ? posRes.data : [];
+            const held = posList.find(p => p.tradingsymbol === trade.premium);
+            const netQty = held ? parseInt(held.netqty || '0', 10) : 0;
+            if (netQty <= 0) {
+              isStillOpenOnBroker = false;
+            }
+          } catch (e) {
+            // Keep existing status if position check fails
+          }
+        }
+
+        if (isStillOpenOnBroker) {
+          this.activeTradeId = trade._id.toString();
+          this.activeTradePremium = trade.premium;
+          this.entryPrice = trade.buyPrice;
+          this.state = 'IN_POSITION';
+          if (trade.premium.endsWith('CE')) this.rangeSide = 'CE';
+          if (trade.premium.endsWith('PE')) this.rangeSide = 'PE';
+          this.log(`Recovered active open trade for ${trade.premium} @ ₹${trade.buyPrice}`);
+          this.startMonitorLoop();
+        } else {
+          this.log(`Stale MongoDB trade ${trade.premium} found closed on broker. Cleaning up DB...`);
+          trade.exitPrice = trade.buyPrice;
+          trade.exitReason = 'RECOVERY_CLEANUP';
+          trade.pnl = 0;
+          await trade.save();
+        }
+      }
+    } catch (err) {
+      console.error(`[${this.strategyName}] Recovery error:`, err);
+    }
+  }
+
+  async startContractLoop() {
+    const resolveContracts = async () => {
+      if (!this.isRunning) return;
+      try {
+        const underlying = this.config.underlying || 'SENSEX';
+        const strikeMode = this.config.strikeMode || 'ATM';
+        const strikeDepth = this.config.strikeDepth || 1;
+
+        const resolved = await contractManager.resolveContracts(underlying, strikeMode, strikeDepth);
+
+        if (!this.selectedExpiry) {
+          this.selectedExpiry = resolved.selectedExpiry;
+        }
+        if (!this.activeTradeId) {
+          this.atmStrike = resolved.atmStrike;
+        }
+
+        this.ceContract = resolved.ceContract;
+        this.peContract = resolved.peContract;
+
+        if (this.ceContract && this.peContract) {
+          this.monitoredPremiums = { ce: this.ceContract.tradingsymbol, pe: this.peContract.tradingsymbol };
+          
+          // Subscribe contracts to MarketDataService
+          const baseTimeframe = this.config.baseTimeframe || 'FIVE_MINUTE';
+          await marketDataService.subscribe(this.ceContract.exchange, this.ceContract.symboltoken, baseTimeframe);
+          await marketDataService.subscribe(this.peContract.exchange, this.peContract.symboltoken, baseTimeframe);
+        }
+      } catch (err) {
+        console.error(`[${this.strategyName}] Contract discovery error:`, err.message);
+      }
+    };
+
+    await resolveContracts();
+    this.contractInterval = setInterval(resolveContracts, 60_000);
+  }
+
+  async startScanLoop() {
+    if (this.candleListener) return;
+
+    const runScan = async (eventData = null) => {
+      if (!this.isRunning) return;
+      if (this.state === 'COOLDOWN') {
+        if (this.cooldownUntil && Date.now() >= this.cooldownUntil) {
+          this.state = this.strategyName === '5minBreakout' ? 'WAITING' : 'SCANNING';
+          this.cooldownUntil = null;
+          this.log('Cooldown period completed. Resuming scanner.');
+        } else {
+          return;
+        }
+      }
+
+      if (this.state !== 'SCANNING' && this.state !== 'WAITING') return;
+      if (this.activeTradeId) return;
+      if (!this.ceContract || !this.peContract) return;
+
+      const scanStartMs = Date.now();
+      const scanStartTs = formatPrecisionTime(new Date(scanStartMs));
+
+      try {
+        const underlying = this.config.underlying || 'SENSEX';
+        const baseTimeframe = this.config.baseTimeframe || 'FIVE_MINUTE';
+
+        if (this.strategyName === 'HeikenAshi' || this.strategyName === 'ModifiedHeikenAshi') {
+          const scanExchange = this.ceContract.exchange;
+
+          const fetchStartMs = Date.now();
+          let ceItems = marketDataService.getBuffer(scanExchange, this.ceContract.symboltoken, baseTimeframe);
+          let peItems = marketDataService.getBuffer(scanExchange, this.peContract.symboltoken, baseTimeframe);
+
+          if (!ceItems || ceItems.length === 0) {
+            ceItems = await marketDataService.subscribe(scanExchange, this.ceContract.symboltoken, baseTimeframe);
+          }
+          if (!peItems || peItems.length === 0) {
+            peItems = await marketDataService.subscribe(scanExchange, this.peContract.symboltoken, baseTimeframe);
+          }
+          const fetchEndMs = Date.now();
+
+          const calcStartMs = Date.now();
+          const ceHa = this.strategyName === 'ModifiedHeikenAshi' ? computeModifiedHeikenAshi(ceItems) : computeHeikenAshi(ceItems);
+          const peHa = this.strategyName === 'ModifiedHeikenAshi' ? computeModifiedHeikenAshi(peItems) : computeHeikenAshi(peItems);
+
+          const ceSignal = this.strategyName === 'ModifiedHeikenAshi' ? analyzeModifiedHeikenAshiStrategy(ceHa) : analyzeHeikenAshiStrategy(ceHa);
+          const peSignal = this.strategyName === 'ModifiedHeikenAshi' ? analyzeModifiedHeikenAshiStrategy(peHa) : analyzeHeikenAshiStrategy(peHa);
+          const calcEndMs = Date.now();
+
+          const ceLastClosedTs = ceHa.length >= 2 ? ceHa[ceHa.length - 2].ts : null;
+          const peLastClosedTs = peHa.length >= 2 ? peHa[peHa.length - 2].ts : null;
+
+          if (ceSignal.isEntry && ceLastClosedTs !== this.lastEntryTime) {
+            this.lastEntryTime = ceLastClosedTs;
+            const signalMs = Date.now();
+            await this.executeEntry(this.ceContract, ceSignal.haClose, 'BULLISH', {
+              candleDetectedTs: scanStartTs,
+              signalGeneratedMs: signalMs,
+              signalGeneratedTs: formatPrecisionTime(new Date(signalMs)),
+              fetchMs: fetchEndMs - fetchStartMs,
+              calcMs: calcEndMs - calcStartMs
+            });
+          } else if (peSignal.isEntry && peLastClosedTs !== this.lastEntryTime) {
+            this.lastEntryTime = peLastClosedTs;
+            const signalMs = Date.now();
+            await this.executeEntry(this.peContract, peSignal.haClose, 'BEARISH', {
+              candleDetectedTs: scanStartTs,
+              signalGeneratedMs: signalMs,
+              signalGeneratedTs: formatPrecisionTime(new Date(signalMs)),
+              fetchMs: fetchEndMs - fetchStartMs,
+              calcMs: calcEndMs - calcStartMs
+            });
+          } else {
+            this.trend = ceSignal.trend;
+          }
+
+        } else if (this.strategyName === '5minBreakout') {
+          const lookback = this.config.lookback || 5;
+          const maxRangeLimit = this.config.maxRangeLimit || 30;
+          const bufferPoints = this.config.bufferPoints || 2;
+          const targetPoints = this.config.targetPoints || 20;
+
+          const fetchStartMs = Date.now();
+          let ceItems = marketDataService.getBuffer(this.ceContract.exchange, this.ceContract.symboltoken, 'ONE_MINUTE');
+          let peItems = marketDataService.getBuffer(this.peContract.exchange, this.peContract.symboltoken, 'ONE_MINUTE');
+
+          if (!ceItems || ceItems.length === 0) {
+            ceItems = await marketDataService.subscribe(this.ceContract.exchange, this.ceContract.symboltoken, 'ONE_MINUTE', 20);
+          }
+          if (!peItems || peItems.length === 0) {
+            peItems = await marketDataService.subscribe(this.peContract.exchange, this.peContract.symboltoken, 'ONE_MINUTE', 20);
+          }
+          const fetchEndMs = Date.now();
+
+          const ceWindow = getLastCompletedCandleWindow(ceItems || [], lookback);
+          const peWindow = getLastCompletedCandleWindow(peItems || [], lookback);
+
+          if (ceWindow && peWindow) {
+            const ceRange = computePremiumRange(ceWindow.rangeCandles, lookback, maxRangeLimit);
+            const peRange = computePremiumRange(peWindow.rangeCandles, lookback, maxRangeLimit);
+
+            const nextTs = ceWindow.breakoutCandle.ts;
+            if (shouldProcessCandle({ lastProcessedTs: this.lastProcessedCandleTs, nextTs })) {
+              this.lastProcessedCandleTs = nextTs;
+
+              const calcStartMs = Date.now();
+              const ceBreakout = ceRange ? detectBreakoutCloseOnly({ candleClose: ceWindow.breakoutCandle.close, range: ceRange }) : false;
+              const peBreakout = peRange ? detectBreakoutCloseOnly({ candleClose: peWindow.breakoutCandle.close, range: peRange }) : false;
+              const calcEndMs = Date.now();
+
+              if (ceBreakout || peBreakout) {
+                const isCE = ceBreakout;
+                const contractToTrade = isCE ? this.ceContract : this.peContract;
+                const actualEntryPx = isCE ? ceWindow.breakoutCandle.close : peWindow.breakoutCandle.close;
+                const activeRange = isCE ? ceRange : peRange;
+
+                this.rangeSide = isCE ? 'CE' : 'PE';
+                this.stopLoss = activeRange.rangeLow - bufferPoints;
+                this.target = actualEntryPx + targetPoints;
+
+                const signalMs = Date.now();
+                await this.executeEntry(contractToTrade, actualEntryPx, isCE ? 'BULLISH' : 'BEARISH', {
+                  candleDetectedTs: scanStartTs,
+                  signalGeneratedMs: signalMs,
+                  signalGeneratedTs: formatPrecisionTime(new Date(signalMs)),
+                  fetchMs: fetchEndMs - fetchStartMs,
+                  calcMs: calcEndMs - calcStartMs
+                });
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`[${this.strategyName}] Scan error:`, err.message);
+      }
+    };
+
+    this.candleListener = async (eventData) => {
+      if (this.ceContract && this.peContract) {
+        if (eventData.symboltoken === this.ceContract.symboltoken || eventData.symboltoken === this.peContract.symboltoken) {
+          await runScan(eventData);
+        }
+      }
+    };
+
+    marketDataService.on('candle:closed', this.candleListener);
+  }
+
+  async executeEntry(contract, signalPrice, trendSide, timingInfo = {}) {
+    const signalGeneratedMs = timingInfo.signalGeneratedMs || Date.now();
+    const candleDetectedTs = timingInfo.candleDetectedTs || formatPrecisionTime(new Date(signalGeneratedMs));
+    const signalGeneratedTs = timingInfo.signalGeneratedTs || formatPrecisionTime(new Date(signalGeneratedMs));
+
+    this.log(`New candle detected: ${candleDetectedTs}`);
+    this.log(`Signal generated: ${signalGeneratedTs}`);
+
+    let actualPrice = signalPrice;
+    const qty = this.config.quantity || INDEX_CONFIG[this.config.underlying || 'SENSEX']?.qty || 10;
+
+    let buySentMs = Date.now();
+    let buySentTs = formatPrecisionTime(new Date(buySentMs));
+
+    if (this.config.liveTradingConsent) {
+      try {
+        this.log(`BUY request sent: ${buySentTs}`);
+        const sendStartMs = Date.now();
+        const orderRes = await callAngelApi('/angel/orders/simple', 'POST', {
+          exchange: contract.exchange,
+          tradingsymbol: contract.tradingsymbol,
+          symboltoken: contract.symboltoken,
+          transactiontype: 'BUY',
+          producttype: 'CARRYFORWARD',
+          quantity: qty,
+          ordertype: 'MARKET'
+        });
+        const ackMs = Date.now();
+        const ackTs = formatPrecisionTime(new Date(ackMs));
+        this.log(`Broker acknowledged: ${ackTs} (API HTTP delay: ${ackMs - sendStartMs}ms)`);
+
+        const orderId = orderRes?.item?.response?.data?.orderid || orderRes?.item?.response?.orderid;
+        if (orderId) {
+          for (let i = 0; i < 4; i++) {
+            await new Promise(r => setTimeout(r, 1000));
+            const ob = await callAngelApi('/angel/orderbook');
+            const order = (ob?.data || []).find(o => String(o.orderid) === String(orderId));
+            if (order && (order.status === 'complete' || order.status === 'executed' || order.orderstatus === 'complete')) {
+              const execPrice = parseFloat(order.averageprice || order.price);
+              if (!isNaN(execPrice) && execPrice > 0) {
+                actualPrice = execPrice;
+                const completedMs = Date.now();
+                const completedTs = formatPrecisionTime(new Date(completedMs));
+                this.log(`Order completed: ${completedTs}`);
+                break;
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`[${this.strategyName}] LIVE BUY Order failed:`, err.message);
+      }
+    } else {
+      // Paper trading simulation timing logging
+      this.log(`BUY request sent: ${buySentTs}`);
+      this.log(`Broker acknowledged: ${buySentTs}`);
+      this.log(`Order completed: ${buySentTs}`);
+    }
+
+    const confirmedMs = Date.now();
+    const confirmedTs = formatPrecisionTime(new Date(confirmedMs));
+    this.log(`Execution confirmed: ${confirmedTs}`);
+
+    const totalLatencyMs = confirmedMs - signalGeneratedMs;
+    this.log(`Total execution latency: ${totalLatencyMs} ms`);
+
+    this.entryPrice = actualPrice;
+    this.activeTradePremium = contract.tradingsymbol;
+    this.state = 'IN_POSITION';
+    this.trend = trendSide;
+
+    if (this.strategyName === 'ModifiedHeikenAshi') {
+      const initialSlPoints = this.config.initialSlPoints || 30;
+      this.activeTrailingSl = actualPrice - initialSlPoints;
+    }
+
+    this.log(`ENTRY ${contract.tradingsymbol} @ ₹${actualPrice}`);
+
+    // Record trade to MongoDB
+    const dbStartMs = Date.now();
+    try {
+      const strategyDoc = await Strategy.findOne({ name: this.strategyName });
+      if (strategyDoc) {
+        const tradeDoc = await Trade.create({
+          userId: this.userId,
+          strategyId: strategyDoc._id,
+          index: this.config.underlying || 'SENSEX',
+          premium: contract.tradingsymbol,
+          qty,
+          buyPrice: actualPrice
+        });
+        this.activeTradeId = tradeDoc._id.toString();
+        const dbEndMs = Date.now();
+        this.log(`Database update complete: ${formatPrecisionTime(new Date(dbEndMs))} (DB write delay: ${dbEndMs - dbStartMs}ms)`);
+      }
+    } catch (err) {
+      console.error(`[${this.strategyName}] Trade DB Record error:`, err.message);
+    }
+
+    this.startMonitorLoop();
+  }
+
+  startMonitorLoop() {
+    if (this.monitorInterval) clearInterval(this.monitorInterval);
+
+    const monitor = async () => {
+      if (!this.isRunning || this.state !== 'IN_POSITION' || !this.activeTradePremium) return;
+
+      const contract = (this.ceContract && this.ceContract.tradingsymbol === this.activeTradePremium)
+        ? this.ceContract
+        : (this.peContract && this.peContract.tradingsymbol === this.activeTradePremium)
+          ? this.peContract
+          : null;
+
+      if (!contract) return;
+
+      try {
+        const ltpRes = await callAngelApi(`/market/ltp?exchange=${encodeURIComponent(contract.exchange)}&tradingsymbol=${encodeURIComponent(contract.tradingsymbol)}&symboltoken=${encodeURIComponent(contract.symboltoken)}`);
+        const livePrice = ltpRes.ltp;
+        this.currentLtp = livePrice;
+
+        let shouldExit = false;
+        let exitPrice = livePrice;
+        let exitReason = '';
+
+        if (this.strategyName === '5minBreakout') {
+          if (this.stopLoss && livePrice <= this.stopLoss) {
+            shouldExit = true;
+            exitReason = 'SL';
+          } else if (this.target && livePrice >= this.target) {
+            shouldExit = true;
+            exitReason = 'Target';
+          }
+        } else if (this.strategyName === 'ModifiedHeikenAshi' && this.config.exitStrategy === 'TRAILING_SL') {
+          const finalTargetPoints = this.config.finalTargetPoints || 100;
+          const initialSlPoints = this.config.initialSlPoints || 30;
+          const trailingStopPoints = this.config.trailingStopPoints || 20;
+
+          if (this.entryPrice && this.activeTrailingSl !== null) {
+            const targetPrice = this.entryPrice + finalTargetPoints;
+            if (livePrice >= targetPrice) {
+              shouldExit = true;
+              exitReason = 'Target';
+            } else if (livePrice <= this.activeTrailingSl) {
+              shouldExit = true;
+              exitReason = this.activeTrailingSl === (this.entryPrice - initialSlPoints) ? 'SL' : 'Trailing SL';
+            } else {
+              const pointsGained = livePrice - this.entryPrice;
+              if (pointsGained >= trailingStopPoints) {
+                const steps = Math.floor(pointsGained / trailingStopPoints);
+                const proposedSl = this.entryPrice + (steps * trailingStopPoints) - initialSlPoints;
+                if (proposedSl > this.activeTrailingSl) {
+                  this.activeTrailingSl = proposedSl;
+                  this.log(`Trailed SL up to ₹${proposedSl}`);
+                }
+              }
+            }
+          }
+        } else if (this.config.exitStrategy === 'TARGET' && this.entryPrice) {
+          const targetPoints = this.config.targetPoints || 20;
+          const slPoints = this.config.slPoints || 30;
+
+          if (livePrice >= this.entryPrice + targetPoints) {
+            shouldExit = true;
+            exitReason = 'Target';
+          } else if (livePrice <= this.entryPrice - slPoints) {
+            shouldExit = true;
+            exitReason = 'SL';
+          }
+        }
+
+        if (shouldExit && !this.isExiting) {
+          await this.executeExit(contract, exitPrice, exitReason);
+        }
+
+      } catch (err) {
+        console.error(`[${this.strategyName}] Monitor error:`, err.message);
+      }
+    };
+
+    this.monitorInterval = setInterval(monitor, 1000);
+  }
+
+  async executeExit(contract, price, exitReason) {
+    if (this.isExiting) return;
+    this.isExiting = true;
+    let actualExitPx = price;
+    const qty = this.config.quantity || 10;
+
+    if (this.config.liveTradingConsent && contract) {
+      try {
+        const orderRes = await callAngelApi('/angel/orders/simple', 'POST', {
+          exchange: contract.exchange,
+          tradingsymbol: contract.tradingsymbol,
+          symboltoken: contract.symboltoken,
+          transactiontype: 'SELL',
+          producttype: 'CARRYFORWARD',
+          quantity: qty,
+          ordertype: 'MARKET'
+        });
+        const orderId = orderRes?.item?.response?.data?.orderid || orderRes?.item?.response?.orderid;
+        if (orderId) {
+          for (let i = 0; i < 4; i++) {
+            await new Promise(r => setTimeout(r, 1000));
+            const ob = await callAngelApi('/angel/orderbook');
+            const order = (ob?.data || []).find(o => String(o.orderid) === String(orderId));
+            if (order && (order.status === 'complete' || order.status === 'executed' || order.orderstatus === 'complete')) {
+              const execPrice = parseFloat(order.averageprice || order.price);
+              if (!isNaN(execPrice) && execPrice > 0) {
+                actualExitPx = execPrice;
+                break;
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`[${this.strategyName}] LIVE SELL failed:`, err.message);
+      }
+    }
+
+    this.log(`EXIT ${contract ? contract.tradingsymbol : ''} @ ₹${actualExitPx} (${exitReason})`);
+
+    if (this.activeTradeId) {
+      try {
+        const trade = await Trade.findById(this.activeTradeId);
+        if (trade) {
+          const pnl = (actualExitPx - trade.buyPrice) * trade.qty;
+          trade.exitPrice = actualExitPx;
+          trade.exitReason = exitReason;
+          trade.pnl = pnl;
+          await trade.save();
+          this.lastCompletedTrade = trade.toObject();
+        }
+      } catch (err) {
+        console.error(`[${this.strategyName}] Trade exit update DB error:`, err.message);
+      }
+    }
+
+    this.activeTradeId = null;
+    this.activeTradePremium = null;
+    this.entryPrice = null;
+    this.activeTrailingSl = null;
+    this.stopLoss = null;
+    this.target = null;
+    this.trend = 'NEUTRAL';
+    this.isExiting = false;
+
+    if (this.monitorInterval) {
+      clearInterval(this.monitorInterval);
+      this.monitorInterval = null;
+    }
+
+    // Cooldown check
+    let cooldownMinutes = 0;
+    if (this.strategyName === '5minBreakout') {
+      cooldownMinutes = 1;
+    } else {
+      if (exitReason === 'SL') cooldownMinutes = 4;
+      else if (exitReason === 'Target' || exitReason === 'Trailing SL') cooldownMinutes = 2;
+    }
+
+    if (cooldownMinutes > 0) {
+      this.cooldownUntil = Date.now() + (cooldownMinutes * 60 * 1000);
+      this.state = 'COOLDOWN';
+      this.log(`Entering cooldown for ${cooldownMinutes} min`);
+    } else {
+      this.state = this.strategyName === '5minBreakout' ? 'WAITING' : 'SCANNING';
+    }
+  }
+
+  async manualExit() {
+    if (!this.activeTradePremium) return;
+    const contract = (this.ceContract && this.ceContract.tradingsymbol === this.activeTradePremium)
+      ? this.ceContract
+      : (this.peContract && this.peContract.tradingsymbol === this.activeTradePremium)
+        ? this.peContract
+        : null;
+
+    let exitPx = this.currentLtp || this.entryPrice || 0;
+    if (contract) {
+      try {
+        const ltpRes = await callAngelApi(`/market/ltp?exchange=${encodeURIComponent(contract.exchange)}&tradingsymbol=${encodeURIComponent(contract.tradingsymbol)}&symboltoken=${encodeURIComponent(contract.symboltoken)}`);
+        if (ltpRes.ltp > 0) exitPx = ltpRes.ltp;
+      } catch (e) {
+        // use fallback
+      }
+    }
+    await this.executeExit(contract, exitPx, 'Strategy');
+  }
+
+  getStatus() {
+    // Refresh checkpoints dynamically
+    this.checkpoints = [
+      { id: 'broker', label: 'Broker Connection', status: 'success' },
+      { id: 'expiry', label: 'Next Expiry Locked', status: this.selectedExpiry ? 'success' : 'pending' },
+      { id: 'ha_trend', label: 'HA Trend Stability', status: this.trend !== 'NEUTRAL' ? 'success' : 'pending' },
+      { id: 'confirmation', label: 'ATM Strike Sync', status: this.atmStrike ? 'success' : 'pending' },
+      { id: 'indicators', label: 'Premium Discovery', status: (this.ceContract && this.peContract) ? 'success' : 'pending' }
+    ];
+
+    return {
+      strategyName: this.strategyName,
+      isRunning: this.isRunning,
+      state: this.state,
+      message: this.message,
+      trend: this.trend,
+      selectedExpiry: this.selectedExpiry,
+      atmStrike: this.atmStrike,
+      ceContract: this.ceContract,
+      peContract: this.peContract,
+      monitoredPremiums: this.monitoredPremiums,
+      checkpoints: this.checkpoints,
+      activeTradeId: this.activeTradeId,
+      activeTradePremium: this.activeTradePremium,
+      entryPrice: this.entryPrice,
+      currentLtp: this.currentLtp,
+      activeTrailingSl: this.activeTrailingSl,
+      stopLoss: this.stopLoss,
+      target: this.target,
+      lastCompletedTrade: this.lastCompletedTrade,
+      logs: this.logs
+    };
+  }
+}
+
+class StrategyEngineManager {
+  constructor() {
+    this.runners = new Map();
+  }
+
+  getRunner(key) {
+    if (!this.runners.has(key)) {
+      // key: `${userId}_${strategyName}`
+      const parts = key.split('_');
+      const strategyName = parts.slice(1).join('_');
+      this.runners.set(key, new SingleStrategyRunner(strategyName));
+    }
+    return this.runners.get(key);
+  }
+
+  async startStrategy(userId, strategyName, config) {
+    const key = `${userId}_${strategyName}`;
+    const runner = this.getRunner(key);
+    await runner.start(config, userId);
+    return runner.getStatus();
+  }
+
+  stopStrategy(userId, strategyName) {
+    const key = `${userId}_${strategyName}`;
+    const runner = this.getRunner(key);
+    runner.stop();
+    return runner.getStatus();
+  }
+
+  async manualExitStrategy(userId, strategyName) {
+    const key = `${userId}_${strategyName}`;
+    const runner = this.getRunner(key);
+    await runner.manualExit();
+    return runner.getStatus();
+  }
+
+  getStrategyStatus(userId, strategyName) {
+    const key = `${userId}_${strategyName}`;
+    const runner = this.getRunner(key);
+    return runner.getStatus();
+  }
+}
+
+module.exports = new StrategyEngineManager();

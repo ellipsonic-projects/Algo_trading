@@ -13,7 +13,7 @@ def test_load_config_requires_env_vars(monkeypatch):
     monkeypatch.delenv("ANGEL_TOTP_SECRET", raising=False)
 
     with pytest.raises(ValueError):
-        load_config(dotenv_path=None)
+        load_config(dotenv_path="nonexistent_env_file")
 
 
 def test_load_config_parses_cors_origins(monkeypatch, tmp_path):
@@ -31,8 +31,12 @@ def test_load_config_parses_cors_origins(monkeypatch, tmp_path):
     )
 
     # Ensure process env doesn't interfere
-    monkeypatch.setenv("CORS_ORIGINS", "")
+    monkeypatch.delenv("ANGEL_API_KEY", raising=False)
+    monkeypatch.delenv("ANGEL_CLIENT_CODE", raising=False)
+    monkeypatch.delenv("ANGEL_TOTP_SECRET", raising=False)
+    monkeypatch.delenv("CORS_ORIGINS", raising=False)
 
     cfg = load_config(dotenv_path=str(env_file))
     assert cfg.angel.api_key == "key"
     assert cfg.cors_origins == ["http://a", "http://b"]
+

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 from uuid import uuid4
@@ -138,23 +138,29 @@ def angel_search(query: str, exchange: str = "NSE") -> Dict[str, Any]:
 def market_candles(
     exchange: str,
     symboltoken: str,
-    interval: str = "ONE_MINUTE",
-    lookback_minutes: int = 30,
+    interval: str = "FIVE_MINUTE",
+    lookback_minutes: int = 375,
+    date: Optional[str] = None,
 ) -> Dict[str, Any]:
     try:
-        lb = int(lookback_minutes)
-        if lb <= 0 or lb > 24 * 60:
-            raise HTTPException(status_code=400, detail="Invalid lookback_minutes")
-
-        now = datetime.now(timezone.utc)
-        from_dt = now - timedelta(minutes=lb)
+        ist = timezone(timedelta(hours=5, minutes=30))
+        if date:
+            target_date = datetime.strptime(date, "%Y-%m-%d").date()
+            from_dt = datetime.combine(target_date, time(9, 15)).replace(tzinfo=ist)
+            to_dt = datetime.combine(target_date, time(15, 30)).replace(tzinfo=ist)
+        else:
+            now_ist = datetime.now(ist)
+            to_dt = min(now_ist, now_ist.replace(hour=15, minute=30, second=0, microsecond=0))
+            from_dt = to_dt - timedelta(minutes=max(1, lookback_minutes))
+            if from_dt >= to_dt:
+                from_dt = to_dt - timedelta(minutes=max(1, lookback_minutes))
 
         candles = angel.get_candles(
             exchange=exchange,
             symboltoken=symboltoken,
             interval=interval,
             from_dt=from_dt,
-            to_dt=now,
+            to_dt=to_dt,
         )
         return {"items": candles}
     except HTTPException:
@@ -163,7 +169,11 @@ def market_candles(
         msg = str(e)
         if "Not logged in" in msg:
             raise HTTPException(status_code=401, detail=msg)
-        raise HTTPException(status_code=400, detail=msg)
+        if "Invalid candle window" in msg or "No data" in msg:
+            return {"items": []}
+        if "Invalid token" in msg or "symboltoken" in msg or "Invalid candle request" in msg:
+            raise HTTPException(status_code=400, detail=msg)
+        raise HTTPException(status_code=500, detail=msg)
 
 
 @app.get("/market/ltp")

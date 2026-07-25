@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
     Activity,
     ShieldAlert,
@@ -6,16 +6,10 @@ import {
     ChevronRight,
     Play,
     Square,
-    TrendingUp,
     XCircle
 } from 'lucide-react'
 import { useAngelConnection } from '../../shared/angel/AngelConnectionProvider'
 import { apiGet, apiPost } from '../../trading'
-import {
-    computeHeikenAshi,
-    analyzeHeikenAshiStrategy
-} from '../../trading/strategies/heikenAshi'
-import { isStopLossExitReason, playSlAudio, primeSlAudio } from '../../shared/audio/slAudio'
 import { usePageTitle } from '../../hooks/usePageTitle'
 
 type Underlying = 'SENSEX' | 'NIFTY' | 'BANKNIFTY' | 'CRUDEOILM'
@@ -32,42 +26,6 @@ type StrategyState = 'WAITING' | 'SCANNING' | 'IN_POSITION' | 'COOLDOWN' | 'STOP
 type Trend = 'BULLISH' | 'BEARISH' | 'NEUTRAL'
 type StrikeMode = 'ATM' | 'ITM' | 'OTM'
 type ExitStrategy = 'CANDLES' | 'TARGET'
-
-type IndexOptionContract = {
-    exchange: Exchange
-    underlying: Underlying
-    expiry: string
-    strike: number
-    lot_size: number
-    option_type: 'CE' | 'PE'
-    tradingsymbol: string
-    symboltoken: string
-}
-
-type IndexOptionsResponse = {
-    expiries: string[]
-    strikes: number[]
-    contracts: IndexOptionContract[]
-}
-
-type MarketIndexLtpResponse = {
-    underlying: Underlying
-    exchange: 'NSE'
-    tradingsymbol: string
-    symboltoken: string
-    ltp: number
-}
-
-type CandlesResponse = {
-    items: {
-        ts: string
-        open: number
-        high: number
-        low: number
-        close: number
-        v: number
-    }[]
-}
 
 const TIMEFRAME_OPTIONS = [
     { label: '1m', value: 'ONE_MINUTE' },
@@ -92,7 +50,7 @@ function getSavedState<T>(key: string, fallback: T): T {
 }
 
 export default function HeikenashiPage() {
-    usePageTitle('Heikenashi');
+    usePageTitle('Heikenashi')
     const { connectStatus } = useAngelConnection()
 
     const [isRunning, setIsRunning] = useState<boolean>(() => getSavedState('ha_isRunning', false))
@@ -107,16 +65,6 @@ export default function HeikenashiPage() {
     const [needConfirmation, setNeedConfirmation] = useState<boolean>(() => getSavedState('ha_needConfirmation', false))
     const [confirmationTimeframe, setConfirmationTimeframe] = useState<string>(() => getSavedState('ha_confirmationTimeframe', 'FIFTEEN_MINUTE'))
 
-    // Live Monitor State
-    const [monitoredPremiums, setMonitoredPremiums] = useState<{ ce: string, pe: string }>({ ce: '---', pe: '---' })
-    const [checkpoints, setCheckpoints] = useState([
-        { id: 'broker', label: 'Broker Connection', status: 'pending' },
-        { id: 'expiry', label: 'Next Expiry Locked', status: 'pending' },
-        { id: 'ha_trend', label: 'HA Trend Stability', status: 'pending' },
-        { id: 'confirmation', label: 'Timeframe Sync', status: 'pending' },
-        { id: 'indicators', label: 'EMA/JMA Cross Check', status: 'pending' }
-    ])
-
     // Strike Selection
     const [strikeMode, setStrikeMode] = useState<StrikeMode>(() => getSavedState('ha_strikeMode', 'ATM'))
     const [strikeDepth, setStrikeDepth] = useState<number>(() => getSavedState('ha_strikeDepth', 1))
@@ -127,8 +75,23 @@ export default function HeikenashiPage() {
     const [exitStrategy, setExitStrategy] = useState<ExitStrategy>(() => getSavedState('ha_exitStrategy', 'CANDLES'))
     const [targetPoints, setTargetPoints] = useState<number>(() => getSavedState('ha_targetPoints', 20))
     const [slPoints, setSlPoints] = useState<number>(() => getSavedState('ha_slPoints', 30))
-
     const [liveTradingConsent, setLiveTradingConsent] = useState<boolean>(() => getSavedState('ha_liveTradingConsent', false))
+
+    // Dynamic Live Monitor States from Backend Status
+    const [monitoredPremiums, setMonitoredPremiums] = useState<{ ce: string, pe: string }>({ ce: '---', pe: '---' })
+    const [checkpoints, setCheckpoints] = useState([
+        { id: 'broker', label: 'Broker Connection', status: 'pending' },
+        { id: 'expiry', label: 'Next Expiry Locked', status: 'pending' },
+        { id: 'ha_trend', label: 'HA Trend Stability', status: 'pending' },
+        { id: 'confirmation', label: 'Timeframe Sync', status: 'pending' },
+        { id: 'indicators', label: 'EMA/JMA Cross Check', status: 'pending' }
+    ])
+
+    const [activeTradeId, setActiveTradeId] = useState<string | null>(null)
+    const [activeTradePremium, setActiveTradePremium] = useState<string | null>(null)
+    const [entryPrice, setEntryPrice] = useState<number | null>(null)
+    const [currentLtp, setCurrentLtp] = useState<number | null>(null)
+    const [isExiting, setIsExiting] = useState<boolean>(false)
 
     // Local Storage Sync
     useEffect(() => {
@@ -149,652 +112,114 @@ export default function HeikenashiPage() {
         localStorage.setItem('ha_liveTradingConsent', JSON.stringify(liveTradingConsent))
     }, [isRunning, state, underlying, quantity, baseTimeframe, needConfirmation, confirmationTimeframe, strikeMode, strikeDepth, premiumMin, premiumMax, exitStrategy, targetPoints, slPoints, liveTradingConsent])
 
-    // Strategy Execution State
-    const [selectedExpiry, setSelectedExpiry] = useState<string | null>(null)
-    const [atmStrike, setAtmStrike] = useState<number | null>(null)
-    const [ceContract, setCeContract] = useState<IndexOptionContract | null>(null)
-    const [peContract, setPeContract] = useState<IndexOptionContract | null>(null)
+    // Poll Strategy Status from Backend Engine
+    useEffect(() => {
+        let active = true
 
-    const [activeTradeId, setActiveTradeId] = useState<string | null>(null)
-    const [activeTradePremium, setActiveTradePremium] = useState<string | null>(null)
-    const [entryPrice, setEntryPrice] = useState<number | null>(null)
-    const [currentLtp, setCurrentLtp] = useState<number | null>(null)
+        const fetchStatus = async () => {
+            try {
+                const res = await apiGet<{
+                    data: {
+                        isRunning: boolean
+                        state: StrategyState
+                        message: string
+                        trend: Trend
+                        monitoredPremiums: { ce: string, pe: string }
+                        checkpoints: Array<{ id: string, label: string, status: string }>
+                        activeTradeId: string | null
+                        activeTradePremium: string | null
+                        entryPrice: number | null
+                        currentLtp: number | null
+                    }
+                }>('/strategies/HeikenAshi/status')
 
-    // ─── Refs ────────────────────────────────────────────────────────────────
-    const inFlightRef = useRef(false)
+                if (!active || !res.data) return
 
-    /**
-     * activeTradeRef mirrors activeTradeId + activeTradePremium in a ref so
-     * the scan interval closure always reads the *current* value without needing
-     * to be listed in the dependency array (which would restart the interval on
-     * every entry/exit and cause duplicate orders).
-     */
-    const activeTradeRef = useRef<{ tradeId: string | null; premium: string | null }>({
-        tradeId: null,
-        premium: null,
-    })
+                const d = res.data
+                setIsRunning(d.isRunning)
+                setState(d.state)
+                if (d.message) setMessage(d.message)
+                setTrend(d.trend)
+                if (d.monitoredPremiums) setMonitoredPremiums(d.monitoredPremiums)
+                if (d.checkpoints) setCheckpoints(d.checkpoints)
+                setActiveTradeId(d.activeTradeId)
+                setActiveTradePremium(d.activeTradePremium)
+                setEntryPrice(d.entryPrice)
+                setCurrentLtp(d.currentLtp)
+            } catch (err) {
+                // Ignore network status errors when backend is offline
+            }
+        }
 
-    const lastEntryTimeRef = useRef<string | null>(null)
-
-    /** Single helper that keeps state + ref in sync atomically. */
-    const setActiveTrade = useCallback((tradeId: string | null, premium: string | null) => {
-        activeTradeRef.current = { tradeId, premium }
-        setActiveTradeId(tradeId)
-        setActiveTradePremium(premium)
+        fetchStatus()
+        const interval = setInterval(fetchStatus, 1500)
+        return () => {
+            active = false
+            clearInterval(interval)
+        }
     }, [])
 
-    // ─── Helpers ─────────────────────────────────────────────────────────────
-    const asIsoDate = (d: Date) => d.toISOString().split('T')[0]
-
-    const pickNearestExpiry = (expiries: string[]) => {
-        const today = asIsoDate(new Date())
-        const valid = expiries.filter(Boolean).sort()
-        return valid.find(e => e >= today) || (valid.length ? valid[valid.length - 1] : null)
-    }
-
-    const pickNearestStrike = (strikes: number[], spot: number) => {
-        if (!strikes.length) return null
-        return strikes.reduce((prev, curr) =>
-            Math.abs(curr - spot) < Math.abs(prev - spot) ? curr : prev
-        )
-    }
-
-    const resolveStrikeForSide = (params: {
-        strikes: number[]
-        atmStrike: number
-        mode: StrikeMode
-        depth: number
-        side: 'CE' | 'PE'
-    }) => {
-        const { strikes, atmStrike, mode, depth, side } = params
-        const sorted = [...strikes].filter(Number.isFinite).sort((a, b) => a - b)
-        const idx = sorted.findIndex(s => Math.abs(s - atmStrike) < 1e-6)
-        if (idx < 0) return null
-        if (mode === 'ATM') return sorted[idx]
-        const steps = Math.max(0, Math.floor(depth))
-        const offset = (side === 'CE' ? 1 : -1) * (mode === 'ITM' ? -1 : 1) * steps
-        const next = idx + offset
-        return next >= 0 && next < sorted.length ? sorted[next] : null
-    }
-
-    // ─── Strategy controls ───────────────────────────────────────────────────
-    const startStrategy = () => {
-        primeSlAudio()
-        setIsRunning(true)
-        setState('SCANNING')
-        setMessage('Market scan initialized...')
-    }
-
-    const stopStrategy = useCallback(() => {
-        setIsRunning(false)
-        setState('STOPPED')
-        setMessage('Strategy halted by user.')
-        setTrend('NEUTRAL')
-        setMonitoredPremiums({ ce: '---', pe: '---' })
-        setCheckpoints(prev => prev.map(cp => ({ ...cp, status: 'pending' })))
-        setCeContract(null)
-        setPeContract(null)
-        setAtmStrike(null)
-        setSelectedExpiry(null)
-        setActiveTrade(null, null)
-        setEntryPrice(null)
-        setCurrentLtp(null)
-        lastEntryTimeRef.current = null
-    }, [setActiveTrade])
-
-    const [isExiting, setIsExiting] = useState(false)
-
-    const manualExitPosition = useCallback(async () => {
-        const { tradeId, premium: currentPremium } = activeTradeRef.current
-        if (!tradeId || !currentPremium) return
-        if (isExiting) return
-        setIsExiting(true)
-        setMessage('Manual exit initiated...')
-
-        try {
-            // Determine which contract we're holding
-            const contract =
-                ceContract?.tradingsymbol === currentPremium ? ceContract :
-                    peContract?.tradingsymbol === currentPremium ? peContract :
-                        null
-
-            // 1. Fetch live LTP for accurate exit price
-            let exitPrice = currentLtp ?? entryPrice ?? 0
-            if (contract) {
-                try {
-                    const ltpRes = await apiGet<{ ltp: number }>(
-                        `/market/ltp?exchange=${encodeURIComponent(contract.exchange)}&tradingsymbol=${encodeURIComponent(contract.tradingsymbol)}&symboltoken=${encodeURIComponent(contract.symboltoken)}`
-                    )
-                    if (ltpRes.ltp > 0) exitPrice = ltpRes.ltp
-                } catch (e) {
-                    console.warn('[HA MANUAL EXIT] LTP fetch failed, using last known price', e)
-                }
-            }
-
-            // 2. Fire SELL order on Angel One if live trading consent is given
-            if (liveTradingConsent && contract) {
-                try {
-                    const orderRes = await apiPost<any>('/angel/orders/simple', {
-                        exchange: contract.exchange,
-                        tradingsymbol: contract.tradingsymbol,
-                        symboltoken: contract.symboltoken,
-                        transactiontype: 'SELL',
-                        producttype: 'CARRYFORWARD',
-                        quantity: quantity,
-                        ordertype: 'MARKET',
-                    })
-                    console.log('[HA MANUAL EXIT] SELL order placed via Angel')
-                    const orderId = orderRes?.item?.response?.data?.orderid || orderRes?.item?.response?.orderid
-                    if (orderId) {
-                        for (let i = 0; i < 4; i++) {
-                            await new Promise(r => setTimeout(r, 1000))
-                            const ob = await apiGet<any>('/angel/orderbook')
-                            const order = (ob?.data || []).find((o: any) => String(o.orderid) === String(orderId))
-                            if (order && (order.status === 'complete' || order.status === 'executed' || order.orderstatus === 'complete')) {
-                                const execPrice = parseFloat(order.averageprice || order.price)
-                                if (!isNaN(execPrice) && execPrice > 0) {
-                                    exitPrice = execPrice
-                                    break
-                                }
-                            }
-                        }
-                    }
-                } catch (err) {
-                    console.error('[HA MANUAL EXIT] SELL order failed', err)
-                }
-            }
-
-            // 3. Save exit price + PnL to MongoDB
-            await apiPost('/trades/update-exit', {
-                tradeId,
-                exitPrice,
-                exitReason: 'Strategy',
-            })
-
-            console.log(`[HA MANUAL EXIT] Exited @ ${exitPrice}`)
-            setMessage(`Manual exit @ ${exitPrice} saved to DB.`)
-            setActiveTrade(null, null)
-            setEntryPrice(null)
-            setCurrentLtp(null)
-            setState('SCANNING')
-            setTrend('NEUTRAL')
-        } catch (err) {
-            console.error('[HA MANUAL EXIT] Failed', err)
-            setMessage('Manual exit failed. Check console.')
-        } finally {
-            setIsExiting(false)
-        }
-    }, [isExiting, ceContract, peContract, currentLtp, entryPrice, liveTradingConsent, quantity, setActiveTrade])
-
-    // ─── Recover open trade on mount ─────────────────────────────────────────
-    useEffect(() => {
-        if (connectStatus !== 'connected') return
-        let disposed = false
-        apiGet<{
-            data: {
-                trade?: {
-                    _id: string
-                    buyPrice: number
-                    index: Underlying
-                    strategyName: string
-                    premium?: string
-                }
-            }
-        }>(`/trades/latest-open?strategyName=HeikenAshi`)
-            .then(res => {
-                if (disposed) return
-                if (res.data?.trade) {
-                    const t = res.data.trade
-                    setActiveTrade(t._id, t.premium || null)
-                    setEntryPrice(t.buyPrice)
-                    // We DO NOT override 'underlying' from the trade because and it might desync with the active UI configs.
-                    // The stored configurations from localStorage are sufficient.
-                    setState('IN_POSITION')
-                    setMessage('Recovered active HeikenAshi trade.')
-                }
-            })
-            .catch(console.error)
-        return () => { disposed = true }
-    }, [connectStatus, setActiveTrade])
-
-    // ─── Stop if broker disconnects ──────────────────────────────────────────
     const handleUnderlyingChange = (val: Underlying) => {
         setUnderlying(val)
         setQuantity(INDEX_CONFIG[val].qty)
     }
 
-    // The strategy is now completely resilient to broker disconnects.
-    // It will not auto-stop if connectStatus turns to 'error'. It will just wait 
-    // for the auto-reconnect ping or for the user to manually intervene.
-
-    // ─── Contract Management: resolve expiry + ATM strike ────────────────────
-    useEffect(() => {
-        if (!isRunning || connectStatus !== 'connected') return
-        let disposed = false
-        const load = async () => {
-            try {
-                const config = INDEX_CONFIG[underlying]
-                const index = await apiGet<MarketIndexLtpResponse>(
-                    `/market/index-ltp?underlying=${encodeURIComponent(underlying)}`
-                )
-                const opt = await apiGet<IndexOptionsResponse>(
-                    `/instruments/index-options?exchange=${encodeURIComponent(config.exchange)}&underlying=${encodeURIComponent(underlying)}`
-                )
-                if (disposed) return
-                setSelectedExpiry(pickNearestExpiry(opt.expiries))
-                setAtmStrike(pickNearestStrike(opt.strikes, index.ltp))
-            } catch (e) {
-                if (disposed) return
-                setMessage(e instanceof Error ? e.message : 'Init failed')
+    const startStrategy = async () => {
+        try {
+            setMessage('Launching algorithm on backend engine...')
+            const payload = {
+                underlying,
+                quantity,
+                baseTimeframe,
+                needConfirmation,
+                confirmationTimeframe,
+                strikeMode,
+                strikeDepth,
+                premiumMin,
+                premiumMax,
+                exitStrategy,
+                targetPoints,
+                slPoints,
+                liveTradingConsent
             }
+            await apiPost('/strategies/HeikenAshi/start', payload)
+            setIsRunning(true)
+            setState('SCANNING')
+        } catch (err) {
+            console.error('Failed to start strategy:', err)
+            setMessage('Failed to launch strategy on backend engine.')
         }
-        load()
-        return () => { disposed = true }
-    }, [isRunning, connectStatus, underlying, stopStrategy])
+    }
 
-    // ─── Strike Resolution: pick CE/PE contracts ──────────────────────────────
-    useEffect(() => {
-        if (!isRunning || !selectedExpiry) return
-        let cancelled = false
-        const tick = async () => {
-            if (cancelled || inFlightRef.current) return
-            inFlightRef.current = true
-            try {
-                const config = INDEX_CONFIG[underlying]
-                const currentPremium = activeTradeRef.current.premium
-
-                // If not holding a trade, fetch the latest Index LTP to dynamically update ATM strike
-                let newAtmStrike = atmStrike
-                if (!currentPremium) {
-                    try {
-                        const indexRes = await apiGet<MarketIndexLtpResponse>(
-                            `/market/index-ltp?underlying=${encodeURIComponent(underlying)}`
-                        )
-                        if (!cancelled) {
-                            // Fetch all strikes from the options chain to accurately pick the nearest
-                            const optAll = await apiGet<IndexOptionsResponse>(
-                                `/instruments/index-options?exchange=${encodeURIComponent(config.exchange)}&underlying=${encodeURIComponent(underlying)}`
-                            )
-                            newAtmStrike = pickNearestStrike(optAll.strikes, indexRes.ltp)
-                            if (newAtmStrike !== null) setAtmStrike(newAtmStrike)
-                        }
-                    } catch (e) {
-                        console.error("Failed to update dynamic ATM:", e)
-                    }
-                }
-
-                if (cancelled) return
-
-                // Fetch the options chain for the selected expiry
-                const opt = await apiGet<IndexOptionsResponse>(
-                    `/instruments/index-options?exchange=${encodeURIComponent(config.exchange)}&underlying=${encodeURIComponent(underlying)}&expiry=${encodeURIComponent(selectedExpiry)}`
-                )
-                if (cancelled) return
-
-                const targetAtm = currentPremium ? atmStrike : newAtmStrike
-                if (targetAtm === null) return
-
-                const ceStrike = resolveStrikeForSide({ strikes: opt.strikes, atmStrike: targetAtm, mode: strikeMode, depth: strikeDepth, side: 'CE' })
-                const peStrike = resolveStrikeForSide({ strikes: opt.strikes, atmStrike: targetAtm, mode: strikeMode, depth: strikeDepth, side: 'PE' })
-
-                let ce = opt.contracts.find(c => Math.abs(c.strike - (ceStrike ?? 0)) < 1e-6 && c.option_type === 'CE')
-                let pe = opt.contracts.find(c => Math.abs(c.strike - (peStrike ?? 0)) < 1e-6 && c.option_type === 'PE')
-
-                if (currentPremium) {
-                    const heldContract = opt.contracts.find(c => c.tradingsymbol === currentPremium)
-                    if (heldContract) {
-                        if (heldContract.option_type === 'CE') ce = heldContract
-                        if (heldContract.option_type === 'PE') pe = heldContract
-                    }
-                }
-
-                setCeContract(ce || null)
-                setPeContract(pe || null)
-            } finally {
-                inFlightRef.current = false
-            }
+    const stopStrategy = async () => {
+        try {
+            setMessage('Halting algorithm on backend engine...')
+            await apiPost('/strategies/HeikenAshi/stop')
+            setIsRunning(false)
+            setState('STOPPED')
+            setTrend('NEUTRAL')
+            setActiveTradeId(null)
+            setActiveTradePremium(null)
+            setEntryPrice(null)
+            setCurrentLtp(null)
+        } catch (err) {
+            console.error('Failed to stop strategy:', err)
         }
-        const t = setInterval(tick, 60_000)
-        tick() // Run immediately on mount or dependency change
-        return () => { cancelled = true; clearInterval(t) }
-    }, [isRunning, underlying, selectedExpiry, atmStrike, strikeMode, strikeDepth])
+    }
 
-    // ─── Strategy Scanning ────────────────────────────────────────────────────
-    useEffect(() => {
-        if (!isRunning || !ceContract || !peContract) return
-        if (state !== 'SCANNING' && state !== 'IN_POSITION') return
-        let cancelled = false
-
-        // Snapshot contract references so the closure always has the correct tokens
-        // even if the parent component re-renders and swaps contracts mid-interval.
-        const snapCe = ceContract
-        const snapPe = peContract
-
-        const scan = async () => {
-            if (cancelled || inFlightRef.current) return
-            inFlightRef.current = true
-            try {
-                // ✅ Always read fresh trade state from the ref — never from stale closure state
-                const { tradeId: currentTradeId, premium: currentPremium } = activeTradeRef.current
-
-                const scanExchange =
-                    snapCe.exchange === 'BFO' ? 'BFO' :
-                        snapCe.exchange === 'MCX' ? 'MCX' : 'NFO'
-
-                const lookbackMap: Record<string, number> = {
-                    ONE_MINUTE: 100,
-                    THREE_MINUTE: 200,
-                    FIVE_MINUTE: 300,
-                    FIFTEEN_MINUTE: 600,
-                    THIRTY_MINUTE: 1200,
-                }
-                const lookback = lookbackMap[baseTimeframe] ?? 300
-
-                // ✅ Use the resolved option contract tokens (not the index token)
-                const [ceRes, peRes] = await Promise.all([
-                    apiGet<CandlesResponse>(
-                        `/market/candles?exchange=${scanExchange}&symboltoken=${snapCe.symboltoken}&interval=${baseTimeframe}&lookback_minutes=${lookback}`
-                    ),
-                    apiGet<CandlesResponse>(
-                        `/market/candles?exchange=${scanExchange}&symboltoken=${snapPe.symboltoken}&interval=${baseTimeframe}&lookback_minutes=${lookback}`
-                    ),
-                ])
-
-                if (cancelled) return
-
-                console.log(`[HA SCAN] Index: ${underlying}, Time: ${new Date().toISOString()}`)
-                console.log(`[HA SCAN] CE token: ${snapCe.symboltoken} | candles: ${ceRes.items?.length}`)
-                console.log(`[HA SCAN] PE token: ${snapPe.symboltoken} | candles: ${peRes.items?.length}`)
-
-                const ceHa = computeHeikenAshi(ceRes.items)
-                const peHa = computeHeikenAshi(peRes.items)
-
-                const ceSignal = analyzeHeikenAshiStrategy(ceHa)
-                const peSignal = analyzeHeikenAshiStrategy(peHa)
-
-                const ceLastClosedTs = ceHa.length >= 2 ? ceHa[ceHa.length - 2].ts : null
-                const peLastClosedTs = peHa.length >= 2 ? peHa[peHa.length - 2].ts : null
-
-                console.log(`[HA SCAN] CE Signal:`, JSON.stringify(ceSignal))
-                console.log(`[HA SCAN] PE Signal:`, JSON.stringify(peSignal))
-                console.log(`[HA SCAN] ActiveTradeId (ref): ${currentTradeId}, Premium (ref): ${currentPremium}`)
-
-                if (!currentTradeId) {
-                    // ── ENTRY LOGIC ──────────────────────────────────────────
-                    if (ceSignal.isEntry && ceLastClosedTs !== lastEntryTimeRef.current) {
-                        lastEntryTimeRef.current = ceLastClosedTs
-                        setActiveTrade(null, snapCe.tradingsymbol)
-
-                        let actualEntryPrice = ceSignal.haClose
-
-                        if (liveTradingConsent) {
-                            try {
-                                const orderRes = await apiPost<any>('/angel/orders/simple', {
-                                    exchange: snapCe.exchange,
-                                    tradingsymbol: snapCe.tradingsymbol,
-                                    symboltoken: snapCe.symboltoken,
-                                    transactiontype: 'BUY',
-                                    producttype: 'CARRYFORWARD',
-                                    quantity: quantity,
-                                    ordertype: 'MARKET',
-                                })
-                                console.log('[HA LIVE] CE Entry order placed via Angel')
-                                const orderId = orderRes?.item?.response?.data?.orderid || orderRes?.item?.response?.orderid
-                                if (orderId) {
-                                    for (let i = 0; i < 4; i++) {
-                                        await new Promise(r => setTimeout(r, 1000))
-                                        const ob = await apiGet<any>('/angel/orderbook')
-                                        const order = (ob?.data || []).find((o: any) => String(o.orderid) === String(orderId))
-                                        if (order && (order.status === 'complete' || order.status === 'executed' || order.orderstatus === 'complete')) {
-                                            const execPrice = parseFloat(order.averageprice || order.price)
-                                            if (!isNaN(execPrice) && execPrice > 0) {
-                                                actualEntryPrice = execPrice
-                                                break
-                                            }
-                                        }
-                                    }
-                                }
-                            } catch (err) {
-                                console.error('[HA LIVE] CE Entry failed', err)
-                            }
-                        }
-
-                        console.log(`[HA ENTRY] CE @ ${actualEntryPrice}`)
-                        setMessage(`HA Long Entry CE @ ${actualEntryPrice}`)
-                        setState('IN_POSITION')
-                        setEntryPrice(actualEntryPrice)
-                        setTrend('BULLISH')
-
-                        const res = await apiPost<{ data: { trade: { _id: string } } }>('/trades/record', {
-                            strategyName: 'HeikenAshi',
-                            index: underlying,
-                            premium: snapCe.tradingsymbol,
-                            qty: quantity,
-                            buyPrice: actualEntryPrice,
-                        })
-                        setActiveTrade(res.data.trade._id, snapCe.tradingsymbol)
-
-                    } else if (peSignal.isEntry && peLastClosedTs !== lastEntryTimeRef.current) {
-                        lastEntryTimeRef.current = peLastClosedTs
-                        setActiveTrade(null, snapPe.tradingsymbol)
-
-                        let actualEntryPrice = peSignal.haClose
-
-                        if (liveTradingConsent) {
-                            try {
-                                const orderRes = await apiPost<any>('/angel/orders/simple', {
-                                    exchange: snapPe.exchange,
-                                    tradingsymbol: snapPe.tradingsymbol,
-                                    symboltoken: snapPe.symboltoken,
-                                    transactiontype: 'BUY',
-                                    producttype: 'CARRYFORWARD',
-                                    quantity: quantity,
-                                    ordertype: 'MARKET',
-                                })
-                                console.log('[HA LIVE] PE Entry order placed via Angel')
-                                const orderId = orderRes?.item?.response?.data?.orderid || orderRes?.item?.response?.orderid
-                                if (orderId) {
-                                    for (let i = 0; i < 4; i++) {
-                                        await new Promise(r => setTimeout(r, 1000))
-                                        const ob = await apiGet<any>('/angel/orderbook')
-                                        const order = (ob?.data || []).find((o: any) => String(o.orderid) === String(orderId))
-                                        if (order && (order.status === 'complete' || order.status === 'executed' || order.orderstatus === 'complete')) {
-                                            const execPrice = parseFloat(order.averageprice || order.price)
-                                            if (!isNaN(execPrice) && execPrice > 0) {
-                                                actualEntryPrice = execPrice
-                                                break
-                                            }
-                                        }
-                                    }
-                                }
-                            } catch (err) {
-                                console.error('[HA LIVE] PE Entry failed', err)
-                            }
-                        }
-
-                        console.log(`[HA ENTRY] PE @ ${actualEntryPrice}`)
-                        setMessage(`HA Long Entry PE @ ${actualEntryPrice}`)
-                        setState('IN_POSITION')
-                        setEntryPrice(actualEntryPrice)
-                        setTrend('BEARISH')
-
-                        const res = await apiPost<{ data: { trade: { _id: string } } }>('/trades/record', {
-                            strategyName: 'HeikenAshi',
-                            index: underlying,
-                            premium: snapPe.tradingsymbol,
-                            qty: quantity,
-                            buyPrice: actualEntryPrice,
-                        })
-                        setActiveTrade(res.data.trade._id, snapPe.tradingsymbol)
-
-                    } else {
-                        setTrend(ceSignal.trend)
-                    }
-
-                } else {
-                    // ── EXIT LOGIC ───────────────────────────────────────────
-                    const isCeTrade = currentPremium === snapCe.tradingsymbol
-                    const isPeTrade = currentPremium === snapPe.tradingsymbol
-
-                    let shouldExit = false
-                    let exitPrice = currentLtp || (isCeTrade ? ceSignal.haClose : peSignal.haClose)
-                    let exitReason = ''
-
-                    if (exitStrategy === 'CANDLES') {
-                        shouldExit = (isCeTrade && ceSignal.isExit) || (isPeTrade && peSignal.isExit)
-                        if (shouldExit) {
-                            exitPrice = isCeTrade ? ceSignal.haClose : peSignal.haClose
-                            exitReason = 'HA_TREND_REVERSAL'
-                        }
-                    } else if (exitStrategy === 'TARGET') {
-                        // We need the current LTP of the specific option to check targets.
-                        // We can fetch it directly here if currentLtp is stale, or rely on the monitor.
-                        // For safety inside the loop, let's do a quick fetch of the active instrument's LTP 
-                        // to guarantee we have the absolute latest price for SL/Target checking.
-                        const activeToken = isCeTrade ? snapCe.symboltoken : snapPe.symboltoken
-                        const activeExchange = isCeTrade ? snapCe.exchange : snapPe.exchange
-
-                        try {
-                            const ltpRes = await apiGet<{ ltp: number }>(`/market/ltp?exchange=${encodeURIComponent(activeExchange)}&tradingsymbol=${encodeURIComponent(currentPremium || '')}&symboltoken=${encodeURIComponent(activeToken)}`)
-                            const livePrice = ltpRes.ltp
-
-                            if (entryPrice) {
-                                const targetPrice = entryPrice + targetPoints
-                                const slPrice = entryPrice - slPoints
-
-                                if (livePrice >= targetPrice) {
-                                    shouldExit = true
-                                    exitPrice = livePrice
-                                    exitReason = 'Target'
-                                } else if (livePrice <= slPrice) {
-                                    shouldExit = true
-                                    exitPrice = livePrice
-                                    exitReason = 'SL'
-                                }
-                            }
-                        } catch (err) {
-                            console.error('LTP fetch failed during target check', err)
-                        }
-                    }
-
-                    if (shouldExit) {
-                        let actualExitPrice = exitPrice
-
-                        if (liveTradingConsent) {
-                            const activeToken = isCeTrade ? snapCe.symboltoken : snapPe.symboltoken
-                            const activeExchange = isCeTrade ? snapCe.exchange : snapPe.exchange
-                            const activeSymbol = currentPremium || (isCeTrade ? snapCe.tradingsymbol : snapPe.tradingsymbol)
-
-                            try {
-                                const orderRes = await apiPost<any>('/angel/orders/simple', {
-                                    exchange: activeExchange,
-                                    tradingsymbol: activeSymbol,
-                                    symboltoken: activeToken,
-                                    transactiontype: 'SELL',
-                                    producttype: 'CARRYFORWARD',
-                                    quantity: quantity,
-                                    ordertype: 'MARKET',
-                                })
-                                console.log('[HA LIVE] Exit order placed via Angel')
-                                const orderId = orderRes?.item?.response?.data?.orderid || orderRes?.item?.response?.orderid
-                                if (orderId) {
-                                    for (let i = 0; i < 4; i++) {
-                                        await new Promise(r => setTimeout(r, 1000))
-                                        const ob = await apiGet<any>('/angel/orderbook')
-                                        const order = (ob?.data || []).find((o: any) => String(o.orderid) === String(orderId))
-                                        if (order && (order.status === 'complete' || order.status === 'executed' || order.orderstatus === 'complete')) {
-                                            const execPrice = parseFloat(order.averageprice || order.price)
-                                            if (!isNaN(execPrice) && execPrice > 0) {
-                                                actualExitPrice = execPrice
-                                                break
-                                            }
-                                        }
-                                    }
-                                }
-                            } catch (err) {
-                                console.error('[HA LIVE] Exit failed', err)
-                            }
-                        }
-
-                        console.log(`[HA EXIT] @ ${actualExitPrice} Reason: ${exitReason}`)
-                        setMessage(`HA Exit Signal @ ${actualExitPrice} (${exitReason})`)
-
-                        if (isStopLossExitReason(exitReason)) {
-                            playSlAudio()
-                        }
-
-                        await apiPost('/trades/update-exit', {
-                            tradeId: currentTradeId,
-                            exitPrice: actualExitPrice,
-                            exitReason,
-                        })
-
-                        setActiveTrade(null, null)
-                        setEntryPrice(null)
-                        setState('SCANNING')
-                        setTrend('NEUTRAL')
-                    }
-                }
-            } catch (e) {
-                console.error('[HA SCAN ERROR]', e)
-            } finally {
-                inFlightRef.current = false
-            }
+    const manualExitPosition = async () => {
+        if (isExiting) return
+        setIsExiting(true)
+        setMessage('Manual exit initiated...')
+        try {
+            await apiPost('/strategies/HeikenAshi/exit')
+        } catch (err) {
+            console.error('Failed to exit position:', err)
+        } finally {
+            setIsExiting(false)
         }
+    }
 
-        const intervalMs = underlying === 'CRUDEOILM' ? 60_000 : 15_000
-        const t = setInterval(scan, intervalMs)
-        scan()
-        return () => { cancelled = true; clearInterval(t) }
-
-        // ✅ activeTradeId / activeTradePremium intentionally excluded —
-        //    we read live values from activeTradeRef inside the closure instead.
-    }, [isRunning, state, underlying, ceContract, peContract, baseTimeframe, quantity, setActiveTrade, exitStrategy, targetPoints, currentLtp, entryPrice])
-
-    // ─── LTP Monitor for active position ─────────────────────────────────────
-    useEffect(() => {
-        if (!isRunning || state !== 'IN_POSITION' || !activeTradeId || !activeTradePremium) return
-
-        const contract =
-            ceContract?.tradingsymbol === activeTradePremium ? ceContract :
-                peContract?.tradingsymbol === activeTradePremium ? peContract :
-                    null
-
-        if (!contract) return
-
-        let cancelled = false
-        const monitor = async () => {
-            if (cancelled) return
-            try {
-                const res = await apiGet<{ ltp: number }>(
-                    `/market/ltp?exchange=${encodeURIComponent(contract.exchange)}&tradingsymbol=${encodeURIComponent(contract.tradingsymbol)}&symboltoken=${encodeURIComponent(contract.symboltoken)}`
-                )
-                if (!cancelled) setCurrentLtp(res.ltp)
-            } catch (e) {
-                console.error('HA Monitor error:', e)
-            }
-        }
-        const t = setInterval(monitor, 1000)
-        monitor()
-        return () => { cancelled = true; clearInterval(t) }
-    }, [isRunning, state, activeTradeId, activeTradePremium, ceContract, peContract])
-
-    // ─── Checkpoint / monitor sync ────────────────────────────────────────────
-    useEffect(() => {
-        if (!isRunning) return
-        setCheckpoints([
-            { id: 'broker', label: 'Broker Connection', status: connectStatus === 'connected' ? 'success' : 'error' },
-            { id: 'expiry', label: 'Next Expiry Locked', status: selectedExpiry ? 'success' : 'pending' },
-            { id: 'ha_trend', label: 'HA Trend Stability', status: trend !== 'NEUTRAL' ? 'success' : 'pending' },
-            { id: 'confirmation', label: 'ATM Strike Sync', status: atmStrike ? 'success' : 'pending' },
-            { id: 'indicators', label: 'Premium Discovery', status: ceContract && peContract ? 'success' : 'pending' },
-        ])
-        if (ceContract && peContract) {
-            setMonitoredPremiums({ ce: ceContract.tradingsymbol, pe: peContract.tradingsymbol })
-        }
-    }, [isRunning, connectStatus, selectedExpiry, trend, atmStrike, ceContract, peContract])
-
-    // ─── Render ───────────────────────────────────────────────────────────────
     return (
         <div className="space-y-6 animate-in fade-in duration-500 pb-12">
             {/* Status Panel */}
@@ -1169,22 +594,22 @@ export default function HeikenashiPage() {
                                 Live Strategy Monitor
                             </h3>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div className={`border rounded-2xl p-6 backdrop-blur-xl transition-all ${activeTradePremium === ceContract?.tradingsymbol
+                                <div className={`border rounded-2xl p-6 backdrop-blur-xl transition-all ${activeTradePremium === monitoredPremiums.ce && monitoredPremiums.ce !== '---'
                                     ? 'bg-cyan-500/20 border-cyan-500/40'
                                     : 'bg-white/5 border-white/10'
                                     }`}>
                                     <p className="text-[10px] font-black text-cyan-500 uppercase tracking-widest mb-1">Analyzed CE</p>
-                                    {activeTradePremium === ceContract?.tradingsymbol && (
+                                    {activeTradePremium === monitoredPremiums.ce && monitoredPremiums.ce !== '---' && (
                                         <p className="text-[9px] font-black text-cyan-400 uppercase tracking-widest mb-2">● ACTIVE TRADE</p>
                                     )}
                                     <p className="text-xl font-black text-white">{monitoredPremiums.ce}</p>
                                 </div>
-                                <div className={`border rounded-2xl p-6 backdrop-blur-xl transition-all ${activeTradePremium === peContract?.tradingsymbol
+                                <div className={`border rounded-2xl p-6 backdrop-blur-xl transition-all ${activeTradePremium === monitoredPremiums.pe && monitoredPremiums.pe !== '---'
                                     ? 'bg-rose-500/20 border-rose-500/40'
                                     : 'bg-white/5 border-white/10'
                                     }`}>
                                     <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest mb-1">Analyzed PE</p>
-                                    {activeTradePremium === peContract?.tradingsymbol && (
+                                    {activeTradePremium === monitoredPremiums.pe && monitoredPremiums.pe !== '---' && (
                                         <p className="text-[9px] font-black text-rose-400 uppercase tracking-widest mb-2">● ACTIVE TRADE</p>
                                     )}
                                     <p className="text-xl font-black text-white">{monitoredPremiums.pe}</p>
@@ -1208,14 +633,6 @@ export default function HeikenashiPage() {
                                 ))}
                             </div>
                         </div>
-                    </div>
-
-                    <div className="lg:w-80 bg-cyan-500/10 border border-cyan-500/20 rounded-3xl p-8 flex flex-col justify-center text-center">
-                        <TrendingUp className="w-12 h-12 text-cyan-500 mx-auto mb-4" />
-                        <h4 className="text-lg font-black text-white mb-2">Algorithm Integrity</h4>
-                        <p className="text-xs text-white/60 font-medium leading-relaxed">
-                            All parameters are sanitized. Execution occurs only when 100% of checkpoints return a success state.
-                        </p>
                     </div>
                 </div>
             </div>

@@ -1,124 +1,332 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
-  TrendingUp,
-  Zap,
-  Clock,
-  Activity,
   ArrowUpRight,
   ArrowDownRight,
-  Wallet
+  RefreshCw,
+  BarChart3
 } from 'lucide-react';
 
 import { apiGet } from '../../trading';
 import { usePageTitle } from '../../hooks/usePageTitle';
+import TradingViewChart, {
+  type CandleItem,
+  type LineSeriesItem,
+  type MarkerItem,
+  type PriceLineItem,
+  type LayerToggles
+} from '../../components/chart/TradingViewChart';
+import { ChartToolbar } from '../../components/chart/ChartToolbar';
+import { computeLocalEMA, computeLocalJMA } from '../../utils/indicatorUtils';
+
+type IndexConfig = {
+  id: string;
+  name: string;
+  underlying: string;
+  exchange: string;
+};
+
+const INDICES_CONFIG: IndexConfig[] = [
+  { id: 'nifty', name: 'NIFTY 50', underlying: 'NIFTY', exchange: 'NSE' },
+  { id: 'sensex', name: 'SENSEX', underlying: 'SENSEX', exchange: 'BSE' },
+  { id: 'banknifty', name: 'BANKNIFTY', underlying: 'BANKNIFTY', exchange: 'NSE' },
+  { id: 'finnifty', name: 'FINNIFTY', underlying: 'FINNIFTY', exchange: 'NSE' },
+];
+
+type IndexData = {
+  ltp: number | null;
+  close: number | null;
+  isOffline: boolean;
+};
+
+type IndexFetchResult = {
+  id: string;
+  ltp?: number;
+  close?: number;
+  isOffline: boolean;
+};
+
+type IndexPriceResponse = {
+  ltp: number;
+  close?: number;
+  open?: number;
+};
+
+type ChartDataResponse = {
+  underlying: string;
+  date: string;
+  interval: string;
+  candles: CandleItem[];
+  indicators: {
+    ema: LineSeriesItem[];
+    jma: LineSeriesItem[];
+    modifiedHa: CandleItem[];
+  };
+  tradeOverlays: {
+    markers: MarkerItem[];
+    priceLines: PriceLineItem[];
+  };
+};
 
 const DashboardPage: React.FC = () => {
   usePageTitle('Dashboard');
-  const [stats, setStats] = useState({
-    totalPnl: 0,
-    activeStrategies: 0,
-    winRate: 0,
-    totalTrades: 0
-  });
-  const [loading, setLoading] = useState(true);
 
+  // Selected Chart Controls
+  const [selectedUnderlying, setSelectedUnderlying] = useState<string>('NIFTY');
+  const [timeframe, setTimeframe] = useState<string>('5m');
+  const [selectedDate, setSelectedDate] = useState<string>(() => new Date().toISOString().split('T')[0]);
+
+  // Transient Chart-Only Indicator Settings (Never saved to localStorage/DB)
+  const [emaPeriod, setEmaPeriod] = useState<number>(20);
+  const [jmaLength, setJmaLength] = useState<number>(7);
+
+  // Layer Toggles
+  const [toggles, setToggles] = useState<LayerToggles>({
+    showEma: true,
+    showJma: true,
+    showMha: false,
+    showMarkers: true,
+    showPriceLines: true,
+  });
+
+  // Chart Data State
+  const [chartData, setChartData] = useState<ChartDataResponse | null>(null);
+  const [chartLoading, setChartLoading] = useState<boolean>(false);
+
+  // Live indices state mapping key -> IndexData
+  const [indicesData, setIndicesData] = useState<Record<string, IndexData>>({
+    nifty: { ltp: null, close: null, isOffline: false },
+    sensex: { ltp: null, close: null, isOffline: false },
+    banknifty: { ltp: null, close: null, isOffline: false },
+    finnifty: { ltp: null, close: null, isOffline: false },
+  });
+
+  // Poll live indices data every 2 seconds with error resilience
   useEffect(() => {
-    const fetchStats = async () => {
-      try {
-        const [tradesData, stratsData] = await Promise.all([
-          apiGet<any>('/trades/stats'),
-          apiGet<any>('/strategies/count')
-        ]);
-        if (tradesData && stratsData) {
-          setStats({
-            totalPnl: tradesData.data.totalPnl,
-            totalTrades: tradesData.data.totalTrades,
-            winRate: tradesData.data.winRate,
-            activeStrategies: stratsData.data.count
-          });
+    let active = true;
+
+    const fetchLiveIndices = async () => {
+      const fetchPromises: Promise<IndexFetchResult>[] = INDICES_CONFIG.map(async (cfg): Promise<IndexFetchResult> => {
+        try {
+          const res = await apiGet<IndexPriceResponse>(`/market/index-ltp?underlying=${encodeURIComponent(cfg.underlying)}`);
+          if (res && typeof res.ltp === 'number' && res.ltp > 0) {
+            return {
+              id: cfg.id,
+              ltp: res.ltp,
+              close: res.close && res.close > 0 ? res.close : (res.open && res.open > 0 ? res.open : res.ltp),
+              isOffline: false
+            };
+          }
+          throw new Error('Invalid LTP');
+        } catch {
+          return { id: cfg.id, isOffline: true };
         }
-      } catch (err) {
-        console.error('Failed to fetch dashboard stats:', err);
-      } finally {
-        setLoading(false);
-      }
+      });
+
+      const results: IndexFetchResult[] = await Promise.all(fetchPromises);
+      if (!active) return;
+
+      setIndicesData((prev) => {
+        const updated: Record<string, IndexData> = { ...prev };
+        results.forEach((item: IndexFetchResult) => {
+          const prevItem = prev[item.id] || { ltp: null, close: null, isOffline: false };
+          if (item.isOffline) {
+            updated[item.id] = {
+              ...prevItem,
+              isOffline: true
+            };
+          } else if (item.ltp !== undefined) {
+            updated[item.id] = {
+              ltp: item.ltp,
+              close: item.close !== undefined ? item.close : prevItem.close,
+              isOffline: false
+            };
+          }
+        });
+        return updated;
+      });
     };
-    fetchStats();
+
+    fetchLiveIndices();
+    const interval = setInterval(fetchLiveIndices, 2000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
   }, []);
 
-  const cards = [
-    { name: 'Total PNL', value: `₹${stats.totalPnl.toLocaleString()}`, change: stats.totalPnl >= 0 ? '+Live' : '-Live', isPositive: stats.totalPnl >= 0, icon: Wallet },
-    { name: 'Your Strategies', value: stats.activeStrategies.toString(), change: 'Active', isPositive: true, icon: Zap },
-    { name: 'Win Rate', value: `${stats.winRate}%`, change: stats.winRate > 50 ? 'Strong' : 'Steady', isPositive: stats.winRate > 50, icon: Activity },
-    { name: 'Total Trades', value: stats.totalTrades.toString(), change: 'Executed', isPositive: true, icon: Clock },
-  ];
+  // Fetch Chart Market Data from Backend
+  useEffect(() => {
+    let active = true;
+    const fetchChart = async () => {
+      setChartLoading(true);
+      try {
+        const url = `/chart/market-data?underlying=${encodeURIComponent(selectedUnderlying)}&date=${encodeURIComponent(selectedDate)}&interval=${encodeURIComponent(timeframe)}`;
+        const res = await apiGet<{ data: ChartDataResponse }>(url);
+        if (active && res && res.data) {
+          setChartData(res.data);
+        }
+      } catch (err) {
+        console.error('Failed to fetch chart data:', err);
+      } finally {
+        if (active) setChartLoading(false);
+      }
+    };
+
+    fetchChart();
+    return () => { active = false; };
+  }, [selectedUnderlying, timeframe, selectedDate]);
+
+  // Client-Side Visualization Indicator Computation (< 1ms recalculation)
+  const localEma = useMemo(() => {
+    return computeLocalEMA(chartData?.candles || [], emaPeriod);
+  }, [chartData?.candles, emaPeriod]);
+
+  const localJma = useMemo(() => {
+    return computeLocalJMA(chartData?.candles || [], jmaLength);
+  }, [chartData?.candles, jmaLength]);
+
+  const handleToggleChange = (key: keyof LayerToggles) => {
+    setToggles((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const handleApplyParams = (newEma: number, newJma: number) => {
+    setEmaPeriod(newEma);
+    setJmaLength(newJma);
+  };
+
+  const formatNumber = (val: number | null) => {
+    if (val === null || val <= 0) return '—';
+    return val.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-500">
+    <div className="space-y-8 animate-in fade-in duration-500 pb-12">
       <div>
         <h1 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">System Overview</h1>
-        <p className="text-slate-500 font-bold uppercase tracking-widest text-[10px] mt-1">Real-time performance metrics</p>
+        <p className="text-slate-500 font-bold uppercase tracking-widest text-[10px] mt-1">Live market overview &amp; real-time analytics</p>
       </div>
 
-      {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        {cards.map((stat) => (
-          <div key={stat.name} className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-white/5 shadow-sm hover:shadow-xl hover:shadow-slate-200/50 dark:hover:shadow-none transition-all group">
-            <div className="flex items-center justify-between mb-4">
-              <div className="w-12 h-12 bg-slate-50 dark:bg-white/5 rounded-2xl flex items-center justify-center group-hover:bg-cyan-500 transition-colors text-slate-400 dark:text-slate-500 group-hover:text-white">
-                <stat.icon className="w-6 h-6" />
+      {/* Top Section: Live Indian Market Indices Bar (Angel One Inspired) */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {INDICES_CONFIG.map((cfg) => {
+          const data = indicesData[cfg.id] || { ltp: null, close: null, isOffline: false };
+          const ltp = data.ltp;
+          const close = data.close;
+
+          let absChange = 0;
+          let pctChange = 0;
+          let isPositive = true;
+
+          if (ltp !== null && close !== null && close > 0) {
+            absChange = ltp - close;
+            pctChange = (absChange / close) * 100;
+            isPositive = absChange >= 0;
+          }
+
+          const hasData = ltp !== null && ltp > 0;
+          const isSelected = selectedUnderlying === cfg.underlying;
+
+          return (
+            <div
+              key={cfg.id}
+              onClick={() => setSelectedUnderlying(cfg.underlying)}
+              className={`p-5 rounded-3xl border shadow-sm transition-all duration-300 cursor-pointer group relative overflow-hidden ${
+                isSelected
+                  ? 'bg-cyan-500/10 border-cyan-500 shadow-lg shadow-cyan-500/10'
+                  : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-white/5 hover:border-cyan-500/50'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <span className={`text-xs font-black tracking-tight ${isSelected ? 'text-cyan-500' : 'text-slate-900 dark:text-white'}`}>
+                    {cfg.name}
+                  </span>
+                  <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-slate-100 dark:bg-white/5 text-slate-400">
+                    {cfg.exchange}
+                  </span>
+                </div>
+
+                {data.isOffline ? (
+                  <span className="flex items-center gap-1 text-[9px] font-bold text-amber-500 bg-amber-500/10 px-2 py-0.5 rounded-full">
+                    <RefreshCw className="w-2.5 h-2.5 animate-spin" />
+                    Syncing
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1.5 text-[9px] font-bold text-emerald-500">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                    Live
+                  </span>
+                )}
               </div>
-              <span className={`text-xs font-black px-2 py-1 rounded-lg flex items-center gap-1 ${stat.isPositive ? 'bg-emerald-500/10 text-emerald-600' : 'bg-rose-500/10 text-rose-600'}`}>
-                {stat.isPositive ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
-                {stat.change}
-              </span>
+
+              <div className="flex items-baseline justify-between">
+                <h3 className="text-xl font-black text-slate-900 dark:text-white font-mono tracking-tight">
+                  {formatNumber(ltp)}
+                </h3>
+
+                {hasData && (
+                  <div className={`flex items-center gap-1 text-xs font-bold font-mono ${isPositive ? 'text-emerald-500' : 'text-rose-500'}`}>
+                    {isPositive ? <ArrowUpRight className="w-3.5 h-3.5" /> : <ArrowDownRight className="w-3.5 h-3.5" />}
+                    <span>{isPositive ? '+' : ''}{absChange.toFixed(2)}</span>
+                    <span className="text-[10px] font-black">({isPositive ? '+' : ''}{pctChange.toFixed(2)}%)</span>
+                  </div>
+                )}
+              </div>
             </div>
-            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">{stat.name}</p>
-            <h3 className={`text-2xl font-black mt-1 ${loading ? 'animate-pulse text-slate-300' : 'text-slate-900 dark:text-white'}`}>
-              {loading ? '...' : stat.value}
-            </h3>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
-      {/* Performance Chart Placeholder */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-        <div className="lg:col-span-8 bg-white dark:bg-slate-900 p-8 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm min-h-[400px] flex flex-col justify-center items-center text-center">
-          <div className="w-20 h-20 bg-cyan-500/10 rounded-full flex items-center justify-center mb-4">
-            <TrendingUp className="w-10 h-10 text-cyan-500" />
+      {/* Main Content Layout: 100% Full-Width Priority Chart */}
+      <div className="w-full bg-white dark:bg-slate-900 p-6 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm flex flex-col">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-cyan-500/10 rounded-2xl flex items-center justify-center text-cyan-500">
+              <BarChart3 className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-lg font-black text-slate-900 dark:text-white tracking-tight">
+                {selectedUnderlying} Market Chart
+              </h3>
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                Live Historical Replay &amp; Strategy Overlays
+              </p>
+            </div>
           </div>
-          <h3 className="text-xl font-black text-slate-900 dark:text-white">Equity Curve Visualization</h3>
-          <p className="text-slate-500 dark:text-slate-400 font-medium max-w-sm mt-2">Connecting your broker provides real-time performance analytics and equity curve tracking based on your trade history.</p>
         </div>
 
-        <div className="lg:col-span-4 space-y-6">
-          <div className="bg-white dark:bg-slate-900 p-8 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm">
-            <h3 className="text-sm font-black uppercase tracking-widest text-slate-400 mb-6">Execution Log</h3>
-            <div className="space-y-4">
-              {stats.totalTrades === 0 ? (
-                <p className="text-xs text-slate-500 font-medium text-center py-10 italic">No trades executed yet.</p>
-              ) : (
-                [1, 2, 3].map(i => (
-                  <div key={i} className="flex gap-4 p-4 rounded-2xl bg-slate-50 dark:bg-white/5 border border-transparent hover:border-slate-200 dark:hover:border-white/10 transition-all cursor-pointer">
-                    <div className="w-2 h-2 mt-2 rounded-full bg-cyan-500 shadow-lg shadow-cyan-500/50" />
-                    <div>
-                      <p className="text-xs font-bold text-slate-900 dark:text-white leading-tight">System Notification</p>
-                      <p className="text-[10px] text-slate-500 font-bold uppercase tracking-tighter mt-1">Algo Engine • Monitoring Live</p>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
+        {/* Toolbar with Indicators Settings Panel */}
+        <ChartToolbar
+          timeframe={timeframe}
+          onTimeframeChange={setTimeframe}
+          selectedDate={selectedDate}
+          onDateChange={setSelectedDate}
+          toggles={toggles}
+          onToggleChange={handleToggleChange}
+          emaPeriod={emaPeriod}
+          jmaLength={jmaLength}
+          onApplyParams={handleApplyParams}
+        />
 
-          <div className="bg-gradient-to-br from-cyan-500 to-blue-600 p-8 rounded-[2rem] shadow-xl shadow-cyan-500/20 text-white relative overflow-hidden group hover:scale-[1.02] transition-transform">
-            <Zap className="absolute -bottom-4 -right-4 w-32 h-32 opacity-10 group-hover:rotate-12 transition-transform duration-500" />
-            <h3 className="text-xl font-black relative z-10">Strategy Builder</h3>
-            <p className="text-white/80 text-xs font-bold mt-2 relative z-10">Configure and deploy new algorithmic strategies from your terminal.</p>
-            <button className="mt-6 px-6 py-2 bg-white text-cyan-600 text-xs font-black uppercase rounded-xl relative z-10 hover:shadow-lg transition-shadow">
-              Go to Strategies
-            </button>
-          </div>
+        {/* 100% Full-Width Chart Container */}
+        <div className="w-full flex-1 h-[620px] relative">
+          {chartLoading && (
+            <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm rounded-2xl flex items-center justify-center z-10">
+              <RefreshCw className="w-8 h-8 text-cyan-500 animate-spin" />
+            </div>
+          )}
+
+          <TradingViewChart
+            key={`${selectedUnderlying}-${selectedDate}-${timeframe}`}
+            candles={chartData?.candles || []}
+            emaSeries={localEma}
+            jmaSeries={localJma}
+            modifiedHaSeries={chartData?.indicators?.modifiedHa || []}
+            markers={chartData?.tradeOverlays?.markers || []}
+            priceLines={chartData?.tradeOverlays?.priceLines || []}
+            toggles={toggles}
+            isDarkMode={false}
+          />
         </div>
       </div>
     </div>

@@ -23,8 +23,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     useEffect(() => {
         const fetchMe = async () => {
             try {
+                const token = localStorage.getItem('jwt');
+                const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+                if (token) {
+                    headers['Authorization'] = `Bearer ${token}`;
+                }
+
                 const res = await fetch(`${API_BASE}/me`, {
-                    headers: { 'Content-Type': 'application/json' },
+                    headers,
                     credentials: 'include'
                 });
                 if (res.ok) {
@@ -54,6 +60,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
 
         const data = await res.json();
+        if (data.token) {
+            localStorage.setItem('jwt', data.token);
+        }
         setUser(data.data.user);
     };
 
@@ -62,6 +71,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             method: 'POST',
             credentials: 'include'
         });
+        localStorage.removeItem('jwt');
         setUser(null);
     };
 

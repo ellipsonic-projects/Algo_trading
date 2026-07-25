@@ -209,10 +209,21 @@ class AngelClient:
                     ltp = float(v)
                 except ValueError:
                     ltp = None
-        if ltp is None:
-            raise RuntimeError("LTP was missing")
+        close_val = float(data.get("close") or 0) if isinstance(data, dict) and data.get("close") is not None else 0.0
+        open_val = float(data.get("open") or 0) if isinstance(data, dict) and data.get("open") is not None else 0.0
+        high_val = float(data.get("high") or 0) if isinstance(data, dict) and data.get("high") is not None else 0.0
+        low_val = float(data.get("low") or 0) if isinstance(data, dict) and data.get("low") is not None else 0.0
 
-        return {"exchange": ex, "tradingsymbol": ts, "symboltoken": token, "ltp": ltp}
+        return {
+            "exchange": ex,
+            "tradingsymbol": ts,
+            "symboltoken": token,
+            "ltp": ltp,
+            "close": close_val,
+            "open": open_val,
+            "high": high_val,
+            "low": low_val,
+        }
 
     def get_candles(
         self,
@@ -368,7 +379,7 @@ class AngelClient:
         self._require_session()
 
         und = underlying.strip().upper()
-        if und not in {"NIFTY", "BANKNIFTY", "SENSEX"}:
+        if und not in {"NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX"}:
             raise RuntimeError("Unsupported underlying")
 
         search = self.search(exchange="NSE", query=und)

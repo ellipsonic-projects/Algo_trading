@@ -75,7 +75,7 @@ export function AngelConnectionProvider({ children }: { children: ReactNode }) {
 
   // Auto-login & 5 min reconnect
   useEffect(() => {
-    const mpin = import.meta.env.VITE_ANGEL_MPIN ?? '1504'
+    const mpin = import.meta.env.VITE_ANGEL_MPIN ?? ''
 
     // Auto login on mount
     submitMpin(mpin, false).catch(console.error)

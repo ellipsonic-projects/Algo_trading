@@ -205,7 +205,7 @@ class InstrumentMasterCache:
     def get_index_spot(self, *, underlying: str) -> Tuple[str, str]:
         self.refresh_if_needed()
         und = underlying.strip().upper()
-        if und not in {"NIFTY", "BANKNIFTY", "SENSEX", "CRUDEOILM"}:
+        if und not in {"NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX", "CRUDEOILM"}:
             raise RuntimeError("Unsupported underlying")
         spot = self._index_spot.get(und)
         if spot is None:
@@ -222,7 +222,7 @@ class InstrumentMasterCache:
             s += 3
         if underlying in nm:
             s += 2
-        if "INDEX" in it:
+        if "INDEX" in it or "AMXIDX" in it:
             s += 3
         if ts.endswith("-INDEX"):
             s += 4
@@ -249,7 +249,7 @@ class InstrumentMasterCache:
                     contracts.append(c)
 
                 und = str(r.get("name") or "").strip().upper()
-                if und not in {"NIFTY", "BANKNIFTY", "SENSEX", "CRUDEOILM"}:
+                if und not in {"NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX", "CRUDEOILM"}:
                     continue
 
                 exch = str(r.get("exch_seg") or "").strip().upper()

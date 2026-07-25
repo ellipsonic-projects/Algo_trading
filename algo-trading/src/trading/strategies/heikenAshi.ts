@@ -178,3 +178,26 @@ export function analyzeHeikenAshiStrategy(
         isExit
     }
 }
+
+/**
+ * Detects trend based on Heiken Ashi candles.
+ * BULLISH: Two consecutive green candles (Close > Open)
+ * BEARISH: Two consecutive red candles (Close < Open)
+ */
+export function detectHeikenAshiTrend(haCandles: HeikenAshiCandle[]): HeikenAshiTrend {
+    if (haCandles.length < 2) return 'NEUTRAL'
+
+    const last = haCandles[haCandles.length - 1]
+    const prev = haCandles[haCandles.length - 2]
+
+    if (last.close > last.open && prev.close > prev.open) {
+        return 'BULLISH'
+    }
+
+    if (last.close < last.open && prev.close < prev.open) {
+        return 'BEARISH'
+    }
+
+    return 'NEUTRAL'
+}
+

@@ -5,10 +5,11 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 
 dotenv.config();
-
+// Force reload on .env change
 const authRoutes = require('./routes/authRoutes');
 const tradeRoutes = require('./routes/tradeRoutes');
 const strategyRoutes = require('./routes/strategyRoutes');
+const chartRoutes = require('./routes/chartRoutes');
 
 const app = express();
 
@@ -24,6 +25,7 @@ app.use(cors({
 app.use('/api/v1/users', authRoutes);
 app.use('/api/v1/trades', tradeRoutes);
 app.use('/api/v1/strategies', strategyRoutes);
+app.use('/api/v1/chart', chartRoutes);
 
 // Root Route
 app.get('/', (req, res) => {

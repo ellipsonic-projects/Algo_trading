@@ -10,7 +10,7 @@ import {
     BarChart3,
     Clock,
     TrendingUp,
-    ShieldAlert,
+    Shield,
     History
 } from 'lucide-react';
 
@@ -32,75 +32,80 @@ const Sidebar: React.FC = () => {
     const isStrategyActive = strategies.some(s => isActive(s.path));
 
     return (
-        <aside className="w-64 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-white/5 h-screen flex flex-col transition-colors sticky top-0">
-            <div className="p-6 flex items-center gap-3">
-                <div className="w-8 h-8 bg-cyan-500 rounded-xl flex items-center justify-center shadow-lg shadow-cyan-500/20">
-                    <ShieldAlert className="w-5 h-5 text-white" />
+        <aside className="w-56 bg-white border-r border-[#E0E3EB] h-screen flex flex-col sticky top-0 z-40 select-none">
+            {/* Platform Branding */}
+            <div className="h-14 px-4 border-b border-[#E0E3EB] flex items-center gap-2.5">
+                <div className="w-7 h-7 bg-[#0052FF] rounded flex items-center justify-center text-white shadow-sm">
+                    <Shield className="w-4 h-4" />
                 </div>
-                <span className="text-xl font-black tracking-tight text-slate-900 dark:text-white">OptionAlgo</span>
+                <div className="flex flex-col">
+                    <span className="text-sm font-bold tracking-tight text-[#1E222D]">OptionAlgo</span>
+                    <span className="text-[9px] font-semibold uppercase tracking-wider text-[#787B86]">Angel Algo Terminal</span>
+                </div>
             </div>
 
-            <nav className="flex-1 px-4 py-4 space-y-2 overflow-y-auto custom-scrollbar">
-                <p className="px-4 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-4">Main Menu</p>
+            {/* Navigation Menu */}
+            <nav className="flex-1 px-2 py-3 space-y-1 overflow-y-auto custom-scrollbar">
+                <div className="px-3 text-[10px] font-bold text-[#787B86] uppercase tracking-wider mb-2">Main Menu</div>
 
                 <NavLink
                     to="/dashboard"
                     className={({ isActive }) => `
-                        flex items-center gap-3 px-4 py-3 rounded-2xl transition-all duration-200 group
+                        flex items-center gap-2.5 px-3 py-2 rounded text-xs font-semibold transition-colors
                         ${isActive
-                            ? 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 font-bold'
-                            : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-white/5 dark:text-slate-400'}
+                            ? 'bg-[#0052FF]/10 text-[#0052FF]'
+                            : 'text-[#434651] hover:bg-[#F0F3FA] hover:text-[#1E222D]'}
                     `}
                 >
-                    <LayoutDashboard className={`w-5 h-5 ${isActive('/dashboard') ? 'text-cyan-500' : 'group-hover:text-cyan-500'}`} />
+                    <LayoutDashboard className={`w-4 h-4 ${isActive('/dashboard') ? 'text-[#0052FF]' : 'text-[#787B86]'}`} />
                     <span>Dashboard</span>
                 </NavLink>
 
                 <NavLink
                     to="/trades"
                     className={({ isActive }) => `
-                        flex items-center gap-3 px-4 py-3 rounded-2xl transition-all duration-200 group
+                        flex items-center gap-2.5 px-3 py-2 rounded text-xs font-semibold transition-colors
                         ${isActive
-                            ? 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 font-bold'
-                            : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-white/5 dark:text-slate-400'}
+                            ? 'bg-[#0052FF]/10 text-[#0052FF]'
+                            : 'text-[#434651] hover:bg-[#F0F3FA] hover:text-[#1E222D]'}
                     `}
                 >
-                    <History className={`w-5 h-5 ${isActive('/trades') ? 'text-cyan-500' : 'group-hover:text-cyan-500'}`} />
+                    <History className={`w-4 h-4 ${isActive('/trades') ? 'text-[#0052FF]' : 'text-[#787B86]'}`} />
                     <span>Trades</span>
                 </NavLink>
 
-                <div className="space-y-1">
+                <div className="pt-1">
                     <button
                         onClick={() => setIsStrategiesOpen(!isStrategiesOpen)}
                         className={`
-                            w-full flex items-center justify-between px-4 py-3 rounded-2xl transition-all duration-200 group
+                            w-full flex items-center justify-between px-3 py-2 rounded text-xs font-semibold transition-colors
                             ${isStrategyActive
-                                ? 'text-cyan-600 dark:text-cyan-400 font-bold'
-                                : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-white/5 dark:text-slate-400'}
+                                ? 'text-[#0052FF]'
+                                : 'text-[#434651] hover:bg-[#F0F3FA] hover:text-[#1E222D]'}
                         `}
                     >
-                        <div className="flex items-center gap-3">
-                            <Zap className={`w-5 h-5 ${isStrategyActive ? 'text-cyan-500' : 'group-hover:text-cyan-500'}`} />
+                        <div className="flex items-center gap-2.5">
+                            <Zap className={`w-4 h-4 ${isStrategyActive ? 'text-[#0052FF]' : 'text-[#787B86]'}`} />
                             <span>Strategies</span>
                         </div>
-                        {isStrategiesOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                        {isStrategiesOpen ? <ChevronDown className="w-3.5 h-3.5 text-[#787B86]" /> : <ChevronRight className="w-3.5 h-3.5 text-[#787B86]" />}
                     </button>
 
                     {isStrategiesOpen && (
-                        <div className="ml-4 pl-4 border-l border-slate-100 dark:border-white/5 mt-1 space-y-1 animate-in slide-in-from-left-2 duration-200">
+                        <div className="ml-3 pl-3 border-l border-[#E0E3EB] mt-1 space-y-0.5">
                             {strategies.map((strat) => (
                                 <NavLink
                                     key={strat.path}
                                     to={strat.path}
                                     className={({ isActive }) => `
-                                        flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all duration-200 text-sm
+                                        flex items-center gap-2 px-2.5 py-1.5 rounded text-[11px] font-medium transition-colors
                                         ${isActive
-                                            ? 'text-cyan-500 bg-cyan-50 dark:bg-cyan-500/5 font-semibold'
-                                            : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-white/5 dark:text-slate-400'}
+                                            ? 'text-[#0052FF] bg-[#0052FF]/10 font-semibold'
+                                            : 'text-[#5D606B] hover:bg-[#F0F3FA] hover:text-[#1E222D]'}
                                     `}
                                 >
-                                    <strat.icon className="w-4 h-4 opacity-70" />
-                                    <span>{strat.name}</span>
+                                    <strat.icon className="w-3.5 h-3.5 opacity-70" />
+                                    <span className="truncate">{strat.name}</span>
                                 </NavLink>
                             ))}
                         </div>
@@ -108,13 +113,17 @@ const Sidebar: React.FC = () => {
                 </div>
             </nav>
 
-            <div className="p-4 border-t border-slate-100 dark:border-white/5">
-                <div className="rounded-2xl bg-gradient-to-br from-slate-50 to-slate-100 dark:from-white/5 dark:to-white/[0.02] p-4">
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-tighter mb-2">System Status</p>
+            {/* Bottom System Status Panel */}
+            <div className="p-3 border-t border-[#E0E3EB] bg-[#F8F9FA]">
+                <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                        <span className="text-xs font-bold text-slate-700 dark:text-slate-300">Algo Engine Ready</span>
+                        <span className="relative flex h-2 w-2">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#089981] opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-[#089981]"></span>
+                        </span>
+                        <span className="text-[11px] font-medium text-[#2A2E39]">Engine Active</span>
                     </div>
+                    <span className="text-[9px] font-bold text-[#787B86] bg-[#E0E3EB] px-1.5 py-0.5 rounded uppercase">v1.0.0</span>
                 </div>
             </div>
         </aside>
@@ -122,3 +131,4 @@ const Sidebar: React.FC = () => {
 };
 
 export default Sidebar;
+

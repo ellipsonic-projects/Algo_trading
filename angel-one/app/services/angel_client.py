@@ -81,7 +81,6 @@ class AngelClient:
 
     def place_order(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         self._require_session()
-
         clean_payload: Dict[str, Any] = {k: v for k, v in payload.items() if v is not None}
 
         raw_post = getattr(self._smart, "_postRequest", None)
@@ -183,7 +182,6 @@ class AngelClient:
 
     def get_ltp(self, *, exchange: str, tradingsymbol: str, symboltoken: str) -> Dict[str, Any]:
         self._require_session()
-
         ex = exchange.strip().upper()
         ts = tradingsymbol.strip()
         token = symboltoken.strip()
@@ -276,6 +274,10 @@ class AngelClient:
 
         if not isinstance(raw, dict):
             raise RuntimeError("Unexpected candle response from SmartAPI")
+
+        if raw.get("status") is False:
+            msg = str(raw.get("message") or "SmartAPI returned failure status")
+            raise RuntimeError(msg)
 
         data: Any = raw.get("data")
         if not isinstance(data, list):

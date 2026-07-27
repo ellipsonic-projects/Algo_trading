@@ -3,7 +3,8 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   RefreshCw,
-  BarChart3
+  BarChart2,
+  Zap
 } from 'lucide-react';
 
 import { apiGet } from '../../trading';
@@ -200,14 +201,9 @@ const DashboardPage: React.FC = () => {
   };
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-500 pb-12">
-      <div>
-        <h1 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">System Overview</h1>
-        <p className="text-slate-500 font-bold uppercase tracking-widest text-[10px] mt-1">Live market overview &amp; real-time analytics</p>
-      </div>
-
-      {/* Top Section: Live Indian Market Indices Bar (Angel One Inspired) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+    <div className="space-y-4 select-none">
+      {/* Top Section: Institutional Ticker Watchlist Bar (Angel One Inspired) */}
+      <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         {INDICES_CONFIG.map((cfg) => {
           const data = indicesData[cfg.id] || { ltp: null, close: null, isOffline: false };
           const ltp = data.ltp;
@@ -230,45 +226,45 @@ const DashboardPage: React.FC = () => {
             <div
               key={cfg.id}
               onClick={() => setSelectedUnderlying(cfg.underlying)}
-              className={`p-5 rounded-3xl border shadow-sm transition-all duration-300 cursor-pointer group relative overflow-hidden ${
+              className={`p-3 bg-white rounded border cursor-pointer transition-all ${
                 isSelected
-                  ? 'bg-cyan-500/10 border-cyan-500 shadow-lg shadow-cyan-500/10'
-                  : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-white/5 hover:border-cyan-500/50'
+                  ? 'border-[#0052FF] ring-1 ring-[#0052FF]/20 shadow-sm'
+                  : 'border-[#E0E3EB] hover:border-[#B2B5BE]'
               }`}
             >
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <span className={`text-xs font-black tracking-tight ${isSelected ? 'text-cyan-500' : 'text-slate-900 dark:text-white'}`}>
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-bold text-[#1E222D]">
                     {cfg.name}
                   </span>
-                  <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-slate-100 dark:bg-white/5 text-slate-400">
+                  <span className="text-[9px] font-bold uppercase px-1 py-0.2 rounded bg-[#F0F3FA] text-[#787B86]">
                     {cfg.exchange}
                   </span>
                 </div>
 
                 {data.isOffline ? (
-                  <span className="flex items-center gap-1 text-[9px] font-bold text-amber-500 bg-amber-500/10 px-2 py-0.5 rounded-full">
+                  <span className="flex items-center gap-1 text-[9px] font-semibold text-[#FF9800] bg-[#FF9800]/10 px-1.5 py-0.5 rounded">
                     <RefreshCw className="w-2.5 h-2.5 animate-spin" />
-                    Syncing
+                    Offline
                   </span>
                 ) : (
-                  <span className="flex items-center gap-1.5 text-[9px] font-bold text-emerald-500">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                    Live
+                  <span className="flex items-center gap-1 text-[9px] font-bold text-[#089981]">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#089981] animate-pulse" />
+                    LIVE
                   </span>
                 )}
               </div>
 
               <div className="flex items-baseline justify-between">
-                <h3 className="text-xl font-black text-slate-900 dark:text-white font-mono tracking-tight">
+                <span className="text-base font-bold text-[#1E222D] tabular-nums tracking-tight">
                   {formatNumber(ltp)}
-                </h3>
+                </span>
 
                 {hasData && (
-                  <div className={`flex items-center gap-1 text-xs font-bold font-mono ${isPositive ? 'text-emerald-500' : 'text-rose-500'}`}>
+                  <div className={`flex items-center gap-0.5 text-xs font-semibold tabular-nums ${isPositive ? 'text-[#089981]' : 'text-[#F23645]'}`}>
                     {isPositive ? <ArrowUpRight className="w-3.5 h-3.5" /> : <ArrowDownRight className="w-3.5 h-3.5" />}
                     <span>{isPositive ? '+' : ''}{absChange.toFixed(2)}</span>
-                    <span className="text-[10px] font-black">({isPositive ? '+' : ''}{pctChange.toFixed(2)}%)</span>
+                    <span className="text-[10px] font-normal">({isPositive ? '+' : ''}{pctChange.toFixed(2)}%)</span>
                   </div>
                 )}
               </div>
@@ -277,21 +273,28 @@ const DashboardPage: React.FC = () => {
         })}
       </div>
 
-      {/* Main Content Layout: 100% Full-Width Priority Chart */}
-      <div className="w-full bg-white dark:bg-slate-900 p-6 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm flex flex-col">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-cyan-500/10 rounded-2xl flex items-center justify-center text-cyan-500">
-              <BarChart3 className="w-5 h-5" />
+      {/* Main Content Layout: Institutional Trading View Terminal Container */}
+      <div className="bg-white p-4 rounded border border-[#E0E3EB] shadow-sm flex flex-col">
+        {/* Terminal Header */}
+        <div className="flex items-center justify-between pb-3 mb-3 border-b border-[#E0E3EB]">
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 bg-[#0052FF]/10 rounded flex items-center justify-center text-[#0052FF]">
+              <BarChart2 className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="text-lg font-black text-slate-900 dark:text-white tracking-tight">
-                {selectedUnderlying} Market Chart
+              <h3 className="text-xs font-bold text-[#1E222D] tracking-tight uppercase">
+                {selectedUnderlying} Real-Time Execution Chart
               </h3>
-              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                Live Historical Replay &amp; Strategy Overlays
+              <p className="text-[10px] font-medium text-[#787B86]">
+                Institutional Data Feed &amp; Signal Overlays
               </p>
             </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-[#434651] bg-[#F0F3FA] px-2 py-1 rounded border border-[#E0E3EB]">
+              <Zap className="w-3 h-3 text-[#0052FF]" /> Fast Order Terminal
+            </span>
           </div>
         </div>
 
@@ -308,11 +311,14 @@ const DashboardPage: React.FC = () => {
           onApplyParams={handleApplyParams}
         />
 
-        {/* 100% Full-Width Chart Container */}
-        <div className="w-full flex-1 h-[620px] relative">
+        {/* Institutional Chart Container */}
+        <div className="w-full flex-1 h-[620px] relative rounded border border-[#E0E3EB] overflow-hidden bg-white">
           {chartLoading && (
-            <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm rounded-2xl flex items-center justify-center z-10">
-              <RefreshCw className="w-8 h-8 text-cyan-500 animate-spin" />
+            <div className="absolute inset-0 bg-white/70 backdrop-blur-[1px] flex items-center justify-center z-10">
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-white border border-[#E0E3EB] rounded shadow-md text-xs font-semibold text-[#1E222D]">
+                <RefreshCw className="w-4 h-4 text-[#0052FF] animate-spin" />
+                <span>Syncing Market Candles...</span>
+              </div>
             </div>
           )}
 

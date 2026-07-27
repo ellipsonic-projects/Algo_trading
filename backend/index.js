@@ -32,6 +32,15 @@ app.get('/', (req, res) => {
     res.send('Option-Algo Backend API is running...');
 });
 
+// JSON Body Parser Error Handler
+app.use((err, req, res, next) => {
+    if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+        return res.status(400).json({ status: 'fail', message: 'Malformed JSON payload' });
+    }
+    next(err);
+});
+
+
 // Database Connection
 mongoose.connect(process.env.MONGO_URI)
     .then(() => console.log('DB connection successful!'))

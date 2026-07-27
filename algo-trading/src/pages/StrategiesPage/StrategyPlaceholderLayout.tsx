@@ -8,30 +8,31 @@ export default function StrategyPlaceholderLayout({ title, children }: { title: 
   const navigate = useNavigate()
 
   return (
-    <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500 pb-12">
-      <div className="flex items-center justify-between">
+    <div className="space-y-4 select-none">
+      <div className="flex items-center justify-between bg-white rounded border border-[#E0E3EB] p-4 shadow-sm">
         <div>
-          <h2 className="text-xl font-black text-slate-900 dark:text-white tracking-tight">{title}</h2>
-          <p className="mt-1 text-sm font-medium text-slate-500 uppercase tracking-widest text-[10px]">Algorithm Pending Deployment</p>
+          <h2 className="text-xs font-bold text-[#1E222D] uppercase tracking-wider">{title}</h2>
+          <p className="mt-0.5 text-[10px] font-semibold text-[#787B86] uppercase">Algorithm Engine Offline</p>
         </div>
         <button
           type="button"
           onClick={() => navigate('/strategies/manual-trading')}
-          className="flex items-center gap-2 px-6 py-3 bg-cyan-500/10 text-cyan-600 hover:bg-cyan-500/20 text-xs font-black uppercase tracking-widest rounded-xl transition-all"
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-[#0052FF]/10 text-[#0052FF] hover:bg-[#0052FF]/20 text-xs font-semibold rounded transition-colors"
         >
           Open Manual Terminal
         </button>
       </div>
-      <section className="overflow-hidden rounded-[2rem] border border-slate-200 bg-white p-12 shadow-sm dark:border-white/5 dark:bg-slate-900 flex flex-col items-center justify-center text-center min-h-[400px]">
-        <div className="w-16 h-16 bg-slate-50 dark:bg-white/5 rounded-2xl flex items-center justify-center border border-slate-100 dark:border-white/5 mb-6">
-          <div className="w-2 h-2 bg-cyan-500 rounded-full animate-ping" />
+      <section className="rounded border border-[#E0E3EB] bg-white p-12 shadow-sm flex flex-col items-center justify-center text-center min-h-[360px]">
+        <div className="w-12 h-12 bg-[#F8F9FA] rounded flex items-center justify-center border border-[#E0E3EB] mb-4">
+          <div className="w-2.5 h-2.5 bg-[#0052FF] rounded-full animate-ping" />
         </div>
-        <p className="text-slate-900 dark:text-white font-black text-lg mb-2">Strategy logic under development</p>
-        <p className="text-slate-500 text-sm max-w-sm font-medium">This algorithm is currently being optimized for high-frequency execution. Switch to the manual terminal for instant order placement.</p>
-        <div className="mt-8 flex gap-4">
+        <p className="text-[#1E222D] font-bold text-sm mb-1">Strategy Logic Under Optimization</p>
+        <p className="text-[#787B86] text-xs max-w-sm font-medium">This strategy model is undergoing backtesting and tuning. Launch the manual terminal for direct option order entry.</p>
+        <div className="mt-6 flex gap-3 text-xs text-[#434651]">
           {children}
         </div>
       </section>
     </div>
   )
 }
+

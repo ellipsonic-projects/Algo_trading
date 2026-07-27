@@ -1,3 +1,4 @@
+import React from 'react';
 import { useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../shared/theme/ThemeProvider';
@@ -9,7 +10,8 @@ import {
     Unplug,
     Settings,
     Bell,
-    ChevronDown
+    ChevronDown,
+    Activity
 } from 'lucide-react';
 import { useAngelConnection } from '../../shared/angel/AngelConnectionProvider';
 
@@ -35,78 +37,87 @@ const Header: React.FC = () => {
             const strat = path.split('/').pop()?.replace(/-/g, ' ');
             return strat ? strat.charAt(0).toUpperCase() + strat.slice(1) : 'Trading Strategy';
         }
+        if (path === '/trades') return 'Trade History';
         return 'Trading Terminal';
     };
 
     return (
-        <header className="h-20 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-b border-slate-200 dark:border-white/5 px-8 flex items-center justify-between sticky top-0 z-30 transition-colors">
-            <div className="flex items-center gap-4">
-                <h2 className="text-lg font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2 capitalize">
+        <header className="h-14 bg-white border-b border-[#E0E3EB] px-5 flex items-center justify-between sticky top-0 z-30 select-none">
+            {/* Left Page Title & Live Badge */}
+            <div className="flex items-center gap-3">
+                <h2 className="text-sm font-bold text-[#1E222D] flex items-center gap-2 tracking-tight capitalize">
                     {getPageTitle()}
-                    <span className="text-[10px] bg-cyan-500/10 text-cyan-600 px-2 py-0.5 rounded-full uppercase tracking-widest font-black">Live</span>
                 </h2>
+                <span className="inline-flex items-center gap-1 bg-[#089981]/10 text-[#089981] text-[10px] font-bold px-2 py-0.5 rounded border border-[#089981]/20 uppercase tracking-wide">
+                    <Activity className="w-3 h-3" /> Live Feed
+                </span>
             </div>
 
-            <div className="flex items-center gap-6">
-                {/* Angel One Connection Status */}
-                <div className="hidden md:flex items-center gap-3 pr-6 border-r border-slate-200 dark:border-white/5">
-                    <button
-                        onClick={connectStatus === 'connected' ? disconnect : openConnect}
-                        className={`
-                        flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all
+            {/* Right Action Items & Account Profile */}
+            <div className="flex items-center gap-4">
+                {/* Angel One Broker Connection Button */}
+                <button
+                    onClick={connectStatus === 'connected' ? disconnect : openConnect}
+                    className={`
+                        flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-semibold transition-colors border
                         ${connectStatus === 'connected'
-                                ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20'
-                                : 'bg-rose-500/10 text-rose-600 dark:text-rose-400 hover:bg-rose-500/20 border border-rose-500/20'}
-                    `}>
-                        <Unplug className="w-4 h-4" />
-                        {connectStatus === 'connected' ? 'Connected' : 'Connect Broker'}
-                    </button>
-                </div>
+                            ? 'bg-[#089981]/10 text-[#089981] border-[#089981]/30 hover:bg-[#089981]/20'
+                            : 'bg-[#F23645]/10 text-[#F23645] border-[#F23645]/30 hover:bg-[#F23645]/20'}
+                    `}
+                >
+                    <Unplug className="w-3.5 h-3.5" />
+                    <span>{connectStatus === 'connected' ? 'Angel One Connected' : 'Connect Angel Broker'}</span>
+                </button>
 
-                {/* Actions */}
-                <div className="flex items-center gap-2">
+                <div className="h-4 w-[1px] bg-[#E0E3EB]" />
+
+                {/* Theme, Notifications & Settings Quick Actions */}
+                <div className="flex items-center gap-1">
                     <button
                         onClick={toggleTheme}
-                        className="p-2.5 rounded-xl text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5 transition-colors"
+                        className="p-1.5 rounded text-[#787B86] hover:bg-[#F0F3FA] hover:text-[#1E222D] transition-colors"
                         title="Toggle Theme"
                     >
-                        {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+                        {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
                     </button>
 
-                    <button className="p-2.5 rounded-xl text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5 transition-colors relative">
-                        <Bell className="w-5 h-5" />
-                        <span className="absolute top-2.5 right-2.5 w-2 h-2 bg-rose-500 rounded-full border-2 border-white dark:border-slate-900" />
+                    <button className="p-1.5 rounded text-[#787B86] hover:bg-[#F0F3FA] hover:text-[#1E222D] transition-colors relative">
+                        <Bell className="w-4 h-4" />
+                        <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-[#F23645] rounded-full" />
                     </button>
 
-                    <button className="p-2.5 rounded-xl text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5 transition-colors">
-                        <Settings className="w-5 h-5" />
+                    <button className="p-1.5 rounded text-[#787B86] hover:bg-[#F0F3FA] hover:text-[#1E222D] transition-colors">
+                        <Settings className="w-4 h-4" />
                     </button>
                 </div>
 
-                {/* Profile */}
+                <div className="h-4 w-[1px] bg-[#E0E3EB]" />
+
+                {/* Institutional User Profile Dropdown */}
                 <div className="group relative">
-                    <button className="flex items-center gap-3 p-1.5 rounded-2xl hover:bg-slate-100 dark:hover:bg-white/5 transition-colors border border-transparent hover:border-slate-200 dark:hover:border-white/10">
-                        <div className="w-9 h-9 bg-gradient-to-br from-cyan-400 to-blue-500 rounded-xl flex items-center justify-center text-white shadow-lg shadow-cyan-500/20">
-                            <UserIcon className="w-5 h-5" />
+                    <button className="flex items-center gap-2 py-1 px-1.5 rounded hover:bg-[#F0F3FA] transition-colors border border-transparent hover:border-[#E0E3EB]">
+                        <div className="w-7 h-7 bg-[#0052FF] rounded flex items-center justify-center text-white font-bold text-xs">
+                            <UserIcon className="w-4 h-4" />
                         </div>
-                        <div className="hidden lg:block text-left">
-                            <p className="text-xs font-black text-slate-900 dark:text-white truncate max-w-[100px] leading-tight">{user?.email?.split('@')[0] || 'Trader'}</p>
-                            <p className="text-[10px] text-slate-500 font-bold uppercase tracking-tighter leading-tight">Pro Account</p>
+                        <div className="hidden sm:block text-left">
+                            <p className="text-xs font-bold text-[#1E222D] leading-none">{user?.email?.split('@')[0] || 'Trader'}</p>
+                            <p className="text-[9px] font-semibold text-[#787B86] uppercase leading-tight">Angel Pro</p>
                         </div>
-                        <ChevronDown className="w-4 h-4 text-slate-400 group-hover:rotate-180 transition-transform duration-300" />
+                        <ChevronDown className="w-3.5 h-3.5 text-[#787B86] group-hover:rotate-180 transition-transform duration-200" />
                     </button>
 
                     {/* Dropdown Menu */}
-                    <div className="absolute right-0 mt-2 w-48 bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-2xl shadow-xl shadow-slate-200/50 dark:shadow-none py-2 invisible group-hover:visible opacity-0 group-hover:opacity-100 transition-all duration-200 z-50">
-                        <div className="px-4 py-2 border-b border-slate-100 dark:border-white/5 mb-2">
-                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Account</p>
+                    <div className="absolute right-0 mt-1 w-44 bg-white border border-[#E0E3EB] rounded shadow-lg py-1 invisible group-hover:visible opacity-0 group-hover:opacity-100 transition-all duration-150 z-50">
+                        <div className="px-3 py-1.5 border-b border-[#E0E3EB]">
+                            <p className="text-[10px] font-bold text-[#787B86] uppercase tracking-wider">Account Overview</p>
+                            <p className="text-xs font-semibold text-[#1E222D] truncate">{user?.email || 'trader@algo.com'}</p>
                         </div>
                         <button
                             onClick={handleLogout}
-                            className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-500/5 transition-colors text-left"
+                            className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-[#F23645] hover:bg-[#F23645]/10 transition-colors text-left"
                         >
-                            <LogOut className="w-4 h-4" />
-                            <span className="font-bold">Logout System</span>
+                            <LogOut className="w-3.5 h-3.5" />
+                            <span>Logout Session</span>
                         </button>
                     </div>
                 </div>
@@ -116,3 +127,4 @@ const Header: React.FC = () => {
 };
 
 export default Header;
+

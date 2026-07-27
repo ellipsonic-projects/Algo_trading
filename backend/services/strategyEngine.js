@@ -140,6 +140,7 @@ class SingleStrategyRunner {
     this.activeTradeId = null;
     this.activeTradePremium = null;
     this.entryPrice = null;
+    this.activeTradeContract = null;
     this.currentLtp = null;
     this.activeTrailingSl = null;
     this.stopLoss = null;
@@ -188,16 +189,16 @@ class SingleStrategyRunner {
     this.log('Strategy execution halted.');
     this.clearAllIntervals();
 
-    const baseTimeframe = this.config.baseTimeframe || 'FIVE_MINUTE';
+    const baseTimeframe = this.strategyName === '5minBreakout' ? 'ONE_MINUTE' : (this.config.baseTimeframe || 'FIVE_MINUTE');
     if (this.candleListener) {
       marketDataService.removeListener('candle:closed', this.candleListener);
       this.candleListener = null;
     }
     if (this.ceContract) {
-      marketDataService.unsubscribe(this.ceContract.exchange, this.ceContract.symboltoken, baseTimeframe);
+      marketDataService.unsubscribe(this.ceContract.exchange, this.subscribedCeToken || this.ceContract.symboltoken, baseTimeframe);
     }
     if (this.peContract) {
-      marketDataService.unsubscribe(this.peContract.exchange, this.peContract.symboltoken, baseTimeframe);
+      marketDataService.unsubscribe(this.peContract.exchange, this.subscribedPeToken || this.peContract.symboltoken, baseTimeframe);
     }
 
     this.ceContract = null;
@@ -207,6 +208,7 @@ class SingleStrategyRunner {
     this.activeTradeId = null;
     this.activeTradePremium = null;
     this.entryPrice = null;
+    this.activeTradeContract = null;
     this.currentLtp = null;
     this.activeTrailingSl = null;
     this.stopLoss = null;
@@ -258,6 +260,26 @@ class SingleStrategyRunner {
           this.state = 'IN_POSITION';
           if (trade.premium.endsWith('CE')) this.rangeSide = 'CE';
           if (trade.premium.endsWith('PE')) this.rangeSide = 'PE';
+          
+          try {
+            const underlyingIndex = trade.index || 'SENSEX';
+            const exchange = (underlyingIndex === 'SENSEX') ? 'BFO' : 'NFO';
+            const optRes = await callAngelApi(`/instruments/index-options?exchange=${exchange}&underlying=${underlyingIndex}`);
+            const todayIso = new Date().toISOString().split('T')[0];
+            const validExpiries = (optRes.expiries || []).filter(Boolean).sort();
+            const expiry = validExpiries.find(e => e >= todayIso) || (validExpiries.length ? validExpiries[validExpiries.length - 1] : null);
+            if (expiry) {
+              const optChain = await callAngelApi(`/instruments/index-options?exchange=${exchange}&underlying=${underlyingIndex}&expiry=${expiry}`);
+              const contract = optChain.contracts.find(c => c.tradingsymbol === trade.premium);
+              if (contract) {
+                this.activeTradeContract = contract;
+                this.log(`Successfully recovered option contract details for ${trade.premium} (Token: ${contract.symboltoken})`);
+              }
+            }
+          } catch (e) {
+            this.log(`Warning: Failed to fetch contract details for active trade: ${e.message}`);
+          }
+
           this.log(`Recovered active open trade for ${trade.premium} @ ₹${trade.buyPrice}`);
           this.startMonitorLoop();
         } else {
@@ -296,10 +318,22 @@ class SingleStrategyRunner {
         if (this.ceContract && this.peContract) {
           this.monitoredPremiums = { ce: this.ceContract.tradingsymbol, pe: this.peContract.tradingsymbol };
           
-          // Subscribe contracts to MarketDataService
+          // Subscribe contracts to MarketDataService only when changed or initial
           const baseTimeframe = this.config.baseTimeframe || 'FIVE_MINUTE';
-          await marketDataService.subscribe(this.ceContract.exchange, this.ceContract.symboltoken, baseTimeframe);
-          await marketDataService.subscribe(this.peContract.exchange, this.peContract.symboltoken, baseTimeframe);
+          if (!this.subscribedCeToken || this.subscribedCeToken !== this.ceContract.symboltoken) {
+            if (this.subscribedCeToken) {
+              marketDataService.unsubscribe(this.ceContract.exchange, this.subscribedCeToken, baseTimeframe);
+            }
+            await marketDataService.subscribe(this.ceContract.exchange, this.ceContract.symboltoken, baseTimeframe);
+            this.subscribedCeToken = this.ceContract.symboltoken;
+          }
+          if (!this.subscribedPeToken || this.subscribedPeToken !== this.peContract.symboltoken) {
+            if (this.subscribedPeToken) {
+              marketDataService.unsubscribe(this.peContract.exchange, this.subscribedPeToken, baseTimeframe);
+            }
+            await marketDataService.subscribe(this.peContract.exchange, this.peContract.symboltoken, baseTimeframe);
+            this.subscribedPeToken = this.peContract.symboltoken;
+          }
         }
       } catch (err) {
         console.error(`[${this.strategyName}] Contract discovery error:`, err.message);
@@ -325,6 +359,30 @@ class SingleStrategyRunner {
         }
       }
 
+      // Handle Reversal exit check when IN_POSITION on closed candle
+      if (this.state === 'IN_POSITION' && this.activeTradePremium) {
+        const activeContract = (this.ceContract && this.ceContract.tradingsymbol === this.activeTradePremium)
+          ? this.ceContract
+          : (this.peContract && this.peContract.tradingsymbol === this.activeTradePremium)
+            ? this.peContract
+            : null;
+
+        if (activeContract) {
+          const baseTimeframe = this.config.baseTimeframe || 'FIVE_MINUTE';
+          const items = marketDataService.getBuffer(activeContract.exchange, activeContract.symboltoken, baseTimeframe);
+          if (items && items.length >= 2) {
+            const ha = this.strategyName === 'ModifiedHeikenAshi' ? computeModifiedHeikenAshi(items) : computeHeikenAshi(items);
+            const signal = this.strategyName === 'ModifiedHeikenAshi' ? analyzeModifiedHeikenAshiStrategy(ha) : analyzeHeikenAshiStrategy(ha);
+            if (signal.isExit && !this.isExiting) {
+              this.log(`Reversal exit signal detected on closed candle for ${activeContract.tradingsymbol}`);
+              await this.executeExit(activeContract, this.currentLtp || signal.haClose, 'Reversal');
+              return;
+            }
+          }
+        }
+        return;
+      }
+
       if (this.state !== 'SCANNING' && this.state !== 'WAITING') return;
       if (this.activeTradeId) return;
       if (!this.ceContract || !this.peContract) return;
@@ -343,11 +401,22 @@ class SingleStrategyRunner {
           let ceItems = marketDataService.getBuffer(scanExchange, this.ceContract.symboltoken, baseTimeframe);
           let peItems = marketDataService.getBuffer(scanExchange, this.peContract.symboltoken, baseTimeframe);
 
-          if (!ceItems || ceItems.length === 0) {
-            ceItems = await marketDataService.subscribe(scanExchange, this.ceContract.symboltoken, baseTimeframe);
+          if (!ceItems || ceItems.length < 2) {
+            try {
+              ceItems = await marketDataService.subscribe(scanExchange, this.ceContract.symboltoken, baseTimeframe);
+            } catch (err) {
+              return; // Block scan if buffer unavailable
+            }
           }
-          if (!peItems || peItems.length === 0) {
-            peItems = await marketDataService.subscribe(scanExchange, this.peContract.symboltoken, baseTimeframe);
+          if (!peItems || peItems.length < 2) {
+            try {
+              peItems = await marketDataService.subscribe(scanExchange, this.peContract.symboltoken, baseTimeframe);
+            } catch (err) {
+              return; // Block scan if buffer unavailable
+            }
+          }
+          if (!ceItems || ceItems.length < 2 || !peItems || peItems.length < 2) {
+            return; // Block strategy scan until required candle history (min 2 candles) is available
           }
           const fetchEndMs = Date.now();
 
@@ -359,8 +428,8 @@ class SingleStrategyRunner {
           const peSignal = this.strategyName === 'ModifiedHeikenAshi' ? analyzeModifiedHeikenAshiStrategy(peHa) : analyzeHeikenAshiStrategy(peHa);
           const calcEndMs = Date.now();
 
-          const ceLastClosedTs = ceHa.length >= 2 ? ceHa[ceHa.length - 2].ts : null;
-          const peLastClosedTs = peHa.length >= 2 ? peHa[peHa.length - 2].ts : null;
+          const ceLastClosedTs = ceHa.length >= 1 ? ceHa[ceHa.length - 1].ts : null;
+          const peLastClosedTs = peHa.length >= 1 ? peHa[peHa.length - 1].ts : null;
 
           if (ceSignal.isEntry && ceLastClosedTs !== this.lastEntryTime) {
             this.lastEntryTime = ceLastClosedTs;
@@ -396,11 +465,23 @@ class SingleStrategyRunner {
           let ceItems = marketDataService.getBuffer(this.ceContract.exchange, this.ceContract.symboltoken, 'ONE_MINUTE');
           let peItems = marketDataService.getBuffer(this.peContract.exchange, this.peContract.symboltoken, 'ONE_MINUTE');
 
-          if (!ceItems || ceItems.length === 0) {
-            ceItems = await marketDataService.subscribe(this.ceContract.exchange, this.ceContract.symboltoken, 'ONE_MINUTE', 20);
+          const requiredCandles = lookback + 1;
+          if (!ceItems || ceItems.length < requiredCandles) {
+            try {
+              ceItems = await marketDataService.subscribe(this.ceContract.exchange, this.ceContract.symboltoken, 'ONE_MINUTE', 20);
+            } catch (err) {
+              return; // Block scan if buffer unavailable
+            }
           }
-          if (!peItems || peItems.length === 0) {
-            peItems = await marketDataService.subscribe(this.peContract.exchange, this.peContract.symboltoken, 'ONE_MINUTE', 20);
+          if (!peItems || peItems.length < requiredCandles) {
+            try {
+              peItems = await marketDataService.subscribe(this.peContract.exchange, this.peContract.symboltoken, 'ONE_MINUTE', 20);
+            } catch (err) {
+              return; // Block scan if buffer unavailable
+            }
+          }
+          if (!ceItems || ceItems.length < requiredCandles || !peItems || peItems.length < requiredCandles) {
+            return; // Block strategy scan until required candle history is available
           }
           const fetchEndMs = Date.now();
 
@@ -526,11 +607,15 @@ class SingleStrategyRunner {
 
     this.entryPrice = actualPrice;
     this.activeTradePremium = contract.tradingsymbol;
+    this.activeTradeContract = contract;
     this.state = 'IN_POSITION';
     this.trend = trendSide;
 
-    if (this.strategyName === 'ModifiedHeikenAshi') {
-      const initialSlPoints = this.config.initialSlPoints || 30;
+    if (this.strategyName === '5minBreakout') {
+      const targetPoints = Number(this.config.targetPoints) || 20;
+      this.target = actualPrice + targetPoints;
+    } else if (this.strategyName === 'ModifiedHeikenAshi') {
+      const initialSlPoints = Number(this.config.initialSlPoints) || 30;
       this.activeTrailingSl = actualPrice - initialSlPoints;
     }
 
@@ -566,68 +651,81 @@ class SingleStrategyRunner {
     const monitor = async () => {
       if (!this.isRunning || this.state !== 'IN_POSITION' || !this.activeTradePremium) return;
 
-      const contract = (this.ceContract && this.ceContract.tradingsymbol === this.activeTradePremium)
-        ? this.ceContract
-        : (this.peContract && this.peContract.tradingsymbol === this.activeTradePremium)
-          ? this.peContract
-          : null;
+      const contract = this.activeTradeContract || (
+        (this.ceContract && this.ceContract.tradingsymbol === this.activeTradePremium)
+          ? this.ceContract
+          : (this.peContract && this.peContract.tradingsymbol === this.activeTradePremium)
+            ? this.peContract
+            : null
+      );
 
       if (!contract) return;
 
-      try {
-        const ltpRes = await callAngelApi(`/market/ltp?exchange=${encodeURIComponent(contract.exchange)}&tradingsymbol=${encodeURIComponent(contract.tradingsymbol)}&symboltoken=${encodeURIComponent(contract.symboltoken)}`);
-        const livePrice = ltpRes.ltp;
-        this.currentLtp = livePrice;
+        try {
+          const ltpRes = await callAngelApi(`/market/ltp?exchange=${encodeURIComponent(contract.exchange)}&tradingsymbol=${encodeURIComponent(contract.tradingsymbol)}&symboltoken=${encodeURIComponent(contract.symboltoken)}`);
+          const livePrice = ltpRes.ltp;
+          this.currentLtp = livePrice;
 
-        let shouldExit = false;
-        let exitPrice = livePrice;
-        let exitReason = '';
-
-        if (this.strategyName === '5minBreakout') {
-          if (this.stopLoss && livePrice <= this.stopLoss) {
-            shouldExit = true;
-            exitReason = 'SL';
-          } else if (this.target && livePrice >= this.target) {
-            shouldExit = true;
-            exitReason = 'Target';
+          if (this.entryPrice) {
+            const pnl = (livePrice - this.entryPrice) * (this.config.quantity || 10);
+            this.message = `Position Active | LTP: ₹${livePrice.toFixed(2)} | PnL: ₹${pnl.toFixed(2)}`;
           }
-        } else if (this.strategyName === 'ModifiedHeikenAshi' && this.config.exitStrategy === 'TRAILING_SL') {
-          const finalTargetPoints = this.config.finalTargetPoints || 100;
-          const initialSlPoints = this.config.initialSlPoints || 30;
-          const trailingStopPoints = this.config.trailingStopPoints || 20;
 
-          if (this.entryPrice && this.activeTrailingSl !== null) {
-            const targetPrice = this.entryPrice + finalTargetPoints;
-            if (livePrice >= targetPrice) {
+          let shouldExit = false;
+          let exitPrice = livePrice;
+          let exitReason = '';
+
+          if (this.strategyName === '5minBreakout') {
+            const targetPoints = Number(this.config.targetPoints) || 20;
+            const targetPrice = (this.entryPrice && !isNaN(this.entryPrice)) ? (this.entryPrice + targetPoints) : this.target;
+
+            if (this.stopLoss && livePrice <= this.stopLoss) {
+              shouldExit = true;
+              exitReason = 'SL';
+            } else if (targetPrice && livePrice >= targetPrice) {
               shouldExit = true;
               exitReason = 'Target';
-            } else if (livePrice <= this.activeTrailingSl) {
-              shouldExit = true;
-              exitReason = this.activeTrailingSl === (this.entryPrice - initialSlPoints) ? 'SL' : 'Trailing SL';
-            } else {
-              const pointsGained = livePrice - this.entryPrice;
-              if (pointsGained >= trailingStopPoints) {
-                const steps = Math.floor(pointsGained / trailingStopPoints);
-                const proposedSl = this.entryPrice + (steps * trailingStopPoints) - initialSlPoints;
-                if (proposedSl > this.activeTrailingSl) {
-                  this.activeTrailingSl = proposedSl;
-                  this.log(`Trailed SL up to ₹${proposedSl}`);
+            }
+          } else if (this.strategyName === 'ModifiedHeikenAshi' && this.config.exitStrategy === 'TRAILING_SL') {
+            const finalTargetPoints = Number(this.config.finalTargetPoints) || 100;
+            const initialSlPoints = Number(this.config.initialSlPoints) || 30;
+            const trailingStopPoints = Number(this.config.trailingStopPoints) || 20;
+
+            if (this.entryPrice && this.activeTrailingSl !== null) {
+              const targetPrice = this.entryPrice + finalTargetPoints;
+              if (livePrice >= targetPrice) {
+                shouldExit = true;
+                exitReason = 'Target';
+              } else if (livePrice <= this.activeTrailingSl) {
+                shouldExit = true;
+                exitReason = this.activeTrailingSl === (this.entryPrice - initialSlPoints) ? 'SL' : 'Trailing SL';
+              } else {
+                const pointsGained = livePrice - this.entryPrice;
+                if (pointsGained >= trailingStopPoints) {
+                  const steps = Math.floor(pointsGained / trailingStopPoints);
+                  const proposedSl = this.entryPrice + (steps * trailingStopPoints) - initialSlPoints;
+                  if (proposedSl > this.activeTrailingSl) {
+                    this.activeTrailingSl = proposedSl;
+                    this.log(`Trailed SL up to ₹${proposedSl}`);
+                  }
                 }
               }
             }
-          }
-        } else if (this.config.exitStrategy === 'TARGET' && this.entryPrice) {
-          const targetPoints = this.config.targetPoints || 20;
-          const slPoints = this.config.slPoints || 30;
+          } else {
+            // Combined SL & Target checks for HeikenAshi and all other strategies
+            const targetPoints = Number(this.config.targetPoints) || 20;
+            const slPoints = Number(this.config.slPoints) || 30;
 
-          if (livePrice >= this.entryPrice + targetPoints) {
-            shouldExit = true;
-            exitReason = 'Target';
-          } else if (livePrice <= this.entryPrice - slPoints) {
-            shouldExit = true;
-            exitReason = 'SL';
+            if (this.entryPrice) {
+              if (livePrice >= this.entryPrice + targetPoints) {
+                shouldExit = true;
+                exitReason = 'Target';
+              } else if (livePrice <= this.entryPrice - slPoints) {
+                shouldExit = true;
+                exitReason = 'SL';
+              }
+            }
           }
-        }
 
         if (shouldExit && !this.isExiting) {
           await this.executeExit(contract, exitPrice, exitReason);
@@ -699,6 +797,7 @@ class SingleStrategyRunner {
     this.activeTradeId = null;
     this.activeTradePremium = null;
     this.entryPrice = null;
+    this.activeTradeContract = null;
     this.activeTrailingSl = null;
     this.stopLoss = null;
     this.target = null;

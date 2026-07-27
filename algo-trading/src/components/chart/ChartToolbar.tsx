@@ -48,19 +48,19 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
   };
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-4 p-4 bg-slate-50 dark:bg-white/5 rounded-2xl border border-slate-200 dark:border-white/5 mb-4 relative">
+    <div className="flex flex-wrap items-center justify-between gap-3 p-2 bg-[#F8F9FA] rounded border border-[#E0E3EB] mb-3 relative select-none">
       {/* Timeframe & Date */}
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-3">
         {/* Timeframe Selector */}
-        <div className="flex items-center bg-slate-200 dark:bg-slate-800 p-1 rounded-xl">
+        <div className="flex items-center bg-[#E0E3EB] p-0.5 rounded">
           {timeframes.map((tf) => (
             <button
               key={tf.value}
               onClick={() => onTimeframeChange(tf.value)}
-              className={`px-3 py-1 text-xs font-black rounded-lg transition-all ${
+              className={`px-2.5 py-1 text-xs font-semibold rounded transition-colors ${
                 timeframe === tf.value
-                  ? 'bg-cyan-500 text-white shadow-md'
-                  : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+                  ? 'bg-white text-[#0052FF] shadow-sm'
+                  : 'text-[#5D606B] hover:text-[#1E222D]'
               }`}
             >
               {tf.label}
@@ -69,119 +69,119 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
         </div>
 
         {/* Date Picker */}
-        <div className="flex items-center gap-2 bg-slate-200 dark:bg-slate-800 px-3 py-1.5 rounded-xl">
-          <Calendar className="w-3.5 h-3.5 text-cyan-500" />
+        <div className="flex items-center gap-1.5 bg-white border border-[#E0E3EB] px-2.5 py-1 rounded">
+          <Calendar className="w-3.5 h-3.5 text-[#0052FF]" />
           <input
             type="date"
             value={selectedDate}
             onChange={(e) => onDateChange(e.target.value)}
-            className="bg-transparent text-xs font-bold text-slate-900 dark:text-white outline-none border-none cursor-pointer"
+            className="bg-transparent text-xs font-medium text-[#1E222D] outline-none border-none cursor-pointer"
           />
         </div>
       </div>
 
       {/* Indicators Panel Button & Controls */}
-      <div className="relative flex items-center gap-3">
+      <div className="relative flex items-center gap-2">
         <button
           onClick={() => setPanelOpen(!panelOpen)}
-          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black transition-all border shadow-sm ${
+          className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-semibold transition-colors border ${
             panelOpen
-              ? 'bg-cyan-500 text-white border-cyan-500'
-              : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-300 dark:border-white/10 hover:border-cyan-500'
+              ? 'bg-[#0052FF] text-white border-[#0052FF]'
+              : 'bg-white text-[#1E222D] border-[#E0E3EB] hover:border-[#0052FF]'
           }`}
         >
-          <SlidersHorizontal className="w-4 h-4" />
-          <span>Indicators &amp; Settings</span>
+          <SlidersHorizontal className="w-3.5 h-3.5" />
+          <span>Indicators &amp; Overlays</span>
         </button>
 
         {/* Indicators Popover Panel */}
         {panelOpen && (
-          <div className="absolute right-0 top-12 w-80 bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 shadow-2xl rounded-2xl p-5 z-50 space-y-4 animate-in fade-in zoom-in-95 duration-200">
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-white/5 pb-3">
-              <h4 className="text-xs font-black uppercase text-slate-900 dark:text-white tracking-wider">
+          <div className="absolute right-0 top-9 w-72 bg-white border border-[#E0E3EB] shadow-xl rounded p-3.5 z-50 space-y-3">
+            <div className="flex items-center justify-between border-b border-[#E0E3EB] pb-2">
+              <h4 className="text-xs font-bold uppercase text-[#1E222D] tracking-wider">
                 Chart Indicators
               </h4>
-              <span className="text-[10px] font-bold text-slate-400">Visualization Only</span>
+              <span className="text-[9px] font-semibold text-[#787B86] bg-[#F0F3FA] px-1.5 py-0.5 rounded">Visual Overlay</span>
             </div>
 
             {/* EMA Settings */}
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <div className="flex items-center justify-between">
                 <button
                   onClick={() => onToggleChange('showEma')}
-                  className="flex items-center gap-2 text-xs font-bold text-slate-800 dark:text-slate-200"
+                  className="flex items-center gap-2 text-xs font-medium text-[#1E222D]"
                 >
-                  {toggles.showEma ? <Eye className="w-3.5 h-3.5 text-cyan-500" /> : <EyeOff className="w-3.5 h-3.5 text-slate-400" />}
+                  {toggles.showEma ? <Eye className="w-3.5 h-3.5 text-[#0052FF]" /> : <EyeOff className="w-3.5 h-3.5 text-[#787B86]" />}
                   <span>Exponential Moving Avg (EMA)</span>
                 </button>
               </div>
-              <div className="flex items-center gap-3 pl-6">
-                <label className="text-[10px] font-bold uppercase text-slate-400">Length:</label>
+              <div className="flex items-center gap-2 pl-5">
+                <label className="text-[10px] font-bold uppercase text-[#787B86]">Length:</label>
                 <input
                   type="number"
                   min="1"
                   max="200"
                   value={tempEma}
                   onChange={(e) => setTempEma(parseInt(e.target.value) || 20)}
-                  className="w-20 px-2 py-1 bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white rounded-lg text-xs font-mono font-bold outline-none border border-slate-200 dark:border-white/10 focus:border-cyan-500"
+                  className="w-16 px-2 py-0.5 bg-[#F0F3FA] text-[#1E222D] rounded text-xs font-mono font-semibold outline-none border border-[#E0E3EB] focus:border-[#0052FF]"
                 />
               </div>
             </div>
 
             {/* JMA Settings */}
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <div className="flex items-center justify-between">
                 <button
                   onClick={() => onToggleChange('showJma')}
-                  className="flex items-center gap-2 text-xs font-bold text-slate-800 dark:text-slate-200"
+                  className="flex items-center gap-2 text-xs font-medium text-[#1E222D]"
                 >
-                  {toggles.showJma ? <Eye className="w-3.5 h-3.5 text-purple-500" /> : <EyeOff className="w-3.5 h-3.5 text-slate-400" />}
+                  {toggles.showJma ? <Eye className="w-3.5 h-3.5 text-[#9C27B0]" /> : <EyeOff className="w-3.5 h-3.5 text-[#787B86]" />}
                   <span>Jurik Moving Avg (JMA)</span>
                 </button>
               </div>
-              <div className="flex items-center gap-3 pl-6">
-                <label className="text-[10px] font-bold uppercase text-slate-400">Length:</label>
+              <div className="flex items-center gap-2 pl-5">
+                <label className="text-[10px] font-bold uppercase text-[#787B86]">Length:</label>
                 <input
                   type="number"
                   min="1"
                   max="200"
                   value={tempJma}
                   onChange={(e) => setTempJma(parseInt(e.target.value) || 7)}
-                  className="w-20 px-2 py-1 bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white rounded-lg text-xs font-mono font-bold outline-none border border-slate-200 dark:border-white/10 focus:border-purple-500"
+                  className="w-16 px-2 py-0.5 bg-[#F0F3FA] text-[#1E222D] rounded text-xs font-mono font-semibold outline-none border border-[#E0E3EB] focus:border-[#9C27B0]"
                 />
               </div>
             </div>
 
             {/* Mod HA & Trades Toggles */}
-            <div className="pt-2 border-t border-slate-100 dark:border-white/5 space-y-2">
+            <div className="pt-2 border-t border-[#E0E3EB] space-y-1.5">
               <button
                 onClick={() => onToggleChange('showMha')}
-                className="flex items-center gap-2 text-xs font-bold text-slate-800 dark:text-slate-200 w-full"
+                className="flex items-center gap-2 text-xs font-medium text-[#1E222D] w-full"
               >
-                {toggles.showMha ? <Eye className="w-3.5 h-3.5 text-blue-500" /> : <EyeOff className="w-3.5 h-3.5 text-slate-400" />}
+                {toggles.showMha ? <Eye className="w-3.5 h-3.5 text-[#0052FF]" /> : <EyeOff className="w-3.5 h-3.5 text-[#787B86]" />}
                 <span>Modified Heiken Ashi Candles</span>
               </button>
 
               <button
                 onClick={() => onToggleChange('showMarkers')}
-                className="flex items-center gap-2 text-xs font-bold text-slate-800 dark:text-slate-200 w-full"
+                className="flex items-center gap-2 text-xs font-medium text-[#1E222D] w-full"
               >
-                {toggles.showMarkers ? <Eye className="w-3.5 h-3.5 text-emerald-500" /> : <EyeOff className="w-3.5 h-3.5 text-slate-400" />}
+                {toggles.showMarkers ? <Eye className="w-3.5 h-3.5 text-[#089981]" /> : <EyeOff className="w-3.5 h-3.5 text-[#787B86]" />}
                 <span>Buy / Sell Trade Markers</span>
               </button>
             </div>
 
             {/* Actions */}
-            <div className="flex items-center gap-2 pt-3 border-t border-slate-100 dark:border-white/5">
+            <div className="flex items-center gap-2 pt-2 border-t border-[#E0E3EB]">
               <button
                 onClick={handleReset}
-                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-300 text-xs font-bold rounded-xl transition-all"
+                className="flex-1 flex items-center justify-center gap-1 px-2 py-1 bg-[#F0F3FA] hover:bg-[#E0E3EB] text-[#434651] text-xs font-semibold rounded transition-colors"
               >
                 <RotateCcw className="w-3 h-3" /> Reset
               </button>
               <button
                 onClick={handleApply}
-                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-cyan-500 hover:bg-cyan-600 text-white text-xs font-bold rounded-xl shadow-md transition-all"
+                className="flex-1 flex items-center justify-center gap-1 px-2 py-1 bg-[#0052FF] hover:bg-[#0047D0] text-white text-xs font-semibold rounded shadow-sm transition-colors"
               >
                 <Check className="w-3 h-3" /> Apply
               </button>
@@ -192,3 +192,4 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
     </div>
   );
 };
+

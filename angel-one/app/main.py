@@ -167,11 +167,14 @@ def market_candles(
         raise
     except Exception as e:  # noqa: BLE001
         msg = str(e)
-        if "Not logged in" in msg:
+        msg_lower = msg.lower()
+        if "not logged in" in msg_lower:
             raise HTTPException(status_code=401, detail=msg)
-        if "Invalid candle window" in msg or "No data" in msg:
+        if "exceeding access rate" in msg_lower or "access denied" in msg_lower or "rate limit" in msg_lower or "429" in msg_lower:
+            raise HTTPException(status_code=429, detail=msg)
+        if "invalid candle window" in msg_lower or "no data" in msg_lower:
             return {"items": []}
-        if "Invalid token" in msg or "symboltoken" in msg or "Invalid candle request" in msg:
+        if "invalid token" in msg_lower or "symboltoken" in msg_lower or "invalid candle request" in msg_lower:
             raise HTTPException(status_code=400, detail=msg)
         raise HTTPException(status_code=500, detail=msg)
 

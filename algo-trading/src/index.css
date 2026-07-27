@@ -2,28 +2,55 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  body {
+    @apply bg-[#F8F9FA] text-[#1E222D] font-sans antialiased selection:bg-[#0052FF]/10 selection:text-[#0052FF];
+  }
+}
+
+/* Institutional Tabular Numbers for Prices & PnL */
+.font-mono, .tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom Scrollbar for Dense Tables and Sidebars */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #E0E3EB;
+  border-radius: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #C1C7D0;
+}
+
 .react-datepicker-wrapper {
   width: 100%;
 }
 
 .react-datepicker {
-  @apply font-sans border border-slate-200 shadow-xl shadow-slate-200/50 bg-white dark:bg-slate-800 dark:border-slate-700/50 dark:shadow-none overflow-hidden rounded-xl !important;
+  @apply font-sans border border-[#E0E3EB] shadow-md bg-white overflow-hidden rounded-md text-xs !important;
 }
 
 .react-datepicker__header {
-  @apply bg-slate-50 border-b border-slate-200 dark:bg-slate-900/50 dark:border-slate-700/50 pt-3 pb-2 !important;
+  @apply bg-[#F8F9FA] border-b border-[#E0E3EB] pt-2 pb-1 !important;
 }
 
 .react-datepicker__current-month, .react-datepicker-time__header, .react-datepicker-year-header {
-  @apply text-slate-800 dark:text-slate-200 font-black text-sm uppercase tracking-wider mb-2 !important;
+  @apply text-[#1E222D] font-semibold text-xs uppercase tracking-wider mb-1 !important;
 }
 
 .react-datepicker__day-name {
-  @apply text-slate-400 dark:text-slate-500 font-black text-xs uppercase w-8 !important;
+  @apply text-[#787B86] font-medium text-[11px] uppercase w-7 !important;
 }
 
 .react-datepicker__day {
-  @apply text-slate-600 dark:text-slate-300 font-bold text-sm w-8 h-8 leading-8 rounded-lg hover:bg-slate-100 hover:text-slate-900 dark:hover:bg-white/10 dark:hover:text-white transition-colors !important;
+  @apply text-[#1E222D] font-medium text-xs w-7 h-7 leading-7 rounded hover:bg-[#F0F3FA] transition-colors !important;
 }
 
 .react-datepicker__day--outside-month {
@@ -31,11 +58,11 @@
 }
 
 .react-datepicker__day--selected, .react-datepicker__day--keyboard-selected, .react-datepicker__time-list-item--selected {
-  @apply bg-cyan-500 text-white font-black hover:bg-cyan-600 hover:text-white dark:bg-cyan-500/20 dark:text-cyan-400 !important;
+  @apply bg-[#0052FF] text-white font-semibold hover:bg-[#0047D0] !important;
 }
 
 .react-datepicker__time-container {
-  @apply border-l border-slate-200 dark:border-slate-700/50 w-28 !important;
+  @apply border-l border-[#E0E3EB] w-24 !important;
 }
 
 .react-datepicker__time-box {
@@ -43,16 +70,10 @@
 }
 
 .react-datepicker__time-list-item {
-  @apply text-slate-600 dark:text-slate-300 font-bold text-sm h-10 leading-10 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors flex items-center justify-center !important;
+  @apply text-[#1E222D] font-medium text-xs h-8 leading-8 hover:bg-[#F0F3FA] transition-colors flex items-center justify-center !important;
 }
 
 .react-datepicker__navigation-icon::before {
-  @apply border-slate-500 dark:border-slate-400 !important;
+  @apply border-[#787B86] !important;
 }
 
-.react-datepicker-popper[data-placement^=bottom] .react-datepicker__triangle::before {
-  @apply border-b-slate-200 dark:border-b-slate-700/50 !important;
-}
-.react-datepicker-popper[data-placement^=bottom] .react-datepicker__triangle::after {
-  @apply border-b-white dark:border-b-slate-800 !important;
-}

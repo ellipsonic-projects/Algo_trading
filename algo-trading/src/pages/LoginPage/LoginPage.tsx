@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
-import { LogIn, Mail, Lock, ShieldCheck, Sun, Moon } from 'lucide-react';
-import { useTheme } from '../../shared/theme/ThemeProvider';
+import { LogIn, Mail, Lock, ShieldCheck } from 'lucide-react';
 
 const LoginPage: React.FC = () => {
   const [email, setEmail] = useState('');
@@ -10,7 +9,6 @@ const LoginPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
-  const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -29,57 +27,51 @@ const LoginPage: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center p-4 transition-colors">
-      <div className="max-w-md w-full relative">
-        {/* Theme Toggle */}
-        <button
-          onClick={toggleTheme}
-          className="absolute -top-12 right-0 p-3 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 shadow-lg text-slate-500 hover:text-cyan-500 transition-colors"
-        >
-          {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-        </button>
-
-        <div className="text-center mb-10">
-          <div className="inline-flex items-center justify-center p-3 bg-cyan-500 rounded-2xl shadow-lg shadow-cyan-500/30 mb-4">
-            <ShieldCheck className="w-8 h-8 text-white" />
+    <div className="min-h-screen bg-[#F8F9FA] flex items-center justify-center p-4 select-none">
+      <div className="max-w-sm w-full">
+        {/* Header Branding */}
+        <div className="text-center mb-6">
+          <div className="inline-flex items-center justify-center p-2.5 bg-[#0052FF] rounded-md shadow-sm mb-3">
+            <ShieldCheck className="w-6 h-6 text-white" />
           </div>
-          <h1 className="text-3xl font-bold text-slate-900 dark:text-white mb-2 tracking-tight">Strategy Portal</h1>
-          <p className="text-slate-500 dark:text-slate-400 font-medium">Log in to manage your algorithmic trades</p>
+          <h1 className="text-lg font-bold text-[#1E222D] tracking-tight">Institutional Trading Portal</h1>
+          <p className="text-xs font-semibold text-[#787B86] mt-0.5">Angel One Automated Options Engine</p>
         </div>
 
-        <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl shadow-slate-200/50 dark:shadow-none p-8 border border-slate-100 dark:border-white/5 backdrop-blur-sm">
-          <form onSubmit={handleSubmit} className="space-y-6">
+        {/* Login Form Card */}
+        <div className="bg-white rounded border border-[#E0E3EB] shadow-sm p-6">
+          <form onSubmit={handleSubmit} className="space-y-4">
             {error && (
-              <div className="p-4 bg-rose-50 dark:bg-rose-500/10 border border-rose-100 dark:border-rose-500/20 rounded-xl animate-shake">
-                <p className="text-sm text-rose-600 dark:text-rose-400 font-semibold">{error}</p>
+              <div className="p-3 bg-[#F23645]/10 border border-[#F23645]/30 rounded">
+                <p className="text-xs text-[#F23645] font-semibold">{error}</p>
               </div>
             )}
 
-            <div className="space-y-2">
-              <label className="block text-sm font-bold text-slate-700 dark:text-slate-200 ml-1">Email Address</label>
-              <div className="relative group">
-                <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-cyan-500 transition-colors" />
+            <div className="space-y-1">
+              <label className="block text-[10px] font-bold uppercase text-[#787B86]">Email Address</label>
+              <div className="relative">
+                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#787B86]" />
                 <input
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="mithun@gmail.com"
-                  className="w-full pl-12 pr-4 py-3.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-white/10 rounded-2xl focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 outline-none transition-all dark:text-white dark:placeholder:text-slate-600"
+                  placeholder="user@angelone.com"
+                  className="w-full pl-9 pr-3 py-2 bg-[#F0F3FA] border border-[#E0E3EB] rounded text-xs font-semibold text-[#1E222D] outline-none focus:border-[#0052FF]"
                   required
                 />
               </div>
             </div>
 
-            <div className="space-y-2">
-              <label className="block text-sm font-bold text-slate-700 dark:text-slate-200 ml-1">Password</label>
-              <div className="relative group">
-                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-cyan-500 transition-colors" />
+            <div className="space-y-1">
+              <label className="block text-[10px] font-bold uppercase text-[#787B86]">Password</label>
+              <div className="relative">
+                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#787B86]" />
                 <input
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
-                  className="w-full pl-12 pr-4 py-3.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-white/10 rounded-2xl focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 outline-none transition-all dark:text-white dark:placeholder:text-slate-600"
+                  className="w-full pl-9 pr-3 py-2 bg-[#F0F3FA] border border-[#E0E3EB] rounded text-xs font-semibold text-[#1E222D] outline-none focus:border-[#0052FF]"
                   required
                 />
               </div>
@@ -88,22 +80,22 @@ const LoginPage: React.FC = () => {
             <button
               type="submit"
               disabled={loading}
-              className="w-full py-4 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 active:scale-[0.98] text-white font-black uppercase tracking-widest rounded-2xl shadow-xl shadow-cyan-500/25 transition-all flex items-center justify-center gap-3 disabled:opacity-70 disabled:grayscale"
+              className="w-full py-2.5 bg-[#0052FF] hover:bg-[#0047D6] text-white font-bold text-xs uppercase tracking-wider rounded transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
             >
               {loading ? (
-                <div className="w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
               ) : (
                 <>
-                  <span>Login</span>
-                  <LogIn className="w-5 h-5" />
+                  <span>Sign In</span>
+                  <LogIn className="w-3.5 h-3.5" />
                 </>
               )}
             </button>
           </form>
         </div>
 
-        <div className="mt-10 flex items-center justify-center gap-6">
-          <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest border border-slate-200 dark:border-white/5 px-4 py-2 rounded-full backdrop-blur-md">Secure Options Terminal v2.0</p>
+        <div className="mt-6 text-center">
+          <p className="text-[#787B86] text-[10px] font-bold uppercase tracking-wider">Enterprise Algo Terminal v2.4</p>
         </div>
       </div>
     </div>
@@ -111,3 +103,4 @@ const LoginPage: React.FC = () => {
 };
 
 export default LoginPage;
+

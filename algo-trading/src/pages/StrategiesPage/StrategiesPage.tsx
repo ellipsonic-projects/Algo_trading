@@ -1,4 +1,5 @@
 import { useNavigate } from 'react-router-dom'
+import { ArrowRight, Zap, TrendingUp, BarChart2, Clock, Target, Activity } from 'lucide-react'
 
 import StrategiesLayout from './StrategiesLayout'
 
@@ -6,7 +7,7 @@ type StrategyCard = {
   title: string
   description: string
   to: string
-  accentClassName: string
+  icon: any
 }
 
 export default function StrategiesPage() {
@@ -17,77 +18,86 @@ export default function StrategiesPage() {
       title: 'Manual Trading',
       description: 'Place trades manually with live price and margin info.',
       to: '/strategies/manual-trading',
-      accentClassName: 'from-emerald-400 to-cyan-400',
+      icon: Activity,
     },
     {
       title: 'Ichimoku strategy',
       description: 'Trend + momentum strategy using Ichimoku Cloud.',
       to: '/strategies/ichimoku',
-      accentClassName: 'from-cyan-400 to-violet-400',
+      icon: BarChart2,
     },
     {
       title: '5 min breakout',
       description: 'Breakout strategy based on 5-minute range.',
       to: '/strategies/5-min-breakout',
-      accentClassName: 'from-amber-400 to-rose-400',
+      icon: Zap,
     },
     {
       title: 'VWAP + SMMA',
       description: 'Mean reversion / trend confirmation using VWAP + SMMA.',
       to: '/strategies/vwap-smma',
-      accentClassName: 'from-fuchsia-400 to-indigo-400',
+      icon: Clock,
     },
     {
       title: 'Expiry strategy',
       description: 'Expiry day logic and risk controls (placeholder).',
       to: '/strategies/expiry',
-      accentClassName: 'from-sky-400 to-emerald-400',
+      icon: Target,
     },
     {
       title: 'Heikenashi',
       description: 'Trend following strategy using Heiken Ashi candles.',
       to: '/strategies/heikenashi',
-      accentClassName: 'from-rose-400 to-orange-400',
+      icon: TrendingUp,
     },
     {
       title: 'Modified Heikenashi',
       description: 'Modified Heiken Ashi logic.',
       to: '/strategies/modified-heikenashi',
-      accentClassName: 'from-orange-400 to-amber-400',
+      icon: TrendingUp,
     },
   ]
 
   return (
     <StrategiesLayout
-      title="Select a Strategy"
-      subtitle="Choose manual trading or launch an automated strategy."
-      backTo="/login"
+      title="Select Algorithmic Strategy"
+      subtitle="Launch institutional automated trading rules or use manual ticket."
+      backTo="/dashboard"
     >
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {cards.map((c) => (
-          <button
-            key={c.title}
-            type="button"
-            onClick={() => navigate(c.to)}
-            className={[
-              'group text-left overflow-hidden rounded-2xl border shadow-sm transition',
-              'border-slate-200 bg-white hover:shadow-lg dark:border-white/10 dark:bg-slate-900',
-              'focus:outline-none focus:ring-4 focus:ring-cyan-200 dark:focus:ring-cyan-400/20',
-            ].join(' ')}
-          >
-            <div className={['h-1 bg-gradient-to-r', c.accentClassName].join(' ')} />
-            <div className="p-5">
-              <div className="flex items-start justify-between gap-3">
-                <h2 className="text-base font-semibold">{c.title}</h2>
-                <span className="text-xs font-medium text-slate-500 dark:text-slate-400 group-hover:text-slate-700 dark:group-hover:text-slate-200">
-                  Open
-                </span>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 select-none">
+        {cards.map((c) => {
+          const IconComp = c.icon
+          return (
+            <button
+              key={c.title}
+              type="button"
+              onClick={() => navigate(c.to)}
+              className="group text-left p-4 rounded border border-[#E0E3EB] bg-white hover:border-[#0052FF] hover:shadow-sm transition-all flex flex-col justify-between"
+            >
+              <div>
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 bg-[#F0F3FA] rounded flex items-center justify-center text-[#0052FF] group-hover:bg-[#0052FF] group-hover:text-white transition-colors">
+                      <IconComp className="w-3.5 h-3.5" />
+                    </div>
+                    <h2 className="text-xs font-bold text-[#1E222D] tracking-tight">{c.title}</h2>
+                  </div>
+                  <span className="text-[10px] font-bold text-[#0052FF] group-hover:translate-x-0.5 transition-transform flex items-center gap-0.5">
+                    Launch <ArrowRight className="w-3 h-3" />
+                  </span>
+                </div>
+                <p className="text-xs text-[#787B86] font-medium leading-relaxed">{c.description}</p>
               </div>
-              <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">{c.description}</p>
-            </div>
-          </button>
-        ))}
+
+              <div className="mt-4 pt-2.5 border-t border-[#E0E3EB] flex items-center justify-between text-[10px] font-semibold text-[#787B86]">
+                <span>Status: Ready</span>
+                <span className="text-[#089981] font-bold">Institutional Grade</span>
+              </div>
+            </button>
+          )
+        })}
       </div>
     </StrategiesLayout>
   )
 }
+

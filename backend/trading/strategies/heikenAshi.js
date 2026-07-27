@@ -92,8 +92,8 @@ function analyzeHeikenAshiStrategy(haCandles, emaPeriod = 20, jmaLength = 7) {
     const emas = computeEMA(closes, emaPeriod);
     const jmas = computeJMA(closes, jmaLength);
 
-    const lastClosedIdx = haCandles.length - 2;
-    const prevClosedIdx = haCandles.length - 3;
+    const lastClosedIdx = haCandles.length - 1;
+    const prevClosedIdx = haCandles.length - 2;
 
     if (lastClosedIdx < 0 || prevClosedIdx < 0) {
         return { trend: 'NEUTRAL', ema: 0, jma: 0, haClose: 0, isEntry: false, isExit: false };

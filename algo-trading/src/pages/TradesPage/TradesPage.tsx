@@ -8,7 +8,6 @@ import {
     TrendingDown,
     Calendar,
     Clock,
-    Target,
     RefreshCw,
     ChevronDown,
     Check
@@ -137,22 +136,61 @@ export default function TradesPage() {
     }
 
     return (
-        <div className="space-y-6">
-            {/* Filters Panel */}
-            <div className="bg-white dark:bg-slate-900 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm p-6 relative">
-                <div className="absolute top-0 right-0 p-8 opacity-[0.02] pointer-events-none">
-                    <Target className="w-48 h-48 rotate-12" />
+        <div className="space-y-4 select-none">
+            {/* Analytics Summary Cards (Angel One Compact Style) */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="bg-white p-3 rounded border border-[#E0E3EB] shadow-sm">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-[#787B86] mb-1">Total PNL</p>
+                    <div className={`flex items-baseline gap-1 ${analytics.totalPnl >= 0 ? 'text-[#089981]' : 'text-[#F23645]'}`}>
+                        <span className="text-xl font-bold tabular-nums">₹{Math.abs(analytics.totalPnl).toFixed(2)}</span>
+                        {analytics.totalPnl >= 0 ? <TrendingUp className="w-3.5 h-3.5" /> : <TrendingDown className="w-3.5 h-3.5" />}
+                    </div>
                 </div>
 
-                <div className="relative z-10 w-full flex flex-col gap-6">
+                {/* Win Rate Card */}
+                {(() => {
+                    const completedTrades = trades.filter((t) => t.pnl !== undefined);
+                    const winningTrades = completedTrades.filter((t) => (t.pnl || 0) > 0);
+                    const winRate = completedTrades.length > 0
+                        ? ((winningTrades.length / completedTrades.length) * 100).toFixed(1)
+                        : '0.0';
+                    return (
+                        <div className="bg-white p-3 rounded border border-[#E0E3EB] shadow-sm">
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-[#787B86] mb-1">Win Rate</p>
+                            <div className="text-xl font-bold tabular-nums text-[#089981]">
+                                {winRate}%
+                            </div>
+                        </div>
+                    );
+                })()}
+
+                <div className="bg-white p-3 rounded border border-[#E0E3EB] shadow-sm">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-[#787B86] mb-1">Est. Taxes & Fees</p>
+                    <div className="text-xl font-bold tabular-nums text-[#F23645]">
+                        ₹{analytics.taxes.toFixed(2)}
+                    </div>
+                </div>
+
+                <div className="bg-white p-3 rounded border border-[#E0E3EB] shadow-sm">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-[#787B86] mb-1">Net PNL</p>
+                    <div className={`flex items-baseline gap-1 ${analytics.netPnl >= 0 ? 'text-[#089981]' : 'text-[#F23645]'}`}>
+                        <span className="text-xl font-bold tabular-nums">₹{Math.abs(analytics.netPnl).toFixed(2)}</span>
+                        {analytics.netPnl >= 0 ? <TrendingUp className="w-3.5 h-3.5" /> : <TrendingDown className="w-3.5 h-3.5" />}
+                    </div>
+                </div>
+            </div>
+
+            {/* Filters Panel */}
+            <div className="bg-white rounded border border-[#E0E3EB] shadow-sm p-4">
+                <div className="w-full flex flex-col gap-3">
                     {/* Top Row: Search & Dropdowns */}
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                         <div className="relative md:col-span-1">
-                            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#787B86]" />
                             <input
                                 type="text"
-                                placeholder="Search by Index or Premium..."
-                                className="w-full h-full bg-slate-50 dark:bg-white/5 border-none rounded-2xl pl-12 pr-4 py-3 text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black"
+                                placeholder="Search Index / Premium..."
+                                className="w-full bg-[#F0F3FA] border border-[#E0E3EB] rounded pl-9 pr-3 py-1.5 text-xs font-medium text-[#1E222D] outline-none focus:border-[#0052FF]"
                                 value={searchQuery}
                                 onChange={(e) => setSearchQuery(e.target.value)}
                             />
@@ -161,43 +199,43 @@ export default function TradesPage() {
                         {/* Custom Strategy Dropdown */}
                         <div className="relative md:col-span-1">
                             <div
-                                className="w-full bg-slate-50 dark:bg-white/5 rounded-2xl px-4 py-3 cursor-pointer flex items-center justify-between text-sm font-black transition-all hover:bg-slate-100 dark:hover:bg-white/10"
+                                className="w-full bg-[#F0F3FA] border border-[#E0E3EB] rounded px-3 py-1.5 cursor-pointer flex items-center justify-between text-xs font-medium transition-colors hover:border-[#0052FF]"
                                 onClick={() => {
                                     setIsStrategyDropdownOpen(!isStrategyDropdownOpen)
                                     setIsExitReasonDropdownOpen(false)
                                 }}
                             >
-                                <span className={strategyIdFilter ? 'text-cyan-500' : 'text-slate-500 dark:text-slate-400'}>
+                                <span className={strategyIdFilter ? 'text-[#0052FF] font-semibold' : 'text-[#434651]'}>
                                     {strategyIdFilter ? strategies.find(s => s._id === strategyIdFilter)?.name || 'Unknown Strategy' : 'All Strategies'}
                                 </span>
-                                <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${isStrategyDropdownOpen ? 'rotate-180' : ''}`} />
+                                <ChevronDown className={`w-3.5 h-3.5 text-[#787B86] transition-transform ${isStrategyDropdownOpen ? 'rotate-180' : ''}`} />
                             </div>
 
                             {isStrategyDropdownOpen && (
                                 <>
                                     <div className="fixed inset-0 z-[100]" onClick={() => setIsStrategyDropdownOpen(false)} />
-                                    <div className="absolute top-[105%] -mt-1 left-0 w-full z-[110] bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700/50 rounded-2xl shadow-xl shadow-slate-200/50 dark:shadow-none py-2 animate-in fade-in slide-in-from-top-1">
+                                    <div className="absolute top-[105%] left-0 w-full z-[110] bg-white border border-[#E0E3EB] rounded shadow-xl py-1">
                                         <div
-                                            className={`px-4 py-2 hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer text-sm font-black flex items-center justify-between transition-colors ${!strategyIdFilter ? 'text-slate-900 dark:text-white bg-slate-50/50 dark:bg-slate-700/20' : 'text-slate-500 dark:text-slate-400'}`}
+                                            className={`px-3 py-1.5 hover:bg-[#F0F3FA] cursor-pointer text-xs font-semibold flex items-center justify-between transition-colors ${!strategyIdFilter ? 'text-[#0052FF] bg-[#0052FF]/10' : 'text-[#434651]'}`}
                                             onClick={() => {
                                                 setStrategyIdFilter('');
                                                 setIsStrategyDropdownOpen(false);
                                             }}
                                         >
                                             All Strategies
-                                            {!strategyIdFilter && <Check className="w-4 h-4 text-cyan-500" />}
+                                            {!strategyIdFilter && <Check className="w-3.5 h-3.5 text-[#0052FF]" />}
                                         </div>
                                         {strategies.map(s => (
                                             <div
                                                 key={s._id}
-                                                className={`px-4 py-2 hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer text-sm font-black flex items-center justify-between transition-colors ${strategyIdFilter === s._id ? 'text-cyan-500 bg-cyan-50 dark:bg-cyan-500/10' : 'text-slate-600 dark:text-slate-300'}`}
+                                                className={`px-3 py-1.5 hover:bg-[#F0F3FA] cursor-pointer text-xs font-semibold flex items-center justify-between transition-colors ${strategyIdFilter === s._id ? 'text-[#0052FF] bg-[#0052FF]/10' : 'text-[#434651]'}`}
                                                 onClick={() => {
                                                     setStrategyIdFilter(s._id);
                                                     setIsStrategyDropdownOpen(false);
                                                 }}
                                             >
                                                 {s.name}
-                                                {strategyIdFilter === s._id && <Check className="w-4 h-4 text-cyan-500" />}
+                                                {strategyIdFilter === s._id && <Check className="w-3.5 h-3.5 text-[#0052FF]" />}
                                             </div>
                                         ))}
                                     </div>
@@ -208,22 +246,22 @@ export default function TradesPage() {
                         {/* Custom Exit Reason Dropdown */}
                         <div className="relative md:col-span-1">
                             <div
-                                className="w-full bg-slate-50 dark:bg-white/5 rounded-2xl px-4 py-3 cursor-pointer flex items-center justify-between text-sm font-black transition-all hover:bg-slate-100 dark:hover:bg-white/10"
+                                className="w-full bg-[#F0F3FA] border border-[#E0E3EB] rounded px-3 py-1.5 cursor-pointer flex items-center justify-between text-xs font-medium transition-colors hover:border-[#0052FF]"
                                 onClick={() => {
                                     setIsExitReasonDropdownOpen(!isExitReasonDropdownOpen)
                                     setIsStrategyDropdownOpen(false)
                                 }}
                             >
-                                <span className={exitReasonFilter ? 'text-cyan-500' : 'text-slate-500 dark:text-slate-400'}>
+                                <span className={exitReasonFilter ? 'text-[#0052FF] font-semibold' : 'text-[#434651]'}>
                                     {exitReasonFilter || 'All Exit Reasons'}
                                 </span>
-                                <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${isExitReasonDropdownOpen ? 'rotate-180' : ''}`} />
+                                <ChevronDown className={`w-3.5 h-3.5 text-[#787B86] transition-transform ${isExitReasonDropdownOpen ? 'rotate-180' : ''}`} />
                             </div>
 
                             {isExitReasonDropdownOpen && (
                                 <>
                                     <div className="fixed inset-0 z-[100]" onClick={() => setIsExitReasonDropdownOpen(false)} />
-                                    <div className="absolute top-[105%] -mt-1 left-0 w-full z-[110] bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700/50 rounded-2xl shadow-xl shadow-slate-200/50 dark:shadow-none py-2 animate-in fade-in slide-in-from-top-1">
+                                    <div className="absolute top-[105%] left-0 w-full z-[110] bg-white border border-[#E0E3EB] rounded shadow-xl py-1">
                                         {[
                                             { value: '', label: 'All Exit Reasons' },
                                             { value: 'Target', label: 'Target' },
@@ -234,14 +272,14 @@ export default function TradesPage() {
                                         ].map(option => (
                                             <div
                                                 key={option.value}
-                                                className={`px-4 py-2 hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer text-sm font-black flex items-center justify-between transition-colors ${exitReasonFilter === option.value ? 'text-cyan-500 bg-cyan-50 dark:bg-cyan-500/10' : (option.value === '' ? 'text-slate-900 dark:text-white' : 'text-slate-600 dark:text-slate-300')}`}
+                                                className={`px-3 py-1.5 hover:bg-[#F0F3FA] cursor-pointer text-xs font-semibold flex items-center justify-between transition-colors ${exitReasonFilter === option.value ? 'text-[#0052FF] bg-[#0052FF]/10' : 'text-[#434651]'}`}
                                                 onClick={() => {
                                                     setExitReasonFilter(option.value);
                                                     setIsExitReasonDropdownOpen(false);
                                                 }}
                                             >
                                                 {option.label}
-                                                {exitReasonFilter === option.value && <Check className="w-4 h-4 text-cyan-500" />}
+                                                {exitReasonFilter === option.value && <Check className="w-3.5 h-3.5 text-[#0052FF]" />}
                                             </div>
                                         ))}
                                     </div>
@@ -251,11 +289,11 @@ export default function TradesPage() {
                     </div>
 
                     {/* Bottom Row: Date/Time Pickers & Actions */}
-                    <div className="flex flex-col xl:flex-row gap-4 justify-between items-center">
+                    <div className="flex flex-col xl:flex-row gap-3 justify-between items-center pt-1 border-t border-[#E0E3EB]">
                         {/* Time & Date Range */}
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 w-full xl:w-auto">
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 w-full xl:w-auto">
                             <div className="relative">
-                                <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 z-10" />
+                                <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#787B86] z-10" />
                                 <DatePicker
                                     selected={startDate ? new Date(startDate) : null}
                                     onChange={(date: Date | null) => {
@@ -269,11 +307,11 @@ export default function TradesPage() {
                                     }}
                                     dateFormat="yyyy-MM-dd"
                                     placeholderText="Start Date"
-                                    className="bg-slate-50 dark:bg-white/5 border-none rounded-2xl pl-10 pr-2 py-3 text-xs md:text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black w-full"
+                                    className="bg-[#F0F3FA] border border-[#E0E3EB] rounded pl-8 pr-2 py-1.5 text-xs text-[#1E222D] outline-none focus:border-[#0052FF] font-medium w-full"
                                 />
                             </div>
                             <div className="relative">
-                                <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 z-10" />
+                                <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#787B86] z-10" />
                                 <DatePicker
                                     selected={endDate ? new Date(endDate) : null}
                                     onChange={(date: Date | null) => {
@@ -287,31 +325,31 @@ export default function TradesPage() {
                                     }}
                                     dateFormat="yyyy-MM-dd"
                                     placeholderText="End Date"
-                                    className="bg-slate-50 dark:bg-white/5 border-none rounded-2xl pl-10 pr-2 py-3 text-xs md:text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black w-full"
+                                    className="bg-[#F0F3FA] border border-[#E0E3EB] rounded pl-8 pr-2 py-1.5 text-xs text-[#1E222D] outline-none focus:border-[#0052FF] font-medium w-full"
                                 />
                             </div>
                             <div className="relative z-[90]">
-                                <Clock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 z-10" />
+                                <Clock className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#787B86] z-10" />
                                 <input
                                     type="time"
                                     value={timeFrom}
                                     onChange={(e) => setTimeFrom(e.target.value)}
-                                    className="bg-slate-50 dark:bg-white/5 border-none rounded-2xl pl-10 pr-2 py-3 text-xs md:text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black w-full dark:[color-scheme:dark]"
+                                    className="bg-[#F0F3FA] border border-[#E0E3EB] rounded pl-8 pr-2 py-1.5 text-xs text-[#1E222D] outline-none focus:border-[#0052FF] font-medium w-full"
                                 />
                             </div>
                             <div className="relative z-[90]">
-                                <Clock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 z-10" />
+                                <Clock className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#787B86] z-10" />
                                 <input
                                     type="time"
                                     value={timeTo}
                                     onChange={(e) => setTimeTo(e.target.value)}
-                                    className="bg-slate-50 dark:bg-white/5 border-none rounded-2xl pl-10 pr-2 py-3 text-xs md:text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-black w-full dark:[color-scheme:dark]"
+                                    className="bg-[#F0F3FA] border border-[#E0E3EB] rounded pl-8 pr-2 py-1.5 text-xs text-[#1E222D] outline-none focus:border-[#0052FF] font-medium w-full"
                                 />
                             </div>
                         </div>
 
                         {/* Actions */}
-                        <div className="flex w-full xl:w-auto items-center gap-3">
+                        <div className="flex w-full xl:w-auto items-center gap-2">
                             <button
                                 onClick={() => {
                                     setPage(1)
@@ -325,9 +363,9 @@ export default function TradesPage() {
                                         timeTo
                                     })
                                 }}
-                                className="flex-1 xl:flex-none px-6 py-3 bg-cyan-500 hover:bg-cyan-600 text-white text-xs font-black uppercase tracking-widest rounded-2xl transition-all shadow-xl shadow-cyan-500/20 active:scale-95 flex items-center justify-center gap-2"
+                                className="flex-1 xl:flex-none px-4 py-1.5 bg-[#0052FF] hover:bg-[#0047D0] text-white text-xs font-semibold rounded transition-colors shadow-sm flex items-center justify-center gap-1.5"
                             >
-                                <Filter className="w-4 h-4 fill-current" />
+                                <Filter className="w-3.5 h-3.5 fill-current" />
                                 Apply
                             </button>
                             <button
@@ -342,14 +380,14 @@ export default function TradesPage() {
                                     setPage(1)
                                     setAppliedFilters({ searchQuery: '', exitReasonFilter: '', strategyIdFilter: '', startDate: '', endDate: '', timeFrom: '', timeTo: '' })
                                 }}
-                                className="flex-1 xl:flex-none px-6 py-3 bg-slate-50 dark:bg-white/5 hover:bg-slate-100 dark:hover:bg-white/10 text-slate-600 dark:text-slate-400 text-xs font-black uppercase tracking-widest rounded-2xl transition-all active:scale-95 flex items-center justify-center gap-2"
+                                className="flex-1 xl:flex-none px-4 py-1.5 bg-[#F0F3FA] hover:bg-[#E0E3EB] text-[#434651] text-xs font-semibold rounded transition-colors flex items-center justify-center gap-1.5"
                             >
-                                <Filter className="w-4 h-4" />
+                                <Filter className="w-3.5 h-3.5" />
                                 Reset
                             </button>
                             <button
                                 onClick={() => fetchTrades()}
-                                className="px-4 py-3 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-500 text-xs font-black uppercase tracking-widest rounded-2xl transition-all active:scale-95 flex items-center justify-center"
+                                className="p-1.5 bg-[#0052FF]/10 hover:bg-[#0052FF]/20 text-[#0052FF] text-xs font-semibold rounded transition-colors"
                                 title="Refresh"
                             >
                                 <RefreshCw className="w-4 h-4" />
@@ -359,143 +397,76 @@ export default function TradesPage() {
                 </div>
             </div>
 
-            {/* Analytics Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                <div className="bg-white dark:bg-slate-900 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm p-6 relative overflow-hidden group">
-                    <div className="absolute top-0 right-0 p-6 opacity-[0.02] group-hover:opacity-[0.05] transition-opacity pointer-events-none">
-                        <TrendingUp className="w-24 h-24 rotate-12" />
-                    </div>
-                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-2">Total PNL</p>
-                    <div className={`flex items-baseline gap-2 ${analytics.totalPnl >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                        <span className="text-3xl font-black tracking-tighter">₹{Math.abs(analytics.totalPnl).toFixed(2)}</span>
-                        {analytics.totalPnl >= 0 ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
-                    </div>
-                </div>
-
-                {/* Win Rate Card */}
-                {(() => {
-                    const completedTrades = trades.filter((t) => t.pnl !== undefined);
-                    const winningTrades = completedTrades.filter((t) => (t.pnl || 0) > 0);
-                    const winRate = completedTrades.length > 0
-                        ? ((winningTrades.length / completedTrades.length) * 100).toFixed(1)
-                        : '0.0';
-                    return (
-                        <div className="bg-white dark:bg-slate-900 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm p-6 relative overflow-hidden group">
-                            <div className="absolute top-0 right-0 p-6 opacity-[0.02] group-hover:opacity-[0.05] transition-opacity pointer-events-none">
-                                <Target className="w-24 h-24 rotate-12" />
-                            </div>
-                            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-2">Win Rate</p>
-                            <div className="text-3xl font-black tracking-tighter text-emerald-500">
-                                {winRate}%
-                            </div>
-                        </div>
-                    );
-                })()}
-
-                <div className="bg-white dark:bg-slate-900 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm p-6 relative overflow-hidden group">
-                    <div className="absolute top-0 right-0 p-6 opacity-[0.02] group-hover:opacity-[0.05] transition-opacity pointer-events-none">
-                        <Filter className="w-24 h-24 rotate-12" />
-                    </div>
-                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-2">Est. Taxes & Fees</p>
-                    <div className="text-3xl font-black tracking-tighter text-rose-500">
-                        ₹{analytics.taxes.toFixed(2)}
-                    </div>
-                </div>
-
-                <div className="bg-white dark:bg-slate-900 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm p-6 relative overflow-hidden group">
-                    <div className="absolute top-0 right-0 p-6 opacity-[0.02] group-hover:opacity-[0.05] transition-opacity pointer-events-none">
-                        <TrendingUp className="w-24 h-24 rotate-12" />
-                    </div>
-                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-2">Net PNL</p>
-                    <div className={`flex items-baseline gap-2 ${analytics.netPnl >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                        <span className="text-3xl font-black tracking-tighter">₹{Math.abs(analytics.netPnl).toFixed(2)}</span>
-                        {analytics.netPnl >= 0 ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
-                    </div>
-                </div>
-            </div>
-
             {/* Table Content */}
-            <div className="bg-white dark:bg-slate-900 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-sm overflow-hidden">
+            <div className="bg-white rounded border border-[#E0E3EB] shadow-sm overflow-hidden">
                 <div className="overflow-x-auto">
                     <table className="w-full text-left border-collapse">
                         <thead>
-                            <tr className="border-b border-slate-100 dark:border-white/5">
-                                <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">Entry date and time</th>
-                                <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">Strategy</th>
-                                <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">Index</th>
-                                <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">Premium</th>
-                                <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400 text-right">Qty</th>
-                                <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400 text-right">Entry</th>
-                                <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400 text-right">Exit</th>
-                                <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400 text-right">Total PNL</th>
-                                <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">Reason</th>
+                            <tr className="bg-[#F8F9FA] border-b border-[#E0E3EB]">
+                                <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider text-[#787B86]">Entry date &amp; time</th>
+                                <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider text-[#787B86]">Strategy</th>
+                                <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider text-[#787B86]">Index</th>
+                                <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider text-[#787B86]">Premium</th>
+                                <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider text-[#787B86] text-right">Qty</th>
+                                <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider text-[#787B86] text-right">Entry</th>
+                                <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider text-[#787B86] text-right">Exit</th>
+                                <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider text-[#787B86] text-right">Total PNL</th>
+                                <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider text-[#787B86]">Reason</th>
                             </tr>
                         </thead>
-                        <tbody className="divide-y divide-slate-100 dark:divide-white/5">
+                        <tbody className="divide-y divide-[#E0E3EB]">
                             {loading ? (
                                 <tr>
-                                    <td colSpan={9} className="px-8 py-20 text-center">
-                                        <div className="flex flex-col items-center gap-4">
-                                            <div className="w-12 h-12 border-4 border-cyan-500/20 border-t-cyan-500 rounded-full animate-spin" />
-                                            <p className="text-sm font-black text-slate-500 uppercase tracking-widest">Synchronizing Ledger...</p>
+                                    <td colSpan={9} className="px-4 py-12 text-center">
+                                        <div className="flex flex-col items-center gap-2">
+                                            <RefreshCw className="w-5 h-5 text-[#0052FF] animate-spin" />
+                                            <p className="text-xs font-semibold text-[#787B86]">Fetching Trade Records...</p>
                                         </div>
                                     </td>
                                 </tr>
                             ) : trades.length === 0 ? (
                                 <tr>
-                                    <td colSpan={9} className="px-8 py-20 text-center">
-                                        <p className="text-sm font-black text-slate-400 uppercase tracking-widest">No transaction records found</p>
+                                    <td colSpan={9} className="px-4 py-12 text-center">
+                                        <p className="text-xs font-semibold text-[#787B86]">No transaction records found</p>
                                     </td>
                                 </tr>
                             ) : (
                                 trades.map((trade) => (
-                                    <tr key={trade._id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.02] transition-colors">
-                                        <td className="px-8 py-5">
-                                            <div className="flex items-center gap-3">
-                                                <Clock className="w-4 h-4 text-slate-400" />
-                                                <span className="text-sm font-bold text-slate-600 dark:text-slate-300">
-                                                    {formatDate(trade.createdAt)}
-                                                </span>
+                                    <tr key={trade._id} className="hover:bg-[#F8F9FA] transition-colors">
+                                        <td className="px-4 py-2 text-xs font-medium text-[#434651]">
+                                            <div className="flex items-center gap-2">
+                                                <Clock className="w-3 h-3 text-[#787B86]" />
+                                                <span>{formatDate(trade.createdAt)}</span>
                                             </div>
                                         </td>
-                                        <td className="px-8 py-5">
-                                            <span className="px-3 py-1 bg-cyan-500/10 text-cyan-500 text-[10px] font-black uppercase tracking-widest rounded-lg">
+                                        <td className="px-4 py-2">
+                                            <span className="px-2 py-0.5 bg-[#0052FF]/10 text-[#0052FF] text-[10px] font-bold uppercase rounded">
                                                 {trade.strategyId?.name || 'Manual'}
                                             </span>
                                         </td>
-                                        <td className="px-8 py-5">
-                                            <span className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tighter">
-                                                {trade.index}
-                                            </span>
+                                        <td className="px-4 py-2 text-xs font-bold text-[#1E222D] uppercase">
+                                            {trade.index}
                                         </td>
-                                        <td className="px-8 py-5">
-                                            <span className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tighter">
-                                                {trade.premium}
-                                            </span>
+                                        <td className="px-4 py-2 text-xs font-bold text-[#1E222D]">
+                                            {trade.premium}
                                         </td>
-                                        <td className="px-8 py-5 text-right">
-                                            <span className="text-sm font-bold text-slate-600 dark:text-slate-300">
-                                                {trade.qty}
-                                            </span>
+                                        <td className="px-4 py-2 text-xs font-semibold text-[#434651] text-right tabular-nums">
+                                            {trade.qty}
                                         </td>
-                                        <td className="px-8 py-5 text-right">
-                                            <span className="text-sm font-black text-slate-900 dark:text-white tracking-tight">
-                                                ₹{trade.buyPrice.toFixed(2)}
-                                            </span>
+                                        <td className="px-4 py-2 text-xs font-bold text-[#1E222D] text-right tabular-nums">
+                                            ₹{trade.buyPrice.toFixed(2)}
                                         </td>
-                                        <td className="px-8 py-5 text-right">
-                                            <span className="text-sm font-black text-slate-900 dark:text-white tracking-tight">
-                                                {trade.exitPrice ? `₹${trade.exitPrice.toFixed(2)}` : '---'}
-                                            </span>
+                                        <td className="px-4 py-2 text-xs font-bold text-[#1E222D] text-right tabular-nums">
+                                            {trade.exitPrice ? `₹${trade.exitPrice.toFixed(2)}` : '---'}
                                         </td>
-                                        <td className="px-8 py-5 text-right">
-                                            <div className={`flex items-center justify-end gap-2 text-sm font-black tracking-tight ${trade.pnl !== undefined ? (trade.pnl >= 0 ? 'text-emerald-500' : 'text-rose-500') : 'text-slate-400'}`}>
+                                        <td className="px-4 py-2 text-right">
+                                            <div className={`flex items-center justify-end gap-1 text-xs font-bold tabular-nums ${trade.pnl !== undefined ? (trade.pnl >= 0 ? 'text-[#089981]' : 'text-[#F23645]') : 'text-[#787B86]'}`}>
                                                 {trade.pnl !== undefined ? (trade.pnl >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />) : null}
                                                 {trade.pnl !== undefined ? `₹${trade.pnl.toFixed(2)}` : '---'}
                                             </div>
                                         </td>
-                                        <td className="px-8 py-5">
-                                            <span className={`text-[10px] font-black uppercase tracking-widest ${trade.exitReason === 'Target' ? 'text-emerald-500' : trade.exitReason === 'SL' ? 'text-rose-500' : 'text-slate-400'}`}>
+                                        <td className="px-4 py-2">
+                                            <span className={`text-[10px] font-bold uppercase ${trade.exitReason === 'Target' ? 'text-[#089981]' : trade.exitReason === 'SL' ? 'text-[#F23645]' : 'text-[#787B86]'}`}>
                                                 {trade.exitReason || 'Active'}
                                             </span>
                                         </td>
@@ -507,17 +478,17 @@ export default function TradesPage() {
                 </div>
 
                 {/* Pagination */}
-                <div className="px-8 py-6 border-t border-slate-100 dark:border-white/5 flex flex-col md:flex-row items-center justify-between gap-4">
-                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">
-                        Displaying <span className="text-slate-900 dark:text-white">{trades.length}</span> of <span className="text-slate-900 dark:text-white">{totalResults}</span> Records
+                <div className="px-4 py-3 border-t border-[#E0E3EB] bg-[#F8F9FA] flex flex-col md:flex-row items-center justify-between gap-3">
+                    <p className="text-[11px] font-semibold text-[#787B86]">
+                        Showing <span className="text-[#1E222D] font-bold">{trades.length}</span> of <span className="text-[#1E222D] font-bold">{totalResults}</span> Trades
                     </p>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5">
                         <button
                             disabled={page === 1}
                             onClick={() => setPage((p) => Math.max(1, p - 1))}
-                            className="w-10 h-10 flex items-center justify-center bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-xl disabled:opacity-30 hover:border-cyan-500/50 transition-all active:scale-95"
+                            className="w-7 h-7 flex items-center justify-center bg-white border border-[#E0E3EB] rounded disabled:opacity-30 hover:border-[#0052FF] transition-colors"
                         >
-                            <ChevronLeft className="w-5 h-5 text-slate-600 dark:text-slate-400" />
+                            <ChevronLeft className="w-4 h-4 text-[#434651]" />
                         </button>
                         <div className="flex items-center gap-1">
                             {(() => {
@@ -535,14 +506,14 @@ export default function TradesPage() {
                                 }
                                 return pages.map((p, i) => (
                                     p === '...' ? (
-                                        <span key={`ellipsis-${i}`} className="w-10 h-10 flex items-center justify-center text-slate-400 font-black">
+                                        <span key={`ellipsis-${i}`} className="w-7 h-7 flex items-center justify-center text-[#787B86] font-semibold text-xs">
                                             ...
                                         </span>
                                     ) : (
                                         <button
                                             key={`page-${p}`}
                                             onClick={() => setPage(p as number)}
-                                            className={`w-10 h-10 text-[10px] font-black rounded-xl transition-all ${page === p ? 'bg-cyan-500 text-white shadow-lg shadow-cyan-500/20' : 'bg-slate-50 dark:bg-white/5 text-slate-400 hover:text-slate-600'}`}
+                                            className={`w-7 h-7 text-xs font-semibold rounded transition-colors ${page === p ? 'bg-[#0052FF] text-white shadow-sm' : 'bg-white border border-[#E0E3EB] text-[#434651] hover:bg-[#F0F3FA]'}`}
                                         >
                                             {p}
                                         </button>
@@ -553,9 +524,9 @@ export default function TradesPage() {
                         <button
                             disabled={page === totalPages}
                             onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                            className="w-10 h-10 flex items-center justify-center bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-xl disabled:opacity-30 hover:border-cyan-500/50 transition-all active:scale-95"
+                            className="w-7 h-7 flex items-center justify-center bg-white border border-[#E0E3EB] rounded disabled:opacity-30 hover:border-[#0052FF] transition-colors"
                         >
-                            <ChevronRight className="w-5 h-5 text-slate-600 dark:text-slate-400" />
+                            <ChevronRight className="w-4 h-4 text-[#434651]" />
                         </button>
                     </div>
                 </div>
@@ -563,3 +534,4 @@ export default function TradesPage() {
         </div>
     )
 }
+

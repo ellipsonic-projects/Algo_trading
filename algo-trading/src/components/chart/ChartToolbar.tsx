@@ -7,6 +7,8 @@ type ChartToolbarProps = {
   onTimeframeChange: (tf: string) => void;
   selectedDate: string;
   onDateChange: (date: string) => void;
+  chartType: 'candlestick' | 'heikenAshi';
+  onChartTypeChange: (type: 'candlestick' | 'heikenAshi') => void;
   toggles: LayerToggles;
   onToggleChange: (key: keyof LayerToggles) => void;
   emaPeriod: number;
@@ -19,6 +21,8 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
   onTimeframeChange,
   selectedDate,
   onDateChange,
+  chartType,
+  onChartTypeChange,
   toggles,
   onToggleChange,
   emaPeriod,
@@ -49,7 +53,7 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 p-2 bg-[#F8F9FA] rounded border border-[#E0E3EB] mb-3 relative select-none">
-      {/* Timeframe & Date */}
+      {/* Timeframe, Chart Type & Date */}
       <div className="flex items-center gap-3">
         {/* Timeframe Selector */}
         <div className="flex items-center bg-[#E0E3EB] p-0.5 rounded">
@@ -66,6 +70,32 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
               {tf.label}
             </button>
           ))}
+        </div>
+
+        {/* Chart Type Selector */}
+        <div className="flex items-center bg-[#E0E3EB] p-0.5 rounded">
+          <button
+            onClick={() => onChartTypeChange('candlestick')}
+            className={`px-2.5 py-1 text-xs font-semibold rounded transition-colors ${
+              chartType === 'candlestick'
+                ? 'bg-white text-[#0052FF] shadow-sm'
+                : 'text-[#5D606B] hover:text-[#1E222D]'
+            }`}
+            title="Standard Candlestick Chart"
+          >
+            🕯️ Regular
+          </button>
+          <button
+            onClick={() => onChartTypeChange('heikenAshi')}
+            className={`px-2.5 py-1 text-xs font-semibold rounded transition-colors ${
+              chartType === 'heikenAshi'
+                ? 'bg-white text-[#0052FF] shadow-sm'
+                : 'text-[#5D606B] hover:text-[#1E222D]'
+            }`}
+            title="Heiken Ashi Smoothed Chart"
+          >
+            📊 Heiken Ashi
+          </button>
         </div>
 
         {/* Date Picker */}

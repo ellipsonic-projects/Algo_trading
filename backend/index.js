@@ -46,7 +46,13 @@ mongoose.connect(process.env.MONGO_URI)
     .then(() => console.log('DB connection successful!'))
     .catch(err => console.error('DB connection error:', err));
 
+const marketDataService = require('./services/marketDataService');
+
 const port = process.env.PORT || 5000;
 app.listen(port, () => {
     console.log(`App running on port ${port}...`);
+    // Auto-poll Python wrapper for active session tokens
+    setInterval(() => {
+        marketDataService.autoInitSession();
+    }, 10000);
 });

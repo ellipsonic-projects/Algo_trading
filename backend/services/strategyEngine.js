@@ -2,6 +2,7 @@ const Trade = require('../models/Trade');
 const Strategy = require('../models/Strategy');
 const contractManager = require('./contractManager');
 const marketDataService = require('./marketDataService');
+const orderUpdateService = require('./orderUpdateService');
 const marketSessionManager = require('./marketSessionManager');
 marketSessionManager.startMonitoring();
 
@@ -153,6 +154,12 @@ class SingleStrategyRunner {
     this.lastEntryTime = null;
     this.lastProcessedCandleTs = null;
     this.isExiting = false;
+    this.exitInProgress = false;
+    this.exitTriggered = false;
+    this.exitReasonStored = null;
+    this.lastExitError = null;
+    this.exitRetryCount = 0;
+    this.lastExitAttemptTime = 0;
 
     this.contractInterval = null;
     this.scanInterval = null;
@@ -428,8 +435,8 @@ class SingleStrategyRunner {
           const peSignal = this.strategyName === 'ModifiedHeikenAshi' ? analyzeModifiedHeikenAshiStrategy(peHa) : analyzeHeikenAshiStrategy(peHa);
           const calcEndMs = Date.now();
 
-          const ceLastClosedTs = ceHa.length >= 1 ? ceHa[ceHa.length - 1].ts : null;
-          const peLastClosedTs = peHa.length >= 1 ? peHa[peHa.length - 1].ts : null;
+          const ceLastClosedTs = ceHa.length >= 1 ? (ceHa[ceHa.length - 1].time ?? null) : null;
+          const peLastClosedTs = peHa.length >= 1 ? (peHa[peHa.length - 1].time ?? null) : null;
 
           if (ceSignal.isEntry && ceLastClosedTs !== this.lastEntryTime) {
             this.lastEntryTime = ceLastClosedTs;
@@ -671,65 +678,76 @@ class SingleStrategyRunner {
             this.message = `Position Active | LTP: ₹${livePrice.toFixed(2)} | PnL: ₹${pnl.toFixed(2)}`;
           }
 
-          let shouldExit = false;
+          let shouldExit = this.exitTriggered || false;
           let exitPrice = livePrice;
-          let exitReason = '';
+          let exitReason = this.exitReasonStored || '';
 
-          if (this.strategyName === '5minBreakout') {
-            const targetPoints = Number(this.config.targetPoints) || 20;
-            const targetPrice = (this.entryPrice && !isNaN(this.entryPrice)) ? (this.entryPrice + targetPoints) : this.target;
+          if (!shouldExit) {
+            if (this.strategyName === '5minBreakout') {
+              const targetPoints = Number(this.config.targetPoints) || 20;
+              const targetPrice = (this.entryPrice && !isNaN(this.entryPrice)) ? (this.entryPrice + targetPoints) : this.target;
 
-            if (this.stopLoss && livePrice <= this.stopLoss) {
-              shouldExit = true;
-              exitReason = 'SL';
-            } else if (targetPrice && livePrice >= targetPrice) {
-              shouldExit = true;
-              exitReason = 'Target';
-            }
-          } else if (this.strategyName === 'ModifiedHeikenAshi' && this.config.exitStrategy === 'TRAILING_SL') {
-            const finalTargetPoints = Number(this.config.finalTargetPoints) || 100;
-            const initialSlPoints = Number(this.config.initialSlPoints) || 30;
-            const trailingStopPoints = Number(this.config.trailingStopPoints) || 20;
-
-            if (this.entryPrice && this.activeTrailingSl !== null) {
-              const targetPrice = this.entryPrice + finalTargetPoints;
-              if (livePrice >= targetPrice) {
+              if (this.stopLoss && livePrice <= this.stopLoss) {
+                shouldExit = true;
+                exitReason = 'SL';
+              } else if (targetPrice && livePrice >= targetPrice) {
                 shouldExit = true;
                 exitReason = 'Target';
-              } else if (livePrice <= this.activeTrailingSl) {
-                shouldExit = true;
-                exitReason = this.activeTrailingSl === (this.entryPrice - initialSlPoints) ? 'SL' : 'Trailing SL';
-              } else {
-                const pointsGained = livePrice - this.entryPrice;
-                if (pointsGained >= trailingStopPoints) {
-                  const steps = Math.floor(pointsGained / trailingStopPoints);
-                  const proposedSl = this.entryPrice + (steps * trailingStopPoints) - initialSlPoints;
-                  if (proposedSl > this.activeTrailingSl) {
-                    this.activeTrailingSl = proposedSl;
-                    this.log(`Trailed SL up to ₹${proposedSl}`);
+              }
+            } else if (this.strategyName === 'ModifiedHeikenAshi' && this.config.exitStrategy === 'TRAILING_SL') {
+              const finalTargetPoints = Number(this.config.finalTargetPoints) || 100;
+              const initialSlPoints = Number(this.config.initialSlPoints) || 30;
+              const trailingStopPoints = Number(this.config.trailingStopPoints) || 20;
+
+              if (this.entryPrice && this.activeTrailingSl !== null) {
+                const targetPrice = this.entryPrice + finalTargetPoints;
+                if (livePrice >= targetPrice) {
+                  shouldExit = true;
+                  exitReason = 'Target';
+                } else if (livePrice <= this.activeTrailingSl) {
+                  shouldExit = true;
+                  exitReason = this.activeTrailingSl === (this.entryPrice - initialSlPoints) ? 'SL' : 'Trailing SL';
+                } else {
+                  const pointsGained = livePrice - this.entryPrice;
+                  if (pointsGained >= trailingStopPoints) {
+                    const steps = Math.floor(pointsGained / trailingStopPoints);
+                    const proposedSl = this.entryPrice + (steps * trailingStopPoints) - initialSlPoints;
+                    if (proposedSl > this.activeTrailingSl) {
+                      this.activeTrailingSl = proposedSl;
+                      this.log(`Trailed SL up to ₹${proposedSl}`);
+                    }
                   }
                 }
               }
-            }
-          } else {
-            // Combined SL & Target checks for HeikenAshi and all other strategies
-            const targetPoints = Number(this.config.targetPoints) || 20;
-            const slPoints = Number(this.config.slPoints) || 30;
+            } else {
+              // Combined SL & Target checks for HeikenAshi and all other strategies
+              const targetPoints = Number(this.config.targetPoints) || 20;
+              const slPoints = Number(this.config.slPoints) || 30;
 
-            if (this.entryPrice) {
-              if (livePrice >= this.entryPrice + targetPoints) {
-                shouldExit = true;
-                exitReason = 'Target';
-              } else if (livePrice <= this.entryPrice - slPoints) {
-                shouldExit = true;
-                exitReason = 'SL';
+              if (this.entryPrice) {
+                if (livePrice >= this.entryPrice + targetPoints) {
+                  shouldExit = true;
+                  exitReason = 'Target';
+                } else if (livePrice <= this.entryPrice - slPoints) {
+                  shouldExit = true;
+                  exitReason = 'SL';
+                }
               }
+            }
+
+            if (shouldExit) {
+              this.exitTriggered = true;
+              this.exitReasonStored = exitReason;
             }
           }
 
-        if (shouldExit && !this.isExiting) {
-          await this.executeExit(contract, exitPrice, exitReason);
-        }
+          if (shouldExit && !this.exitInProgress) {
+            const now = Date.now();
+            const backoffDelay = Math.min(1000 * Math.pow(2, this.exitRetryCount), 60000);
+            if (now - this.lastExitAttemptTime >= backoffDelay) {
+              await this.executeExit(contract, exitPrice, exitReason);
+            }
+          }
 
       } catch (err) {
         console.error(`[${this.strategyName}] Monitor error:`, err.message);
@@ -740,10 +758,16 @@ class SingleStrategyRunner {
   }
 
   async executeExit(contract, price, exitReason) {
-    if (this.isExiting) return;
+    if (this.exitInProgress) {
+      this.log('Exit order execution already in progress. Skipping duplicate call.');
+      return;
+    }
+    this.exitInProgress = true;
     this.isExiting = true;
+    this.lastExitAttemptTime = Date.now();
     let actualExitPx = price;
     const qty = this.config.quantity || 10;
+    let exitSuccess = false;
 
     if (this.config.liveTradingConsent && contract) {
       try {
@@ -757,73 +781,136 @@ class SingleStrategyRunner {
           ordertype: 'MARKET'
         });
         const orderId = orderRes?.item?.response?.data?.orderid || orderRes?.item?.response?.orderid;
+        const brokerStatus = orderRes?.item?.response?.status;
+        const brokerError = orderRes?.item?.response?.error;
+
         if (orderId) {
-          for (let i = 0; i < 4; i++) {
-            await new Promise(r => setTimeout(r, 1000));
-            const ob = await callAngelApi('/angel/orderbook');
-            const order = (ob?.data || []).find(o => String(o.orderid) === String(orderId));
-            if (order && (order.status === 'complete' || order.status === 'executed' || order.orderstatus === 'complete')) {
-              const execPrice = parseFloat(order.averageprice || order.price);
-              if (!isNaN(execPrice) && execPrice > 0) {
-                actualExitPx = execPrice;
-                break;
+          let handleOrderUpdate = null;
+          let fallbackTimer = null;
+
+          const orderPromise = new Promise((resolve, reject) => {
+            handleOrderUpdate = (data) => {
+              if (String(data.orderid) === String(orderId)) {
+                const status = (data.status || data.orderstatus || '').toLowerCase();
+                if (status === 'complete' || status === 'executed') {
+                  const execPrice = parseFloat(data.averageprice || data.price);
+                  resolve(execPrice > 0 ? execPrice : actualExitPx);
+                } else if (status === 'rejected' || status === 'cancelled') {
+                  reject(new Error(`Broker order was rejected or cancelled: ${data.text || status}`));
+                }
               }
-            }
+            };
+
+            orderUpdateService.on('order:update', handleOrderUpdate);
+
+            fallbackTimer = setTimeout(async () => {
+              try {
+                console.log(`[${this.strategyName}] WS order confirmation timeout (5s) for ${orderId}. Checking orderbook fallback...`);
+                const ob = await callAngelApi('/angel/orderbook');
+                const order = (ob?.data || []).find(o => String(o.orderid) === String(orderId));
+                if (order && (order.status === 'complete' || order.status === 'executed' || order.orderstatus === 'complete')) {
+                  const execPrice = parseFloat(order.averageprice || order.price);
+                  resolve(execPrice > 0 ? execPrice : actualExitPx);
+                } else if (order && (order.status === 'rejected' || order.status === 'cancelled' || order.orderstatus === 'rejected')) {
+                  reject(new Error(`Broker order was rejected or cancelled: ${order.text || order.status}`));
+                } else {
+                  reject(new Error('Order placed but confirmation timed out in orderbook fallback'));
+                }
+              } catch (err) {
+                reject(err);
+              }
+            }, 5000);
+          });
+
+          try {
+            const confirmedPrice = await orderPromise;
+            actualExitPx = confirmedPrice;
+            exitSuccess = true;
+          } finally {
+            if (handleOrderUpdate) orderUpdateService.off('order:update', handleOrderUpdate);
+            if (fallbackTimer) clearTimeout(fallbackTimer);
           }
+        } else if (brokerStatus === false && brokerError) {
+          const errStr = String(brokerError).toLowerCase();
+          if (errStr.includes('no holdings') || errStr.includes('position not found') || errStr.includes('insufficient quantity to sell') || errStr.includes('no open position')) {
+            this.log(`Rejection indicates position already closed: ${brokerError}. Cleaning up...`);
+            exitSuccess = true;
+          } else {
+            throw new Error(`Broker rejected order: ${brokerError}`);
+          }
+        } else {
+          throw new Error('SmartAPI returned empty or failed response during order placement');
         }
       } catch (err) {
-        console.error(`[${this.strategyName}] LIVE SELL failed:`, err.message);
+        this.exitRetryCount++;
+        this.lastExitError = err.message;
+        this.log(`LIVE SELL failed: ${err.message}. Retries: ${this.exitRetryCount}`);
+        this.exitInProgress = false;
+        this.isExiting = false;
+        return;
       }
+    } else {
+      exitSuccess = true;
     }
 
-    this.log(`EXIT ${contract ? contract.tradingsymbol : ''} @ ₹${actualExitPx} (${exitReason})`);
+    if (exitSuccess) {
+      this.log(`EXIT ${contract ? contract.tradingsymbol : ''} @ ₹${actualExitPx} (${exitReason})`);
 
-    if (this.activeTradeId) {
-      try {
-        const trade = await Trade.findById(this.activeTradeId);
-        if (trade) {
-          const pnl = (actualExitPx - trade.buyPrice) * trade.qty;
-          trade.exitPrice = actualExitPx;
-          trade.exitReason = exitReason;
-          trade.pnl = pnl;
-          await trade.save();
-          this.lastCompletedTrade = trade.toObject();
+      if (this.activeTradeId) {
+        try {
+          const trade = await Trade.findById(this.activeTradeId);
+          if (trade) {
+            const pnl = (actualExitPx - trade.buyPrice) * trade.qty;
+            trade.exitPrice = actualExitPx;
+            trade.exitReason = exitReason;
+            trade.pnl = pnl;
+            await trade.save();
+            this.lastCompletedTrade = trade.toObject();
+          }
+        } catch (err) {
+          console.error(`[${this.strategyName}] Trade exit update DB error:`, err.message);
         }
-      } catch (err) {
-        console.error(`[${this.strategyName}] Trade exit update DB error:`, err.message);
       }
-    }
 
-    this.activeTradeId = null;
-    this.activeTradePremium = null;
-    this.entryPrice = null;
-    this.activeTradeContract = null;
-    this.activeTrailingSl = null;
-    this.stopLoss = null;
-    this.target = null;
-    this.trend = 'NEUTRAL';
-    this.isExiting = false;
+      this.activeTradeId = null;
+      this.activeTradePremium = null;
+      this.entryPrice = null;
+      this.activeTradeContract = null;
+      this.activeTrailingSl = null;
+      this.stopLoss = null;
+      this.target = null;
+      this.rangeSide = null;
+      this.trend = 'NEUTRAL';
+      
+      this.exitInProgress = false;
+      this.isExiting = false;
+      this.exitTriggered = false;
+      this.exitReasonStored = null;
+      this.exitRetryCount = 0;
+      this.lastExitAttemptTime = 0;
+      this.lastExitError = null;
 
-    if (this.monitorInterval) {
-      clearInterval(this.monitorInterval);
-      this.monitorInterval = null;
-    }
+      if (this.monitorInterval) {
+        clearInterval(this.monitorInterval);
+        this.monitorInterval = null;
+      }
 
-    // Cooldown check
-    let cooldownMinutes = 0;
-    if (this.strategyName === '5minBreakout') {
-      cooldownMinutes = 1;
-    } else {
-      if (exitReason === 'SL') cooldownMinutes = 4;
-      else if (exitReason === 'Target' || exitReason === 'Trailing SL') cooldownMinutes = 2;
-    }
+      // Cooldown check
+      let cooldownMinutes = 0;
+      if (this.strategyName === '5minBreakout') {
+        cooldownMinutes = 1;
+      } else {
+        if (exitReason === 'SL') cooldownMinutes = 4;
+        else if (exitReason === 'Target' || exitReason === 'Trailing SL') cooldownMinutes = 2;
+      }
 
-    if (cooldownMinutes > 0) {
-      this.cooldownUntil = Date.now() + (cooldownMinutes * 60 * 1000);
-      this.state = 'COOLDOWN';
-      this.log(`Entering cooldown for ${cooldownMinutes} min`);
-    } else {
-      this.state = this.strategyName === '5minBreakout' ? 'WAITING' : 'SCANNING';
+      if (cooldownMinutes > 0) {
+        this.cooldownUntil = Date.now() + (cooldownMinutes * 60 * 1000);
+        this.state = 'COOLDOWN';
+        this.log(`Entering cooldown for ${cooldownMinutes} min`);
+      } else {
+        this.state = this.strategyName === '5minBreakout' ? 'WAITING' : 'SCANNING';
+      }
     }
   }
 
@@ -844,7 +931,12 @@ class SingleStrategyRunner {
         // use fallback
       }
     }
-    await this.executeExit(contract, exitPx, 'Strategy');
+
+    this.exitTriggered = true;
+    this.exitReasonStored = 'Manual';
+    this.exitRetryCount = 0;
+    this.lastExitAttemptTime = 0;
+    await this.executeExit(contract, exitPx, 'Manual');
   }
 
   getStatus() {
@@ -877,6 +969,12 @@ class SingleStrategyRunner {
       stopLoss: this.stopLoss,
       target: this.target,
       lastCompletedTrade: this.lastCompletedTrade,
+      exitInProgress: this.exitInProgress,
+      exitTriggered: this.exitTriggered,
+      exitReasonStored: this.exitReasonStored,
+      lastExitError: this.lastExitError,
+      exitRetryCount: this.exitRetryCount,
+      lastExitAttemptTime: this.lastExitAttemptTime,
       logs: this.logs
     };
   }

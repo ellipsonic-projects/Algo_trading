@@ -1,304 +1,352 @@
 const EventEmitter = require('events');
 const config = require('../config');
 const marketSessionManager = require('./marketSessionManager');
+const smartStream = require('./smartStream');
+const orderUpdateService = require('./orderUpdateService');
 
 const ANGEL_API_BASE = config.API.ANGEL_ONE_API_BASE;
 
-function formatPrecisionTime(d = new Date()) {
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  const ss = String(d.getSeconds()).padStart(2, '0');
-  const ms = String(d.getMilliseconds()).padStart(3, '0');
-  return `${hh}:${mm}:${ss}.${ms}`;
-}
-
-function parseCandleTsMs(ts) {
-  const raw = String(ts || '').trim();
-  if (!raw) return null;
-  const direct = Date.parse(raw);
-  if (Number.isFinite(direct)) return direct;
-  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/);
-  if (!m) return null;
-  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), m[6] ? Number(m[6]) : 0, 0).getTime();
-}
-
-const INTERVAL_MINUTES_MAP = {
-  ONE_MINUTE: 1,
-  THREE_MINUTE: 3,
-  FIVE_MINUTE: 5,
-  FIFTEEN_MINUTE: 15,
-  THIRTY_MINUTE: 30,
-  ONE_HOUR: 60
+const EXCH_TYPE_MAP = {
+  NSE: 1,
+  nse_cm: 1,
+  NFO: 2,
+  nse_fo: 2,
+  BSE: 3,
+  bse_cm: 3,
+  BFO: 4,
+  bse_fo: 4,
+  MCX: 5,
+  mcx_fo: 5
 };
 
-let lastApiCallMs = 0;
-const MIN_REQUEST_SPACING_MS = 200;
-
-async function callAngelApi(endpoint, method = 'GET', body = null) {
-  const now = Date.now();
-  const timeSinceLast = now - lastApiCallMs;
-  if (timeSinceLast < MIN_REQUEST_SPACING_MS) {
-    const waitMs = MIN_REQUEST_SPACING_MS - timeSinceLast;
-    await new Promise(r => setTimeout(r, waitMs));
-  }
-  lastApiCallMs = Date.now();
-
-  const url = `${ANGEL_API_BASE}${endpoint}`;
-  const options = {
-    method,
-    headers: { 'Content-Type': 'application/json' }
-  };
-  if (body !== null) {
-    options.body = JSON.stringify(body);
-  }
-  const res = await fetch(url, options);
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Angel API Error [${res.status}]: ${text}`);
-  }
-  return await res.json();
-}
-
-async function callAngelApiWithRetry(endpoint, method = 'GET', body = null, maxRetries = 3, initialDelayMs = 1000) {
-  let attempt = 0;
-  while (true) {
-    attempt++;
-    try {
-      return await callAngelApi(endpoint, method, body);
-    } catch (err) {
-      if (attempt <= maxRetries) {
-        const delay = initialDelayMs * Math.pow(2, attempt - 1);
-        console.warn(`[MarketDataService] API request to ${endpoint} failed (attempt ${attempt}/${maxRetries}): ${err.message}. Retrying in ${delay}ms...`);
-        await new Promise(r => setTimeout(r, delay));
-      } else {
-        throw err;
-      }
-    }
-  }
-}
+const INTERVAL_MS_MAP = {
+  ONE_MINUTE: 60 * 1000,
+  '1m': 60 * 1000,
+  THREE_MINUTE: 3 * 60 * 1000,
+  '3m': 3 * 60 * 1000,
+  FIVE_MINUTE: 5 * 60 * 1000,
+  '5m': 5 * 60 * 1000,
+  FIFTEEN_MINUTE: 15 * 60 * 1000,
+  '15m': 15 * 60 * 1000,
+  THIRTY_MINUTE: 30 * 60 * 1000,
+  '30m': 30 * 60 * 1000,
+  ONE_HOUR: 60 * 60 * 1000,
+  '1h': 60 * 60 * 1000
+};
 
 class MarketDataService extends EventEmitter {
   constructor() {
     super();
-    this.buffers = new Map(); // key -> { key, exchange, symboltoken, interval, candles, state, refCount, idleTimer, lastTsMs, seedingPromise }
-    this.probeInterval = null;
-    this.isProbing = false;
-    global.mdsInstance = this;
+    this.ltpCache = new Map(); // token -> { ltp, timestamp }
+    this.subscribers = new Map(); // token -> { exchange, exchangeType, refCount }
+    this.candleBuilders = new Map(); // bufferKey -> builder object
+
+    this.wsConsecutiveTicks = 0;
+    this.fallbackTimer = null;
+    this.fallbackPollingInterval = null;
+    this.isRestFallbackActive = false;
+
+    smartStream.on('tick', (tick) => this.handleTick(tick));
+    smartStream.on('disconnected', () => this.handleStreamDisconnect());
+    smartStream.on('connected', () => this.handleStreamConnect());
   }
 
   getBufferKey(exchange, symboltoken, interval) {
     return `${exchange}_${symboltoken}_${interval}`;
   }
 
-  async subscribe(exchange, symboltoken, interval = 'FIVE_MINUTE', lookbackMinutes = null) {
-    const key = this.getBufferKey(exchange, symboltoken, interval);
-    let bufEntry = this.buffers.get(key);
+  getExchangeType(exchange) {
+    const ex = String(exchange || '').toUpperCase();
+    return EXCH_TYPE_MAP[ex] || 1;
+  }
 
-    if (bufEntry) {
-      bufEntry.refCount++;
-      if (bufEntry.idleTimer) {
-        clearTimeout(bufEntry.idleTimer);
-        bufEntry.idleTimer = null;
-        bufEntry.state = 'LIVE';
-        console.log(`[MarketDataService] Buffer ${key} resumed from IDLE to LIVE (refCount: ${bufEntry.refCount})`);
+  getIntervalMs(interval) {
+    const iv = String(interval || '').toUpperCase();
+    return INTERVAL_MS_MAP[iv] || 5 * 60 * 1000;
+  }
+
+  initSession(credentials) {
+    if (credentials) {
+      smartStream.connect(credentials);
+      if (credentials.jwtToken) {
+        orderUpdateService.connect(credentials.jwtToken);
       }
-      if (bufEntry.state === 'LIVE' && bufEntry.candles.length > 0) {
-        return bufEntry.candles;
+    }
+  }
+
+  handleStreamConnect() {
+    console.log('[MarketDataService] Smart Stream connected. Monitoring consecutive ticks...');
+    this.wsConsecutiveTicks = 0;
+    if (this.fallbackTimer) {
+      clearTimeout(this.fallbackTimer);
+      this.fallbackTimer = null;
+    }
+  }
+
+  handleStreamDisconnect() {
+    console.warn('[MarketDataService] Smart Stream disconnected. Starting 10s timeout for REST fallback...');
+    this.wsConsecutiveTicks = 0;
+    if (!this.fallbackTimer) {
+      this.fallbackTimer = setTimeout(() => {
+        this.startRestFallback();
+      }, 10000);
+    }
+  }
+
+  startRestFallback() {
+    if (this.isRestFallbackActive) return;
+    console.warn('[MarketDataService] 10s WebSocket disconnect timeout reached. Enabling REST Fallback Polling (2s interval)...');
+    this.isRestFallbackActive = true;
+
+    if (this.fallbackPollingInterval) clearInterval(this.fallbackPollingInterval);
+    this.fallbackPollingInterval = setInterval(() => {
+      this.pollRestLtpFallback();
+    }, 2000);
+  }
+
+  stopRestFallback() {
+    if (!this.isRestFallbackActive) return;
+    console.log('[MarketDataService] WebSocket feed restored with 3 consecutive ticks. Disabling REST Fallback Polling.');
+    this.isRestFallbackActive = false;
+    if (this.fallbackPollingInterval) {
+      clearInterval(this.fallbackPollingInterval);
+      this.fallbackPollingInterval = null;
+    }
+  }
+
+  async pollRestLtpFallback() {
+    if (this.subscribers.size === 0) return;
+
+    for (const [token, sub] of this.subscribers.entries()) {
+      try {
+        const url = `${ANGEL_API_BASE}/market/ltp?exchange=${encodeURIComponent(sub.exchange)}&tradingsymbol=&symboltoken=${encodeURIComponent(token)}`;
+        const res = await fetch(url);
+        if (res.ok) {
+          const json = await res.json();
+          if (json && json.ltp > 0) {
+            this.handleTick({
+              token,
+              exchangeType: sub.exchangeType,
+              ltp: json.ltp,
+              timestamp: Date.now(),
+              isFallback: true
+            });
+          }
+        }
+      } catch (err) {
+        // Suppress fallback error output
       }
-      if (bufEntry.seedingPromise) {
-        return await bufEntry.seedingPromise;
+    }
+  }
+
+  handleTick(tick) {
+    if (!tick || !tick.token || typeof tick.ltp !== 'number' || tick.ltp <= 0) return;
+
+    const token = String(tick.token);
+    this.ltpCache.set(token, { ltp: tick.ltp, timestamp: tick.timestamp });
+
+    if (!tick.isFallback) {
+      this.wsConsecutiveTicks++;
+      if (this.wsConsecutiveTicks >= 3 && this.isRestFallbackActive) {
+        this.stopRestFallback();
       }
-      if (bufEntry.state === 'FAILED' && bufEntry.lastFailMs && (Date.now() - bufEntry.lastFailMs < 10000)) {
-        throw new Error(`Buffer ${key} seeding in cooldown after recent failure`);
-      }
-    } else {
-      bufEntry = {
-        key,
-        exchange,
-        symboltoken,
-        interval,
-        candles: [],
-        state: 'SEEDING',
-        refCount: 1,
-        idleTimer: null,
-        lastTsMs: 0,
-        seedingPromise: null,
-        lastFailMs: 0
-      };
-      this.buffers.set(key, bufEntry);
     }
 
-    // Seed historical buffer with deduplication and state protection
-    const seedTask = async () => {
-      try {
-        bufEntry.state = 'SEEDING';
-        const intervalMins = INTERVAL_MINUTES_MAP[interval] || 5;
-        const targetLookback = lookbackMinutes || (config.ENGINE.BUFFER_SIZE * intervalMins);
-
-        console.log(`[MarketDataService] Seeding buffer for ${key} (Lookback: ${targetLookback}m)...`);
-        const res = await callAngelApiWithRetry(`/market/candles?exchange=${encodeURIComponent(exchange)}&symboltoken=${encodeURIComponent(symboltoken)}&interval=${encodeURIComponent(interval)}&lookback_minutes=${targetLookback}`);
-        
-        const rawItems = Array.isArray(res.items) ? res.items : [];
-        const sorted = [...rawItems].sort((a, b) => (parseCandleTsMs(a.ts) || 0) - (parseCandleTsMs(b.ts) || 0));
-        const bounded = sorted.slice(-config.ENGINE.BUFFER_SIZE);
-
-        if (bounded.length === 0) {
-          bufEntry.state = 'FAILED';
-          bufEntry.lastFailMs = Date.now();
-          bufEntry.candles = [];
-          console.warn(`[MarketDataService] Buffer ${key} seeding FAILED: 0 candles returned (state: FAILED)`);
-          throw new Error(`Buffer ${key} seeding returned 0 candles`);
-        }
-
-        bufEntry.candles = bounded;
-        bufEntry.lastTsMs = parseCandleTsMs(bounded[bounded.length - 1].ts) || 0;
-        bufEntry.state = 'LIVE';
-        bufEntry.lastFailMs = 0;
-
-        console.log(`[MarketDataService] Buffer ${key} SEEDED successfully with ${bounded.length} candles ending at ${bounded[bounded.length - 1].ts}`);
-        
-        this.ensureProbeLoopRunning();
-        return bufEntry.candles;
-      } catch (err) {
-        bufEntry.state = 'FAILED';
-        bufEntry.lastFailMs = Date.now();
-        console.error(`[MarketDataService] Error seeding buffer for ${key}:`, err.message);
-        throw err;
-      } finally {
-        bufEntry.seedingPromise = null;
+    // Distribute tick to all matching candle builders for this token
+    for (const [key, builder] of this.candleBuilders.entries()) {
+      if (builder.symboltoken === token) {
+        this.processTickForBuilder(builder, tick);
       }
-    };
+    }
+  }
 
-    bufEntry.seedingPromise = seedTask();
-    return await bufEntry.seedingPromise;
+  processTickForBuilder(builder, tick) {
+    const intervalMs = this.getIntervalMs(builder.interval);
+    const ts = tick.timestamp;
+
+    if (builder.lastProcessedTs && ts < builder.lastProcessedTs) {
+      return; // Discard out of order ticks
+    }
+    builder.lastProcessedTs = ts;
+
+    const candleStartMs = Math.floor(ts / intervalMs) * intervalMs;
+    const candleTimeSec = Math.floor(candleStartMs / 1000);
+
+    if (!builder.activeCandle) {
+      builder.activeCandle = {
+        time: candleTimeSec,
+        open: tick.ltp,
+        high: tick.ltp,
+        low: tick.ltp,
+        close: tick.ltp,
+        candleStartMs
+      };
+      return;
+    }
+
+    if (candleStartMs === builder.activeCandle.candleStartMs) {
+      builder.activeCandle.high = Math.max(builder.activeCandle.high, tick.ltp);
+      builder.activeCandle.low = Math.min(builder.activeCandle.low, tick.ltp);
+      builder.activeCandle.close = tick.ltp;
+    } else if (candleStartMs > builder.activeCandle.candleStartMs) {
+      // Close current active candle
+      const closedCandle = { ...builder.activeCandle };
+      delete closedCandle.candleStartMs;
+      builder.candles.push(closedCandle);
+      if (builder.candles.length > 200) builder.candles.shift();
+
+      this.emit('candle:closed', {
+        exchange: builder.exchange,
+        symboltoken: builder.symboltoken,
+        interval: builder.interval,
+        candle: closedCandle,
+        candles: builder.candles
+      });
+
+      // Fill-forward missing gap candles if any
+      let gapMs = candleStartMs - builder.activeCandle.candleStartMs;
+      while (gapMs > intervalMs) {
+        const ghostStartMs = builder.activeCandle.candleStartMs + intervalMs;
+        const ghostCandle = {
+          time: Math.floor(ghostStartMs / 1000),
+          open: closedCandle.close,
+          high: closedCandle.close,
+          low: closedCandle.close,
+          close: closedCandle.close
+        };
+        builder.candles.push(ghostCandle);
+        if (builder.candles.length > 200) builder.candles.shift();
+
+        this.emit('candle:closed', {
+          exchange: builder.exchange,
+          symboltoken: builder.symboltoken,
+          interval: builder.interval,
+          candle: ghostCandle,
+          candles: builder.candles
+        });
+
+        builder.activeCandle.candleStartMs = ghostStartMs;
+        gapMs -= intervalMs;
+      }
+
+      // Initialize new active candle
+      builder.activeCandle = {
+        time: candleTimeSec,
+        open: tick.ltp,
+        high: tick.ltp,
+        low: tick.ltp,
+        close: tick.ltp,
+        candleStartMs
+      };
+    }
+  }
+
+  async autoInitSession() {
+    if (smartStream.isConnected) return;
+    try {
+      const res = await fetch(`${ANGEL_API_BASE}/angel/session-tokens`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.status && data.client_code && data.feed_token) {
+          this.initSession({
+            clientCode: data.client_code,
+            feedToken: data.feed_token,
+            jwtToken: data.jwt_token,
+            apiKey: data.api_key
+          });
+        }
+      }
+    } catch (e) {
+      // Session fetch error
+    }
+  }
+
+  async subscribe(exchange, symboltoken, interval = 'FIVE_MINUTE', lookbackMinutes = null) {
+    await this.autoInitSession();
+
+    const token = String(symboltoken);
+    const exchType = this.getExchangeType(exchange);
+    const key = this.getBufferKey(exchange, token, interval);
+
+    // Reference Counting
+    let sub = this.subscribers.get(token);
+    if (!sub) {
+      sub = { exchange, exchangeType: exchType, refCount: 0 };
+      this.subscribers.set(token, sub);
+    }
+    sub.refCount++;
+
+    if (sub.refCount === 1) {
+      smartStream.subscribe([{ exchangeType: exchType, tokens: [token] }]);
+    }
+
+    // Builder Setup
+    let builder = this.candleBuilders.get(key);
+    if (!builder) {
+      builder = {
+        key,
+        exchange,
+        symboltoken: token,
+        interval,
+        candles: [],
+        activeCandle: null,
+        lastProcessedTs: 0
+      };
+      this.candleBuilders.set(key, builder);
+
+      // Backfill historical candles via REST
+      try {
+        const targetDate = new Date().toISOString().split('T')[0];
+        const url = `${ANGEL_API_BASE}/market/candles?exchange=${encodeURIComponent(exchange)}&symboltoken=${encodeURIComponent(token)}&interval=${encodeURIComponent(interval)}&date=${targetDate}`;
+        const res = await fetch(url);
+        if (res.ok) {
+          const json = await res.json();
+          if (Array.isArray(json.items)) {
+            const parsed = json.items.map(c => ({
+              time: Math.floor(new Date(c.ts.includes('+') ? c.ts : `${c.ts.replace(' ', 'T')}+05:30`).getTime() / 1000),
+              open: Number(c.open),
+              high: Number(c.high),
+              low: Number(c.low),
+              close: Number(c.close)
+            })).sort((a, b) => a.time - b.time);
+            builder.candles = parsed;
+          }
+        }
+      } catch (err) {
+        console.warn(`[MarketDataService] Seeding historical candles failed for ${key}:`, err.message);
+      }
+    }
+
+    return builder.candles;
   }
 
   unsubscribe(exchange, symboltoken, interval = 'FIVE_MINUTE') {
-    const key = this.getBufferKey(exchange, symboltoken, interval);
-    const bufEntry = this.buffers.get(key);
-    if (!bufEntry) return;
+    const token = String(symboltoken);
+    const key = this.getBufferKey(exchange, token, interval);
 
-    bufEntry.refCount = Math.max(0, bufEntry.refCount - 1);
-    console.log(`[MarketDataService] Unsubscribed ${key} (refCount: ${bufEntry.refCount})`);
+    this.candleBuilders.delete(key);
 
-    if (bufEntry.refCount === 0 && bufEntry.state === 'LIVE') {
-      bufEntry.state = 'IDLE';
-      console.log(`[MarketDataService] Buffer ${key} entered IDLE state (15-min TTL started)`);
-
-      bufEntry.idleTimer = setTimeout(() => {
-        if (bufEntry.refCount === 0) {
-          bufEntry.state = 'DESTROYED';
-          this.buffers.delete(key);
-          console.log(`[MarketDataService] Buffer ${key} DESTROYED and purged from memory`);
-          this.checkStopProbeLoop();
-        }
-      }, config.ENGINE.IDLE_TIMEOUT_MS);
+    const sub = this.subscribers.get(token);
+    if (sub) {
+      sub.refCount--;
+      if (sub.refCount <= 0) {
+        smartStream.unsubscribe([{ exchangeType: sub.exchangeType, tokens: [token] }]);
+        this.subscribers.delete(token);
+        this.ltpCache.delete(token);
+      }
     }
   }
 
-  ensureProbeLoopRunning() {
-    if (this.probeInterval) return;
-
-    const probe = async () => {
-      if (this.isProbing) {
-        // Skip tick if previous probe cycle or backoff retry sequence is still executing
-        return;
-      }
-
-      this.isProbing = true;
-      try {
-        if (!marketSessionManager.isMarketOpen()) return;
-
-        // Only probe active LIVE buffers. Skip IDLE, SEEDING, or FAILED buffers to avoid API limit waste.
-        const liveEntries = Array.from(this.buffers.values()).filter(b => b.state === 'LIVE');
-        if (liveEntries.length === 0) return;
-
-        for (const entry of liveEntries) {
-          await this.probeSingleBuffer(entry);
-        }
-      } finally {
-        this.isProbing = false;
-      }
-    };
-
-    // Fast 5-second polling for active trading buffers
-    this.probeInterval = setInterval(probe, 5000);
-  }
-
-  checkStopProbeLoop() {
-    const active = Array.from(this.buffers.values()).some(b => b.state === 'LIVE');
-    if (!active && this.probeInterval) {
-      clearInterval(this.probeInterval);
-      this.probeInterval = null;
-    }
-  }
-
-  async probeSingleBuffer(entry) {
-    try {
-      const intervalMins = INTERVAL_MINUTES_MAP[entry.interval] || 5;
-      const res = await callAngelApiWithRetry(`/market/candles?exchange=${encodeURIComponent(entry.exchange)}&symboltoken=${encodeURIComponent(entry.symboltoken)}&interval=${encodeURIComponent(entry.interval)}&lookback_minutes=${intervalMins * 3}`, 'GET', null, 2, 500);
-      
-      const rawItems = Array.isArray(res.items) ? res.items : [];
-      if (rawItems.length === 0) return;
-
-      const sorted = [...rawItems].sort((a, b) => (parseCandleTsMs(a.ts) || 0) - (parseCandleTsMs(b.ts) || 0));
-      const latest = sorted[sorted.length - 1];
-      const latestMs = parseCandleTsMs(latest.ts);
-
-      if (!latestMs) return;
-
-      // Duplicate candle protection
-      if (latestMs <= entry.lastTsMs) {
-        return; // Already processed
-      }
-
-      // Gap detection
-      const stepMs = intervalMins * 60 * 1000;
-      if (entry.lastTsMs > 0 && latestMs > (entry.lastTsMs + stepMs + 1000)) {
-        console.warn(`[MarketDataService] Gap detected on ${entry.key}! (Last: ${entry.lastTsMs}, New: ${latestMs}). Entering RECOVERING state...`);
-        entry.state = 'RECOVERING';
-        await this.subscribe(entry.exchange, entry.symboltoken, entry.interval);
-        return;
-      }
-
-      // Append new closed candle
-      entry.candles.push(latest);
-      if (entry.candles.length > config.ENGINE.BUFFER_SIZE) {
-        entry.candles.shift();
-      }
-      entry.lastTsMs = latestMs;
-
-      const pubTs = formatPrecisionTime(new Date());
-      console.log(`[MarketDataService] Candle closed for ${entry.key}: ${latest.ts} (Published at ${pubTs})`);
-
-      this.emit('candle:closed', {
-        key: entry.key,
-        exchange: entry.exchange,
-        symboltoken: entry.symboltoken,
-        interval: entry.interval,
-        candle: latest,
-        candles: entry.candles,
-        publishedTs: pubTs
-      });
-    } catch (err) {
-      console.error(`[MarketDataService] Probe error for ${entry.key}:`, err.message);
-    }
+  getLtp(exchange, symboltoken) {
+    const token = String(symboltoken);
+    const cached = this.ltpCache.get(token);
+    return cached ? cached.ltp : null;
   }
 
   getBuffer(exchange, symboltoken, interval) {
     const key = this.getBufferKey(exchange, symboltoken, interval);
-    const entry = this.buffers.get(key);
-    return entry ? entry.candles : null;
-  }
-
-  getBufferState(exchange, symboltoken, interval) {
-    const key = this.getBufferKey(exchange, symboltoken, interval);
-    const entry = this.buffers.get(key);
-    return {
-      state: entry ? entry.state : 'UNINITIALIZED',
-      count: entry && entry.candles ? entry.candles.length : 0,
-      candles: entry ? entry.candles : []
-    };
+    const builder = this.candleBuilders.get(key);
+    return builder ? builder.candles : [];
   }
 }
 

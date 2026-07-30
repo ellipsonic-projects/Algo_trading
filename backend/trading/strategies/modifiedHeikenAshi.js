@@ -21,7 +21,7 @@ function computeModifiedHeikenAshi(candles) {
         const haLow = Math.min(c.low, haOpen, haClose);
 
         haCandles.push({
-            ts: c.ts,
+            time: c.time,
             open: haOpen,
             high: haHigh,
             low: haLow,

@@ -59,6 +59,20 @@ class AngelClient:
             "status": True,
             "message": "Angel One login successful",
             "client_code": self._client_code,
+            "jwt_token": jwt_token,
+            "feed_token": feed_token,
+            "api_key": self._api_key,
+        }
+
+    def get_session_info(self) -> Dict[str, Any]:
+        if self._session is None:
+            return {"status": False, "message": "Not logged in"}
+        return {
+            "status": True,
+            "client_code": self._session.client_code,
+            "jwt_token": self._session.jwt_token,
+            "feed_token": self._session.feed_token,
+            "api_key": self._api_key,
         }
 
     def get_profile(self) -> Dict[str, Any]:

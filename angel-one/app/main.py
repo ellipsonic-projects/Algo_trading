@@ -98,15 +98,20 @@ def health() -> Dict[str, Any]:
 @app.post("/angel/login")
 def angel_login(req: LoginRequest) -> Dict[str, Any]:
     if angel.is_logged_in:
-        return {
-            "status": True,
-            "message": "Angel One login successful (Reused active session)",
-            "client_code": getattr(angel, "_client_code", ""),
-        }
+        info = angel.get_session_info()
+        info["message"] = "Angel One login successful (Reused active session)"
+        return info
     try:
         return angel.login(req.mpin)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/angel/session-tokens")
+def get_session_tokens() -> Dict[str, Any]:
+    if not angel.is_logged_in:
+        raise HTTPException(status_code=401, detail="Not logged in")
+    return angel.get_session_info()
 
 @app.post("/angel/logout")
 def angel_logout() -> Dict[str, Any]:

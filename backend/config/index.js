@@ -8,7 +8,7 @@ module.exports = {
   },
   MARKET: {
     OPEN_TIME: process.env.MARKET_OPEN_TIME || '09:15',
-    CLOSE_TIME: process.env.MARKET_CLOSE_TIME || '15:30',
+    CLOSE_TIME: process.env.MARKET_CLOSE_TIME || '15:40',
     TIMEZONE: process.env.MARKET_TIMEZONE || 'Asia/Kolkata',
   },
   API: {

@@ -75,6 +75,7 @@ const DashboardPage: React.FC = () => {
   const [selectedUnderlying, setSelectedUnderlying] = useState<string>('NIFTY');
   const [timeframe, setTimeframe] = useState<string>('5m');
   const [selectedDate, setSelectedDate] = useState<string>(() => new Date().toISOString().split('T')[0]);
+  const [chartType, setChartType] = useState<'candlestick' | 'heikenAshi'>('candlestick');
 
   // Transient Chart-Only Indicator Settings (Never saved to localStorage/DB)
   const [emaPeriod, setEmaPeriod] = useState<number>(20);
@@ -304,6 +305,8 @@ const DashboardPage: React.FC = () => {
           onTimeframeChange={setTimeframe}
           selectedDate={selectedDate}
           onDateChange={setSelectedDate}
+          chartType={chartType}
+          onChartTypeChange={setChartType}
           toggles={toggles}
           onToggleChange={handleToggleChange}
           emaPeriod={emaPeriod}
@@ -312,7 +315,7 @@ const DashboardPage: React.FC = () => {
         />
 
         {/* Institutional Chart Container */}
-        <div className="w-full flex-1 h-[620px] relative rounded border border-[#E0E3EB] overflow-hidden bg-white">
+        <div className="w-full flex-1 h-[calc(100vh-210px)] min-h-[720px] relative rounded border border-[#E0E3EB] overflow-hidden bg-white">
           {chartLoading && (
             <div className="absolute inset-0 bg-white/70 backdrop-blur-[1px] flex items-center justify-center z-10">
               <div className="flex items-center gap-2 px-3 py-1.5 bg-white border border-[#E0E3EB] rounded shadow-md text-xs font-semibold text-[#1E222D]">
@@ -331,6 +334,7 @@ const DashboardPage: React.FC = () => {
             markers={chartData?.tradeOverlays?.markers || []}
             priceLines={chartData?.tradeOverlays?.priceLines || []}
             toggles={toggles}
+            chartType={chartType}
             isDarkMode={false}
           />
         </div>

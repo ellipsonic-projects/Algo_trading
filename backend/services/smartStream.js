@@ -8,8 +8,10 @@ class SmartStreamService extends EventEmitter {
     this.pingTimer = null;
     this.reconnectTimer = null;
     this.isConnected = false;
+    this.isConnecting = false;
     this.reconnectAttempts = 0;
     this.subscribedTokens = new Map(); // token -> exchangeType
+    this.isExplicitDisconnect = false;
   }
 
   connect(credentials) {
@@ -22,7 +24,14 @@ class SmartStreamService extends EventEmitter {
       return;
     }
 
+    if (this.isConnected || this.isConnecting) {
+      if (this.ws && (this.ws.readyState === 0 || this.ws.readyState === 1)) {
+        return; // Already connecting or connected
+      }
+    }
+
     this.disconnect(false);
+    this.isExplicitDisconnect = false;
 
     try {
       const WebSocketImpl = globalThis.WebSocket || require('ws');
@@ -34,6 +43,7 @@ class SmartStreamService extends EventEmitter {
 
       const wsUrl = `wss://smartapisocket.angelone.in/smart-stream?${params.toString()}`;
       console.log('[SmartStreamService] Connecting to Smart Stream 2.0...');
+      this.isConnecting = true;
 
       const headers = {};
       if (this.credentials.jwtToken) {
@@ -51,6 +61,7 @@ class SmartStreamService extends EventEmitter {
       this.ws.onopen = () => {
         console.log('[SmartStreamService] Smart Stream WebSocket connected');
         this.isConnected = true;
+        this.isConnecting = false;
         this.reconnectAttempts = 0;
         this.startKeepalive();
         this.resubscribeAll();
@@ -68,9 +79,12 @@ class SmartStreamService extends EventEmitter {
       this.ws.onclose = (event) => {
         console.warn(`[SmartStreamService] WebSocket closed (code: ${event.code})`);
         this.cleanup();
-        this.scheduleReconnect();
+        if (!this.isExplicitDisconnect) {
+          this.scheduleReconnect();
+        }
       };
     } catch (err) {
+      this.isConnecting = false;
       console.error('[SmartStreamService] Error initiating WebSocket:', err.message);
       this.scheduleReconnect();
     }
@@ -217,6 +231,7 @@ class SmartStreamService extends EventEmitter {
 
   cleanup() {
     this.isConnected = false;
+    this.isConnecting = false;
     if (this.pingTimer) {
       clearInterval(this.pingTimer);
       this.pingTimer = null;
@@ -225,6 +240,7 @@ class SmartStreamService extends EventEmitter {
   }
 
   disconnect(clearCredentials = true) {
+    this.isExplicitDisconnect = true;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -232,6 +248,10 @@ class SmartStreamService extends EventEmitter {
     this.cleanup();
     if (this.ws) {
       try {
+        this.ws.onopen = null;
+        this.ws.onmessage = null;
+        this.ws.onerror = null;
+        this.ws.onclose = null;
         this.ws.close();
       } catch (e) {}
       this.ws = null;

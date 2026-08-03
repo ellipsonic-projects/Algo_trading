@@ -10,13 +10,15 @@ import {
     Clock,
     RefreshCw,
     ChevronDown,
-    Check
+    Check,
+    Download
 } from 'lucide-react'
 import DatePicker from 'react-datepicker'
 import 'react-datepicker/dist/react-datepicker.css'
 import { apiGet } from '../../trading'
 import { buildTradesUrl } from './tradesQuery'
 import { usePageTitle } from '../../hooks/usePageTitle'
+import { generateTradesPdf } from './generateTradesPdf'
 
 type Trade = {
     _id: string
@@ -83,12 +85,60 @@ export default function TradesPage() {
     const [isStrategyDropdownOpen, setIsStrategyDropdownOpen] = useState(false)
     const [isExitReasonDropdownOpen, setIsExitReasonDropdownOpen] = useState(false)
 
+    // Export PDF state
+    const [isExporting, setIsExporting] = useState(false)
+    const [pdfMessage, setPdfMessage] = useState<string | null>(null)
+
     const [analytics, setAnalytics] = useState({
         totalPnl: 0,
         totalTrades: 0,
         taxes: 0,
         netPnl: 0
     })
+
+    const handleDownloadPdf = async () => {
+        setPdfMessage(null)
+
+        if (totalResults === 0 || (trades.length === 0 && !loading)) {
+            setPdfMessage('No trades found for the selected filters.')
+            return
+        }
+
+        setIsExporting(true)
+        try {
+            let tradesToExport: Trade[] = trades
+
+            // Re-use already loaded data if all results are present, otherwise fetch full filtered dataset
+            if (totalResults > trades.length) {
+                const url = buildTradesUrl({ page: 1, limit: totalResults, filters: appliedFilters })
+                const response = await apiGet<TradesResponse>(url)
+                if (response.status === 'success') {
+                    tradesToExport = response.data.trades
+                }
+            }
+
+            if (!tradesToExport || tradesToExport.length === 0) {
+                setPdfMessage('No trades found for the selected filters.')
+                return
+            }
+
+            const selectedStrategyName = appliedFilters.strategyIdFilter
+                ? strategies.find(s => s._id === appliedFilters.strategyIdFilter)?.name
+                : undefined
+
+            generateTradesPdf({
+                trades: tradesToExport,
+                filters: appliedFilters,
+                strategyName: selectedStrategyName,
+                analytics
+            })
+        } catch (error) {
+            console.error('Error generating PDF report:', error)
+            setPdfMessage('Failed to generate PDF. Please try again.')
+        } finally {
+            setIsExporting(false)
+        }
+    }
 
     const fetchTrades = useCallback(async () => {
         setLoading(true)
@@ -379,11 +429,20 @@ export default function TradesPage() {
                                     setTimeTo('')
                                     setPage(1)
                                     setAppliedFilters({ searchQuery: '', exitReasonFilter: '', strategyIdFilter: '', startDate: '', endDate: '', timeFrom: '', timeTo: '' })
+                                    setPdfMessage(null)
                                 }}
                                 className="flex-1 xl:flex-none px-4 py-1.5 bg-[#F0F3FA] hover:bg-[#E0E3EB] text-[#434651] text-xs font-semibold rounded transition-colors flex items-center justify-center gap-1.5"
                             >
                                 <Filter className="w-3.5 h-3.5" />
                                 Reset
+                            </button>
+                            <button
+                                onClick={handleDownloadPdf}
+                                disabled={isExporting}
+                                className="flex-1 xl:flex-none px-4 py-1.5 bg-[#F0F3FA] hover:bg-[#E0E3EB] text-[#1E222D] text-xs font-semibold rounded transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
+                            >
+                                <Download className="w-3.5 h-3.5 text-[#0052FF]" />
+                                {isExporting ? 'Generating...' : 'Download PDF'}
                             </button>
                             <button
                                 onClick={() => fetchTrades()}
@@ -394,6 +453,12 @@ export default function TradesPage() {
                             </button>
                         </div>
                     </div>
+                    {pdfMessage && (
+                        <div className="mt-2 p-2.5 rounded bg-[#FFF2F2] border border-[#F23645]/30 text-[#F23645] text-xs font-semibold flex items-center justify-between">
+                            <span>{pdfMessage}</span>
+                            <button onClick={() => setPdfMessage(null)} className="text-[#F23645] hover:underline text-xs">Dismiss</button>
+                        </div>
+                    )}
                 </div>
             </div>
 

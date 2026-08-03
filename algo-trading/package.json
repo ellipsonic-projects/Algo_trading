@@ -13,6 +13,8 @@
   },
   "dependencies": {
     "@types/react-datepicker": "^6.2.0",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.8",
     "lightweight-charts": "^4.2.0",
     "lucide-react": "^0.561.0",
     "react": "^19.2.0",

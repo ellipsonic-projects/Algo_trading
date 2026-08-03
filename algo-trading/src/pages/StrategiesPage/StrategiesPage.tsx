@@ -1,5 +1,7 @@
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowRight, Zap, TrendingUp, BarChart2, Clock, Target, Activity } from 'lucide-react'
+import { ArrowRight, Zap, TrendingUp, BarChart2, Clock, Target, Activity, Cpu } from 'lucide-react'
+import { apiGet } from '../../trading'
 
 import StrategiesLayout from './StrategiesLayout'
 
@@ -10,8 +12,30 @@ type StrategyCard = {
   icon: any
 }
 
+type PluginManifest = {
+  id: string
+  name: string
+  description: string
+}
+
 export default function StrategiesPage() {
   const navigate = useNavigate()
+  const [plugins, setPlugins] = useState<PluginManifest[]>([])
+
+  useEffect(() => {
+    async function loadPlugins() {
+      try {
+        const res = await apiGet<{ manifests: PluginManifest[] }>('/strategies/manifests')
+        if (res && Array.isArray(res.manifests)) {
+          // Filter out existing hardcoded pages to prevent duplicates
+          const builtinIds = ['HeikenAshi', 'ModifiedHeikenAshi', '5minBreakout']
+          const customPlugins = res.manifests.filter(m => !builtinIds.includes(m.id))
+          setPlugins(customPlugins)
+        }
+      } catch (e) {}
+    }
+    loadPlugins()
+  }, [])
 
   const cards: StrategyCard[] = [
     {
@@ -57,6 +81,16 @@ export default function StrategiesPage() {
       icon: TrendingUp,
     },
   ]
+
+  // Append dynamically discovered plugins
+  plugins.forEach(p => {
+    cards.push({
+      title: p.name,
+      description: p.description || 'Custom Strategy Plugin',
+      to: `/strategies/plugin/${p.id}`,
+      icon: Cpu
+    })
+  })
 
   return (
     <StrategiesLayout

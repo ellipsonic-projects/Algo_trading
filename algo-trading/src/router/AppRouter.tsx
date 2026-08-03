@@ -14,6 +14,8 @@ import TradesPage from '../pages/TradesPage/TradesPage'
 import DashboardLayout from '../components/Layout/DashboardLayout'
 import ProtectedRoute from './ProtectedRoute'
 
+import DynamicStrategyPage from '../pages/StrategiesPage/DynamicStrategyPage'
+
 export default function AppRouter() {
   return (
     <Routes>
@@ -31,6 +33,7 @@ export default function AppRouter() {
         <Route path="/strategies/expiry" element={<ExpiryStrategyPage />} />
         <Route path="/strategies/heikenashi" element={<HeikenashiPage />} />
         <Route path="/strategies/modified-heikenashi" element={<ModifiedHeikenashiPage />} />
+        <Route path="/strategies/plugin/:strategyId" element={<DynamicStrategyPage />} />
         <Route path="/trades" element={<TradesPage />} />
       </Route>
 

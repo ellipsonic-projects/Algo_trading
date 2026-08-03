@@ -1,3 +1,5 @@
+const strategyStats = require('../../services/strategyStats');
+
 /**
  * Transforms standard OHLC candles into Heiken Ashi candles.
  */
@@ -106,14 +108,26 @@ function analyzeHeikenAshiStrategy(haCandles, emaPeriod = 20, jmaLength = 7) {
 
     const lastNoWick = Math.abs(last.open - last.low) <= 0.05;
     const prevNoWick = Math.abs(prev.open - prev.low) <= 0.05;
+    const lastGreen = last.close > last.open;
+    const prevGreen = prev.close > prev.open;
+    const jmaGtEma = lastJma > lastEma;
+    const closeGtJma = last.close > lastJma;
 
     const isEntry = (
         lastNoWick && prevNoWick &&
-        last.close > last.open &&
-        prev.close > prev.open &&
-        lastJma > lastEma &&
-        last.close > lastJma
+        lastGreen &&
+        prevGreen &&
+        jmaGtEma &&
+        closeGtJma
     );
+
+    const failedReasons = [];
+    if (!lastNoWick) failedReasons.push(`lastNoWick = false (open - low = ${Math.abs(last.open - last.low).toFixed(4)}, required <= 0.05)`);
+    if (!prevNoWick) failedReasons.push(`prevNoWick = false (open - low = ${Math.abs(prev.open - prev.low).toFixed(4)}, required <= 0.05)`);
+    if (!lastGreen) failedReasons.push(`lastGreen = false (close = ${last.close.toFixed(2)}, open = ${last.open.toFixed(2)})`);
+    if (!prevGreen) failedReasons.push(`prevGreen = false (close = ${prev.close.toFixed(2)}, open = ${prev.open.toFixed(2)})`);
+    if (!jmaGtEma) failedReasons.push(`jmaGtEma = false (JMA = ${lastJma.toFixed(2)}, EMA = ${lastEma.toFixed(2)})`);
+    if (!closeGtJma) failedReasons.push(`closeGtJma = false (close = ${last.close.toFixed(2)}, JMA = ${lastJma.toFixed(2)})`);
 
     const isExit = (
         last.close < last.open &&
@@ -124,14 +138,28 @@ function analyzeHeikenAshiStrategy(haCandles, emaPeriod = 20, jmaLength = 7) {
     if (isEntry) trend = 'BULLISH';
     else if (isExit) trend = 'BEARISH';
 
-    return {
+    const result = {
         trend,
         ema: lastEma,
         jma: lastJma,
         haClose: last.close,
         isEntry,
-        isExit
+        isExit,
+        lastNoWick,
+        prevNoWick,
+        lastGreen,
+        prevGreen,
+        jmaGtEma,
+        closeGtJma,
+        failedReasons,
+        lastCandle: last,
+        prevCandle: prev
     };
+
+    // ── Diagnostic statistics collection (no logic impact) ──────────────────
+    strategyStats.record(result, 'HeikenAshi');
+
+    return result;
 }
 
 function detectHeikenAshiTrend(haCandles) {

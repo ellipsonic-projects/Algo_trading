@@ -6,19 +6,9 @@ const orderUpdateService = require('./orderUpdateService');
 const marketSessionManager = require('./marketSessionManager');
 marketSessionManager.startMonitoring();
 
-const {
-  computeHeikenAshi,
-  analyzeHeikenAshiStrategy
-} = require('../trading/strategies/heikenAshi');
-const {
-  computeModifiedHeikenAshi,
-  analyzeModifiedHeikenAshiStrategy
-} = require('../trading/strategies/modifiedHeikenAshi');
-const {
-  computePremiumRange,
-  detectBreakoutCloseOnly,
-  shouldProcessCandle
-} = require('../trading/strategies/premiumRangeBreakout');
+const strategyRegistry = require('./strategyRegistry');
+const indicators = require('../trading/indicators');
+strategyRegistry.init().catch(err => console.error('[StrategyEngine] Registry init error:', err.message));
 
 const ANGEL_API_BASE = process.env.ANGEL_ONE_API_BASE || 'http://localhost:8000';
 
@@ -188,6 +178,40 @@ class SingleStrategyRunner {
     // Start background tasks
     this.startContractLoop();
     this.startScanLoop();
+    this.startHeartbeatLoop();
+  }
+
+  startHeartbeatLoop() {
+    if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
+
+    const emitHeartbeat = () => {
+      if (!this.isRunning || (this.state !== 'SCANNING' && this.state !== 'WAITING')) return;
+      if (!this.ceContract || !this.peContract) return;
+
+      const ceLtp = marketDataService.getLtp(this.ceContract.exchange, this.ceContract.symboltoken);
+      const peLtp = marketDataService.getLtp(this.peContract.exchange, this.peContract.symboltoken);
+
+      const now = new Date();
+      const intervalMs = 5 * 60 * 1000;
+      const nextCandleMs = Math.ceil(now.getTime() / intervalMs) * intervalMs;
+      const secondsLeft = Math.max(0, Math.round((nextCandleMs - now.getTime()) / 1000));
+
+      const ceStr = ceLtp !== null ? `₹${ceLtp.toFixed(2)}` : 'Awaiting Ticks';
+      const peStr = peLtp !== null ? `₹${peLtp.toFixed(2)}` : 'Awaiting Ticks';
+
+      this.log(`[SCANNER HEARTBEAT] Active | CE: ${this.ceContract.tradingsymbol} (${ceStr}) | PE: ${this.peContract.tradingsymbol} (${peStr}) | Next Candle Close: ${secondsLeft}s`);
+    };
+
+    emitHeartbeat();
+    this.heartbeatInterval = setInterval(emitHeartbeat, 10_000);
+  }
+
+  getBaseTimeframe() {
+    const pluginClass = strategyRegistry.getPlugin(this.strategyName);
+    if (pluginClass && pluginClass.manifest && pluginClass.manifest.requires && pluginClass.manifest.requires.timeframe) {
+      return pluginClass.manifest.requires.timeframe;
+    }
+    return this.config.baseTimeframe || 'FIVE_MINUTE';
   }
 
   stop() {
@@ -196,7 +220,7 @@ class SingleStrategyRunner {
     this.log('Strategy execution halted.');
     this.clearAllIntervals();
 
-    const baseTimeframe = this.strategyName === '5minBreakout' ? 'ONE_MINUTE' : (this.config.baseTimeframe || 'FIVE_MINUTE');
+    const baseTimeframe = this.getBaseTimeframe();
     if (this.candleListener) {
       marketDataService.removeListener('candle:closed', this.candleListener);
       this.candleListener = null;
@@ -228,9 +252,11 @@ class SingleStrategyRunner {
     if (this.contractInterval) clearInterval(this.contractInterval);
     if (this.scanInterval) clearInterval(this.scanInterval);
     if (this.monitorInterval) clearInterval(this.monitorInterval);
+    if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
     this.contractInterval = null;
     this.scanInterval = null;
     this.monitorInterval = null;
+    this.heartbeatInterval = null;
   }
 
   async recoverTrade() {
@@ -326,7 +352,7 @@ class SingleStrategyRunner {
           this.monitoredPremiums = { ce: this.ceContract.tradingsymbol, pe: this.peContract.tradingsymbol };
           
           // Subscribe contracts to MarketDataService only when changed or initial
-          const baseTimeframe = this.config.baseTimeframe || 'FIVE_MINUTE';
+          const baseTimeframe = this.getBaseTimeframe();
           if (!this.subscribedCeToken || this.subscribedCeToken !== this.ceContract.symboltoken) {
             if (this.subscribedCeToken) {
               marketDataService.unsubscribe(this.ceContract.exchange, this.subscribedCeToken, baseTimeframe);
@@ -375,15 +401,18 @@ class SingleStrategyRunner {
             : null;
 
         if (activeContract) {
-          const baseTimeframe = this.config.baseTimeframe || 'FIVE_MINUTE';
+          const baseTimeframe = this.getBaseTimeframe();
           const items = marketDataService.getBuffer(activeContract.exchange, activeContract.symboltoken, baseTimeframe);
           if (items && items.length >= 2) {
-            const ha = this.strategyName === 'ModifiedHeikenAshi' ? computeModifiedHeikenAshi(items) : computeHeikenAshi(items);
-            const signal = this.strategyName === 'ModifiedHeikenAshi' ? analyzeModifiedHeikenAshiStrategy(ha) : analyzeHeikenAshiStrategy(ha);
-            if (signal.isExit && !this.isExiting) {
-              this.log(`Reversal exit signal detected on closed candle for ${activeContract.tradingsymbol}`);
-              await this.executeExit(activeContract, this.currentLtp || signal.haClose, 'Reversal');
-              return;
+            const PluginClass = strategyRegistry.getPlugin(this.strategyName);
+            if (PluginClass) {
+              const pluginInstance = new PluginClass(this.config);
+              const signal = pluginInstance.analyze({ items, indicators });
+              if (signal.isExit && !this.isExiting) {
+                this.log(`Reversal exit signal detected on closed candle for ${activeContract.tradingsymbol}`);
+                await this.executeExit(activeContract, this.currentLtp || signal.haClose, 'Reversal');
+                return;
+              }
             }
           }
         }
@@ -398,45 +427,102 @@ class SingleStrategyRunner {
       const scanStartTs = formatPrecisionTime(new Date(scanStartMs));
 
       try {
-        const underlying = this.config.underlying || 'SENSEX';
-        const baseTimeframe = this.config.baseTimeframe || 'FIVE_MINUTE';
+        const PluginClass = strategyRegistry.getPlugin(this.strategyName);
+        if (!PluginClass) {
+          console.warn(`[${this.strategyName}] Plugin not registered in strategyRegistry`);
+          return;
+        }
 
-        if (this.strategyName === 'HeikenAshi' || this.strategyName === 'ModifiedHeikenAshi') {
+        const pluginInstance = new PluginClass(this.config);
+        const req = PluginClass.manifest?.requires || {};
+        const baseTimeframe = req.timeframe || this.config.baseTimeframe || 'FIVE_MINUTE';
+        const requiredCandles = req.lookbackCandles || 2;
+
+        if (this.strategyName === '5minBreakout') {
+          const fetchStartMs = Date.now();
+          let ceItems = marketDataService.getBuffer(this.ceContract.exchange, this.ceContract.symboltoken, 'ONE_MINUTE');
+          let peItems = marketDataService.getBuffer(this.peContract.exchange, this.peContract.symboltoken, 'ONE_MINUTE');
+
+          if (!ceItems || ceItems.length < requiredCandles) {
+            try { ceItems = await marketDataService.subscribe(this.ceContract.exchange, this.ceContract.symboltoken, 'ONE_MINUTE', 20); } catch (err) { return; }
+          }
+          if (!peItems || peItems.length < requiredCandles) {
+            try { peItems = await marketDataService.subscribe(this.peContract.exchange, this.peContract.symboltoken, 'ONE_MINUTE', 20); } catch (err) { return; }
+          }
+          if (!ceItems || ceItems.length < requiredCandles || !peItems || peItems.length < requiredCandles) return;
+          const fetchEndMs = Date.now();
+
+          const ceEval = pluginInstance.analyze({ items: ceItems, lastProcessedTs: this.lastProcessedCandleTs, indicators });
+          const peEval = pluginInstance.analyze({ items: peItems, lastProcessedTs: this.lastProcessedCandleTs, indicators });
+
+          if (ceEval.nextTs) this.lastProcessedCandleTs = ceEval.nextTs;
+          else if (peEval.nextTs) this.lastProcessedCandleTs = peEval.nextTs;
+
+          if (ceEval.isBreakout || peEval.isBreakout) {
+            const isCE = ceEval.isBreakout;
+            const activeEval = isCE ? ceEval : peEval;
+            const contractToTrade = isCE ? this.ceContract : this.peContract;
+
+            this.rangeSide = isCE ? 'CE' : 'PE';
+            this.stopLoss = activeEval.stopLoss;
+            this.target = activeEval.target;
+
+            const signalMs = Date.now();
+            await this.executeEntry(contractToTrade, activeEval.entryPrice, isCE ? 'BULLISH' : 'BEARISH', {
+              candleDetectedTs: scanStartTs,
+              signalGeneratedMs: signalMs,
+              signalGeneratedTs: formatPrecisionTime(new Date(signalMs)),
+              fetchMs: fetchEndMs - fetchStartMs,
+              calcMs: 0
+            });
+          }
+        } else {
           const scanExchange = this.ceContract.exchange;
-
           const fetchStartMs = Date.now();
           let ceItems = marketDataService.getBuffer(scanExchange, this.ceContract.symboltoken, baseTimeframe);
           let peItems = marketDataService.getBuffer(scanExchange, this.peContract.symboltoken, baseTimeframe);
 
-          if (!ceItems || ceItems.length < 2) {
-            try {
-              ceItems = await marketDataService.subscribe(scanExchange, this.ceContract.symboltoken, baseTimeframe);
-            } catch (err) {
-              return; // Block scan if buffer unavailable
-            }
+          if (!ceItems || ceItems.length < requiredCandles) {
+            try { ceItems = await marketDataService.subscribe(scanExchange, this.ceContract.symboltoken, baseTimeframe); } catch (err) { return; }
           }
-          if (!peItems || peItems.length < 2) {
-            try {
-              peItems = await marketDataService.subscribe(scanExchange, this.peContract.symboltoken, baseTimeframe);
-            } catch (err) {
-              return; // Block scan if buffer unavailable
-            }
+          if (!peItems || peItems.length < requiredCandles) {
+            try { peItems = await marketDataService.subscribe(scanExchange, this.peContract.symboltoken, baseTimeframe); } catch (err) { return; }
           }
-          if (!ceItems || ceItems.length < 2 || !peItems || peItems.length < 2) {
-            return; // Block strategy scan until required candle history (min 2 candles) is available
-          }
+          if (!ceItems || ceItems.length < requiredCandles || !peItems || peItems.length < requiredCandles) return;
           const fetchEndMs = Date.now();
 
           const calcStartMs = Date.now();
-          const ceHa = this.strategyName === 'ModifiedHeikenAshi' ? computeModifiedHeikenAshi(ceItems) : computeHeikenAshi(ceItems);
-          const peHa = this.strategyName === 'ModifiedHeikenAshi' ? computeModifiedHeikenAshi(peItems) : computeHeikenAshi(peItems);
-
-          const ceSignal = this.strategyName === 'ModifiedHeikenAshi' ? analyzeModifiedHeikenAshiStrategy(ceHa) : analyzeHeikenAshiStrategy(ceHa);
-          const peSignal = this.strategyName === 'ModifiedHeikenAshi' ? analyzeModifiedHeikenAshiStrategy(peHa) : analyzeHeikenAshiStrategy(peHa);
+          const ceSignal = pluginInstance.analyze({ items: ceItems, indicators });
+          const peSignal = pluginInstance.analyze({ items: peItems, indicators });
           const calcEndMs = Date.now();
 
-          const ceLastClosedTs = ceHa.length >= 1 ? (ceHa[ceHa.length - 1].time ?? null) : null;
-          const peLastClosedTs = peHa.length >= 1 ? (peHa[peHa.length - 1].time ?? null) : null;
+          // Diagnostic per-candle log output for the specific contract event (CE or PE)
+          const targetSignal = (eventData && eventData.symboltoken === this.peContract?.symboltoken) ? peSignal : ceSignal;
+          const targetContract = (eventData && eventData.symboltoken === this.peContract?.symboltoken) ? this.peContract : this.ceContract;
+          const targetType = (eventData && eventData.symboltoken === this.peContract?.symboltoken) ? 'PE' : 'CE';
+
+          if (targetSignal && targetSignal.lastCandle) {
+            const timeStr = targetSignal.lastCandle.time
+              ? new Date(typeof targetSignal.lastCandle.time === 'number' && targetSignal.lastCandle.time < 1e10 ? targetSignal.lastCandle.time * 1000 : targetSignal.lastCandle.time).toLocaleTimeString('en-IN')
+              : scanStartTs;
+
+            this.log(`[CANDLE EVALUATION - ${targetType} ${targetContract.tradingsymbol}] Time: ${timeStr}
+  EMA = ${targetSignal.ema.toFixed(2)}
+  JMA = ${targetSignal.jma.toFixed(2)}
+  Last Candle = O:${targetSignal.lastCandle.open.toFixed(2)} H:${targetSignal.lastCandle.high.toFixed(2)} L:${targetSignal.lastCandle.low.toFixed(2)} C:${targetSignal.lastCandle.close.toFixed(2)}
+  Prev Candle = O:${targetSignal.prevCandle.open.toFixed(2)} H:${targetSignal.prevCandle.high.toFixed(2)} L:${targetSignal.prevCandle.low.toFixed(2)} C:${targetSignal.prevCandle.close.toFixed(2)}
+  lastNoWick = ${targetSignal.lastNoWick}
+  prevNoWick = ${targetSignal.prevNoWick}
+  jmaGtEma = ${targetSignal.jmaGtEma}
+  closeGtJma = ${targetSignal.closeGtJma}
+  lastGreen = ${targetSignal.lastGreen}
+  prevGreen = ${targetSignal.prevGreen}
+  Result: ${targetSignal.isEntry ? 'SIGNAL GENERATED (YES)' : 'NO ENTRY'}
+  ${!targetSignal.isEntry && targetSignal.failedReasons?.length ? 'Reason:\n    ' + targetSignal.failedReasons.join('\n    ') : ''}`);
+          }
+
+          const ceLastClosedTs = ceItems.length >= 1 ? (ceItems[ceItems.length - 1].time ?? null) : null;
+          const peLastClosedTs = peItems.length >= 1 ? (peItems[peItems.length - 1].time ?? null) : null;
 
           if (ceSignal.isEntry && ceLastClosedTs !== this.lastEntryTime) {
             this.lastEntryTime = ceLastClosedTs;
@@ -460,74 +546,6 @@ class SingleStrategyRunner {
             });
           } else {
             this.trend = ceSignal.trend;
-          }
-
-        } else if (this.strategyName === '5minBreakout') {
-          const lookback = this.config.lookback || 5;
-          const maxRangeLimit = this.config.maxRangeLimit || 30;
-          const bufferPoints = this.config.bufferPoints || 2;
-          const targetPoints = this.config.targetPoints || 20;
-
-          const fetchStartMs = Date.now();
-          let ceItems = marketDataService.getBuffer(this.ceContract.exchange, this.ceContract.symboltoken, 'ONE_MINUTE');
-          let peItems = marketDataService.getBuffer(this.peContract.exchange, this.peContract.symboltoken, 'ONE_MINUTE');
-
-          const requiredCandles = lookback + 1;
-          if (!ceItems || ceItems.length < requiredCandles) {
-            try {
-              ceItems = await marketDataService.subscribe(this.ceContract.exchange, this.ceContract.symboltoken, 'ONE_MINUTE', 20);
-            } catch (err) {
-              return; // Block scan if buffer unavailable
-            }
-          }
-          if (!peItems || peItems.length < requiredCandles) {
-            try {
-              peItems = await marketDataService.subscribe(this.peContract.exchange, this.peContract.symboltoken, 'ONE_MINUTE', 20);
-            } catch (err) {
-              return; // Block scan if buffer unavailable
-            }
-          }
-          if (!ceItems || ceItems.length < requiredCandles || !peItems || peItems.length < requiredCandles) {
-            return; // Block strategy scan until required candle history is available
-          }
-          const fetchEndMs = Date.now();
-
-          const ceWindow = getLastCompletedCandleWindow(ceItems || [], lookback);
-          const peWindow = getLastCompletedCandleWindow(peItems || [], lookback);
-
-          if (ceWindow && peWindow) {
-            const ceRange = computePremiumRange(ceWindow.rangeCandles, lookback, maxRangeLimit);
-            const peRange = computePremiumRange(peWindow.rangeCandles, lookback, maxRangeLimit);
-
-            const nextTs = ceWindow.breakoutCandle.ts;
-            if (shouldProcessCandle({ lastProcessedTs: this.lastProcessedCandleTs, nextTs })) {
-              this.lastProcessedCandleTs = nextTs;
-
-              const calcStartMs = Date.now();
-              const ceBreakout = ceRange ? detectBreakoutCloseOnly({ candleClose: ceWindow.breakoutCandle.close, range: ceRange }) : false;
-              const peBreakout = peRange ? detectBreakoutCloseOnly({ candleClose: peWindow.breakoutCandle.close, range: peRange }) : false;
-              const calcEndMs = Date.now();
-
-              if (ceBreakout || peBreakout) {
-                const isCE = ceBreakout;
-                const contractToTrade = isCE ? this.ceContract : this.peContract;
-                const actualEntryPx = isCE ? ceWindow.breakoutCandle.close : peWindow.breakoutCandle.close;
-                const activeRange = isCE ? ceRange : peRange;
-
-                this.rangeSide = isCE ? 'CE' : 'PE';
-                this.stopLoss = activeRange.rangeLow - bufferPoints;
-                this.target = actualEntryPx + targetPoints;
-
-                const signalMs = Date.now();
-                await this.executeEntry(contractToTrade, actualEntryPx, isCE ? 'BULLISH' : 'BEARISH', {
-                  candleDetectedTs: scanStartTs,
-                  signalGeneratedMs: signalMs,
-                  signalGeneratedTs: formatPrecisionTime(new Date(signalMs)),
-                  fetchMs: fetchEndMs - fetchStartMs,
-                  calcMs: calcEndMs - calcStartMs
-                });
-              }
-            }
           }
         }
       } catch (err) {

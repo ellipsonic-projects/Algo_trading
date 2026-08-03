@@ -48,13 +48,13 @@ async function runSimulation() {
     console.error('❌ Binary Packet Decoding FAILED\n', receivedTick);
   }
 
-  // 3. Verify Candle Builder & OHLC Construction (Use separate token 3045)
+  // 3. Verify Candle Builder & OHLC Construction (Use separate token 3045999)
   console.log('[Test 3] Testing Candle Compiler & OHLC Construction...');
-  await marketDataService.subscribe('NSE', '3045', 'FIVE_MINUTE');
+  await marketDataService.subscribe('NSE', '3045999', 'FIVE_MINUTE');
 
   let closedCandleEvent = null;
   marketDataService.on('candle:closed', (evt) => {
-    if (evt.symboltoken === '3045') {
+    if (evt.symboltoken === '3045999') {
       closedCandleEvent = evt;
     }
   });
@@ -62,16 +62,16 @@ async function runSimulation() {
   const startMs = Math.floor(Date.now() / 300000) * 300000;
   
   // Tick 1: start of candle (Open=100)
-  marketDataService.handleTick({ token: '3045', exchangeType: 1, ltp: 100, timestamp: startMs + 1000 });
+  marketDataService.handleTick({ token: '3045999', exchangeType: 1, ltp: 100, timestamp: startMs + 1000 });
   // Tick 2: high (High=120)
-  marketDataService.handleTick({ token: '3045', exchangeType: 1, ltp: 120, timestamp: startMs + 10000 });
+  marketDataService.handleTick({ token: '3045999', exchangeType: 1, ltp: 120, timestamp: startMs + 10000 });
   // Tick 3: low (Low=90)
-  marketDataService.handleTick({ token: '3045', exchangeType: 1, ltp: 90, timestamp: startMs + 20000 });
+  marketDataService.handleTick({ token: '3045999', exchangeType: 1, ltp: 90, timestamp: startMs + 20000 });
   // Tick 4: close (Close=110)
-  marketDataService.handleTick({ token: '3045', exchangeType: 1, ltp: 110, timestamp: startMs + 50000 });
+  marketDataService.handleTick({ token: '3045999', exchangeType: 1, ltp: 110, timestamp: startMs + 50000 });
 
   // Tick 5: Next 5-min window tick (triggers close of previous candle)
-  marketDataService.handleTick({ token: '3045', exchangeType: 1, ltp: 112, timestamp: startMs + 300000 + 1000 });
+  marketDataService.handleTick({ token: '3045999', exchangeType: 1, ltp: 112, timestamp: startMs + 300000 + 1000 });
 
   if (closedCandleEvent && closedCandleEvent.candle.open === 100 && closedCandleEvent.candle.high === 120 && closedCandleEvent.candle.low === 90 && closedCandleEvent.candle.close === 110) {
     console.log('Compiled Candle:', closedCandleEvent.candle);
@@ -108,7 +108,7 @@ async function runSimulation() {
 
   // 5. Cleanup
   marketDataService.unsubscribe('BFO', '854321', 'FIVE_MINUTE');
-  marketDataService.unsubscribe('NSE', '3045', 'FIVE_MINUTE');
+  marketDataService.unsubscribe('NSE', '3045999', 'FIVE_MINUTE');
   console.log('=== ALL 4 QA SIMULATION TESTS PASSED 100%! ===');
   process.exit(0);
 }

@@ -67,8 +67,10 @@ class MarketDataService extends EventEmitter {
 
   initSession(credentials) {
     if (credentials) {
-      smartStream.connect(credentials);
-      if (credentials.jwtToken) {
+      if (!smartStream.isConnected && !smartStream.isConnecting) {
+        smartStream.connect(credentials);
+      }
+      if (credentials.jwtToken && !orderUpdateService.isConnected && !orderUpdateService.isConnecting) {
         orderUpdateService.connect(credentials.jwtToken);
       }
     }
@@ -242,7 +244,7 @@ class MarketDataService extends EventEmitter {
   }
 
   async autoInitSession() {
-    if (smartStream.isConnected) return;
+    if ((smartStream.isConnected || smartStream.isConnecting) && (orderUpdateService.isConnected || orderUpdateService.isConnecting)) return;
     try {
       const res = await fetch(`${ANGEL_API_BASE}/angel/session-tokens`);
       if (res.ok) {

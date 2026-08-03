@@ -34,6 +34,39 @@ exports.startStrategy = async (req, res) => {
     try {
         const { strategyName } = req.params;
         const config = req.body || {};
+
+        // Validation
+        const engineSchema = require('../services/engineSchema');
+        const strategyRegistry = require('../services/strategyRegistry');
+        const pluginClass = strategyRegistry.getPlugin(strategyName);
+        if (!pluginClass) {
+            return res.status(400).json({ status: 'error', message: `Strategy plugin '${strategyName}' is not registered.` });
+        }
+        const manifest = pluginClass.manifest || {};
+        const manifestParams = manifest.parameters || {};
+        const combinedSchema = { ...engineSchema, ...manifestParams };
+
+        for (const [key, param] of Object.entries(combinedSchema)) {
+            const val = config[key];
+            if (val !== undefined && val !== null) {
+                if (param.type === 'number' && typeof val !== 'number') {
+                    return res.status(400).json({ status: 'error', message: `Parameter '${key}' must be a number.` });
+                }
+                if (param.type === 'boolean' && typeof val !== 'boolean') {
+                    return res.status(400).json({ status: 'error', message: `Parameter '${key}' must be a boolean.` });
+                }
+                if (param.type === 'select' && param.options && !param.options.includes(val)) {
+                    return res.status(400).json({ status: 'error', message: `Parameter '${key}' must be one of: ${param.options.join(', ')}` });
+                }
+                if (param.min !== undefined && val < param.min) {
+                    return res.status(400).json({ status: 'error', message: `Parameter '${key}' must be at least ${param.min}.` });
+                }
+                if (param.max !== undefined && val > param.max) {
+                    return res.status(400).json({ status: 'error', message: `Parameter '${key}' must be at most ${param.max}.` });
+                }
+            }
+        }
+
         const status = await strategyEngine.startStrategy(req.user._id.toString(), strategyName, config);
         res.status(200).json({
             status: 'success',

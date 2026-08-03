@@ -129,6 +129,7 @@ class SingleStrategyRunner {
     this.checkpoints = [];
 
     this.activeTradeId = null;
+    this.activeOrderId = null;
     this.activeTradePremium = null;
     this.entryPrice = null;
     this.activeTradeContract = null;
@@ -280,7 +281,7 @@ class SingleStrategyRunner {
           try {
             const posRes = await callAngelApi('/angel/positions');
             const posList = Array.isArray(posRes?.data) ? posRes.data : [];
-            const held = posList.find(p => p.tradingsymbol === trade.premium);
+            const held = posList.find(p => (trade.symbolToken && String(p.symboltoken) === String(trade.symbolToken)) || p.tradingsymbol === trade.premium);
             const netQty = held ? parseInt(held.netqty || '0', 10) : 0;
             if (netQty <= 0) {
               isStillOpenOnBroker = false;
@@ -292,22 +293,23 @@ class SingleStrategyRunner {
 
         if (isStillOpenOnBroker) {
           this.activeTradeId = trade._id.toString();
+          this.activeOrderId = trade.orderId || null;
           this.activeTradePremium = trade.premium;
           this.entryPrice = trade.buyPrice;
           this.state = 'IN_POSITION';
           if (trade.premium.endsWith('CE')) this.rangeSide = 'CE';
           if (trade.premium.endsWith('PE')) this.rangeSide = 'PE';
-          
+
           try {
             const underlyingIndex = trade.index || 'SENSEX';
-            const exchange = (underlyingIndex === 'SENSEX') ? 'BFO' : 'NFO';
+            const exchange = trade.exchange || ((underlyingIndex === 'SENSEX') ? 'BFO' : 'NFO');
             const optRes = await callAngelApi(`/instruments/index-options?exchange=${exchange}&underlying=${underlyingIndex}`);
             const todayIso = new Date().toISOString().split('T')[0];
             const validExpiries = (optRes.expiries || []).filter(Boolean).sort();
             const expiry = validExpiries.find(e => e >= todayIso) || (validExpiries.length ? validExpiries[validExpiries.length - 1] : null);
             if (expiry) {
               const optChain = await callAngelApi(`/instruments/index-options?exchange=${exchange}&underlying=${underlyingIndex}&expiry=${expiry}`);
-              const contract = optChain.contracts.find(c => c.tradingsymbol === trade.premium);
+              const contract = optChain.contracts.find(c => (trade.symbolToken && String(c.symboltoken) === String(trade.symbolToken)) || c.tradingsymbol === trade.premium);
               if (contract) {
                 this.activeTradeContract = contract;
                 this.log(`Successfully recovered option contract details for ${trade.premium} (Token: ${contract.symboltoken})`);
@@ -354,7 +356,7 @@ class SingleStrategyRunner {
 
         if (this.ceContract && this.peContract) {
           this.monitoredPremiums = { ce: this.ceContract.tradingsymbol, pe: this.peContract.tradingsymbol };
-          
+
           // Subscribe contracts to MarketDataService only when changed or initial
           const baseTimeframe = this.getBaseTimeframe();
           if (!this.subscribedCeToken || this.subscribedCeToken !== this.ceContract.symboltoken) {
@@ -603,6 +605,7 @@ class SingleStrategyRunner {
         this.log(`Broker acknowledged: ${ackTs} (API HTTP delay: ${ackMs - sendStartMs}ms)`);
 
         const orderId = orderRes?.item?.response?.data?.orderid || orderRes?.item?.response?.orderid;
+        this.activeOrderId = orderId || null;
         if (orderId) {
           for (let i = 0; i < 4; i++) {
             await new Promise(r => setTimeout(r, 1000));
@@ -664,7 +667,10 @@ class SingleStrategyRunner {
           index: this.config.underlying || 'SENSEX',
           premium: contract.tradingsymbol,
           qty,
-          buyPrice: actualPrice
+          buyPrice: actualPrice,
+          orderId: this.activeOrderId || null,
+          symbolToken: contract.symboltoken,
+          exchange: contract.exchange
         });
         this.activeTradeId = tradeDoc._id.toString();
         const dbEndMs = Date.now();
@@ -693,86 +699,86 @@ class SingleStrategyRunner {
 
       if (!contract) return;
 
-        try {
-          const ltpRes = await callAngelApi(`/market/ltp?exchange=${encodeURIComponent(contract.exchange)}&tradingsymbol=${encodeURIComponent(contract.tradingsymbol)}&symboltoken=${encodeURIComponent(contract.symboltoken)}`);
-          const livePrice = ltpRes.ltp;
-          this.currentLtp = livePrice;
+      try {
+        const ltpRes = await callAngelApi(`/market/ltp?exchange=${encodeURIComponent(contract.exchange)}&tradingsymbol=${encodeURIComponent(contract.tradingsymbol)}&symboltoken=${encodeURIComponent(contract.symboltoken)}`);
+        const livePrice = ltpRes.ltp;
+        this.currentLtp = livePrice;
 
-          if (this.entryPrice) {
-            const pnl = (livePrice - this.entryPrice) * (this.config.quantity || 10);
-            this.message = `Position Active | LTP: ₹${livePrice.toFixed(2)} | PnL: ₹${pnl.toFixed(2)}`;
-          }
+        if (this.entryPrice) {
+          const pnl = (livePrice - this.entryPrice) * (this.config.quantity || 10);
+          this.message = `Position Active | LTP: ₹${livePrice.toFixed(2)} | PnL: ₹${pnl.toFixed(2)}`;
+        }
 
-          let shouldExit = this.exitTriggered || false;
-          let exitPrice = livePrice;
-          let exitReason = this.exitReasonStored || '';
+        let shouldExit = this.exitTriggered || false;
+        let exitPrice = livePrice;
+        let exitReason = this.exitReasonStored || '';
 
-          if (!shouldExit) {
-            if (this.strategyName === '5minBreakout') {
-              const targetPoints = Number(this.config.targetPoints) || 20;
-              const targetPrice = (this.entryPrice && !isNaN(this.entryPrice)) ? (this.entryPrice + targetPoints) : this.target;
+        if (!shouldExit) {
+          if (this.strategyName === '5minBreakout') {
+            const targetPoints = Number(this.config.targetPoints) || 20;
+            const targetPrice = (this.entryPrice && !isNaN(this.entryPrice)) ? (this.entryPrice + targetPoints) : this.target;
 
-              if (this.stopLoss && livePrice <= this.stopLoss) {
-                shouldExit = true;
-                exitReason = 'SL';
-              } else if (targetPrice && livePrice >= targetPrice) {
+            if (this.stopLoss && livePrice <= this.stopLoss) {
+              shouldExit = true;
+              exitReason = 'SL';
+            } else if (targetPrice && livePrice >= targetPrice) {
+              shouldExit = true;
+              exitReason = 'Target';
+            }
+          } else if (this.strategyName === 'ModifiedHeikenAshi' && this.config.exitStrategy === 'TRAILING_SL') {
+            const finalTargetPoints = Number(this.config.finalTargetPoints) || 100;
+            const initialSlPoints = Number(this.config.initialSlPoints) || 30;
+            const trailingStopPoints = Number(this.config.trailingStopPoints) || 20;
+
+            if (this.entryPrice && this.activeTrailingSl !== null) {
+              const targetPrice = this.entryPrice + finalTargetPoints;
+              if (livePrice >= targetPrice) {
                 shouldExit = true;
                 exitReason = 'Target';
-              }
-            } else if (this.strategyName === 'ModifiedHeikenAshi' && this.config.exitStrategy === 'TRAILING_SL') {
-              const finalTargetPoints = Number(this.config.finalTargetPoints) || 100;
-              const initialSlPoints = Number(this.config.initialSlPoints) || 30;
-              const trailingStopPoints = Number(this.config.trailingStopPoints) || 20;
-
-              if (this.entryPrice && this.activeTrailingSl !== null) {
-                const targetPrice = this.entryPrice + finalTargetPoints;
-                if (livePrice >= targetPrice) {
-                  shouldExit = true;
-                  exitReason = 'Target';
-                } else if (livePrice <= this.activeTrailingSl) {
-                  shouldExit = true;
-                  exitReason = this.activeTrailingSl === (this.entryPrice - initialSlPoints) ? 'SL' : 'Trailing SL';
-                } else {
-                  const pointsGained = livePrice - this.entryPrice;
-                  if (pointsGained >= trailingStopPoints) {
-                    const steps = Math.floor(pointsGained / trailingStopPoints);
-                    const proposedSl = this.entryPrice + (steps * trailingStopPoints) - initialSlPoints;
-                    if (proposedSl > this.activeTrailingSl) {
-                      this.activeTrailingSl = proposedSl;
-                      this.log(`Trailed SL up to ₹${proposedSl}`);
-                    }
+              } else if (livePrice <= this.activeTrailingSl) {
+                shouldExit = true;
+                exitReason = this.activeTrailingSl === (this.entryPrice - initialSlPoints) ? 'SL' : 'Trailing SL';
+              } else {
+                const pointsGained = livePrice - this.entryPrice;
+                if (pointsGained >= trailingStopPoints) {
+                  const steps = Math.floor(pointsGained / trailingStopPoints);
+                  const proposedSl = this.entryPrice + (steps * trailingStopPoints) - initialSlPoints;
+                  if (proposedSl > this.activeTrailingSl) {
+                    this.activeTrailingSl = proposedSl;
+                    this.log(`Trailed SL up to ₹${proposedSl}`);
                   }
                 }
               }
-            } else {
-              // Combined SL & Target checks for HeikenAshi and all other strategies
-              const targetPoints = Number(this.config.targetPoints) || 20;
-              const slPoints = Number(this.config.slPoints) || 30;
+            }
+          } else {
+            // Combined SL & Target checks for HeikenAshi and all other strategies
+            const targetPoints = Number(this.config.targetPoints) || 20;
+            const slPoints = Number(this.config.slPoints) || 30;
 
-              if (this.entryPrice) {
-                if (livePrice >= this.entryPrice + targetPoints) {
-                  shouldExit = true;
-                  exitReason = 'Target';
-                } else if (livePrice <= this.entryPrice - slPoints) {
-                  shouldExit = true;
-                  exitReason = 'SL';
-                }
+            if (this.entryPrice) {
+              if (livePrice >= this.entryPrice + targetPoints) {
+                shouldExit = true;
+                exitReason = 'Target';
+              } else if (livePrice <= this.entryPrice - slPoints) {
+                shouldExit = true;
+                exitReason = 'SL';
               }
             }
-
-            if (shouldExit) {
-              this.exitTriggered = true;
-              this.exitReasonStored = exitReason;
-            }
           }
 
-          if (shouldExit && !this.exitInProgress) {
-            const now = Date.now();
-            const backoffDelay = Math.min(1000 * Math.pow(2, this.exitRetryCount), 60000);
-            if (now - this.lastExitAttemptTime >= backoffDelay) {
-              await this.executeExit(contract, exitPrice, exitReason);
-            }
+          if (shouldExit) {
+            this.exitTriggered = true;
+            this.exitReasonStored = exitReason;
           }
+        }
+
+        if (shouldExit && !this.exitInProgress) {
+          const now = Date.now();
+          const backoffDelay = Math.min(1000 * Math.pow(2, this.exitRetryCount), 60000);
+          if (now - this.lastExitAttemptTime >= backoffDelay) {
+            await this.executeExit(contract, exitPrice, exitReason);
+          }
+        }
 
       } catch (err) {
         console.error(`[${this.strategyName}] Monitor error:`, err.message);
@@ -906,7 +912,7 @@ class SingleStrategyRunner {
       this.target = null;
       this.rangeSide = null;
       this.trend = 'NEUTRAL';
-      
+
       this.exitInProgress = false;
       this.isExiting = false;
       this.exitTriggered = false;
@@ -1023,6 +1029,9 @@ class StrategyEngineManager {
   async startStrategy(userId, strategyName, config) {
     const key = `${userId}_${strategyName}`;
     const runner = this.getRunner(key);
+    if (runner.isRunning) {
+      throw new Error('Strategy is already running.');
+    }
     await runner.start(config, userId);
     return runner.getStatus();
   }

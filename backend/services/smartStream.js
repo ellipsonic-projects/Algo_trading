@@ -220,6 +220,11 @@ class SmartStreamService extends EventEmitter {
 
   scheduleReconnect() {
     if (this.reconnectTimer) return;
+    if (this.reconnectAttempts >= 5) {
+      console.error('[SmartStreamService] Maximum reconnection attempts reached (5). Halting reconnection.');
+      this.emit('reconnect_failed');
+      return;
+    }
     this.reconnectAttempts++;
     const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
     console.log(`[SmartStreamService] Scheduling reconnect in ${delay}ms (Attempt ${this.reconnectAttempts})`);

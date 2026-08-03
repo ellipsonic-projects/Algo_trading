@@ -36,6 +36,15 @@ const tradeSchema = new mongoose.Schema({
     exitReason: {
         type: String,
         enum: ['Target', 'SL', 'Trailing SL', 'Strategy', 'HA_TREND_REVERSAL', 'Reversal', 'RECOVERY_CLEANUP', 'Manual']
+    },
+    orderId: {
+        type: String
+    },
+    symbolToken: {
+        type: String
+    },
+    exchange: {
+        type: String
     }
 }, { timestamps: true });
 

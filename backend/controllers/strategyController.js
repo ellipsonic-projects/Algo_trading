@@ -116,8 +116,9 @@ exports.resetConditionReport = (req, res) => {
 exports.getManifests = (req, res) => {
     try {
         const strategyRegistry = require('../services/strategyRegistry');
+        const engineSchema = require('../services/engineSchema');
         const manifests = strategyRegistry.getManifests();
-        res.status(200).json({ status: 'success', data: { manifests } });
+        res.status(200).json({ status: 'success', data: { manifests, engineSchema } });
     } catch (err) {
         res.status(500).json({ status: 'error', message: err.message });
     }

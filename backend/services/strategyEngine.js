@@ -166,6 +166,10 @@ class SingleStrategyRunner {
   }
 
   async start(config, userId) {
+    if (this.isRunning) {
+      this.log('Strategy is already running. Ignoring duplicate start request.');
+      return;
+    }
     this.config = config || {};
     this.userId = userId;
     this.isRunning = true;
@@ -501,22 +505,23 @@ class SingleStrategyRunner {
           const targetContract = (eventData && eventData.symboltoken === this.peContract?.symboltoken) ? this.peContract : this.ceContract;
           const targetType = (eventData && eventData.symboltoken === this.peContract?.symboltoken) ? 'PE' : 'CE';
 
-          if (targetSignal && targetSignal.lastCandle) {
-            const timeStr = targetSignal.lastCandle.time
-              ? new Date(typeof targetSignal.lastCandle.time === 'number' && targetSignal.lastCandle.time < 1e10 ? targetSignal.lastCandle.time * 1000 : targetSignal.lastCandle.time).toLocaleTimeString('en-IN')
+          if (targetSignal && (targetSignal.lastCandle || targetSignal.diagnostics)) {
+            const candleRef = targetSignal.lastCandle || (targetType === 'CE' ? ceItems[ceItems.length - 1] : peItems[peItems.length - 1]);
+            const timeStr = candleRef?.time
+              ? new Date(typeof candleRef.time === 'number' && candleRef.time < 1e10 ? candleRef.time * 1000 : candleRef.time).toLocaleTimeString('en-IN')
               : scanStartTs;
 
-            this.log(`[CANDLE EVALUATION - ${targetType} ${targetContract.tradingsymbol}] Time: ${timeStr}
-  EMA = ${targetSignal.ema.toFixed(2)}
-  JMA = ${targetSignal.jma.toFixed(2)}
+            let details = '';
+            if (targetSignal.lastCandle) {
+              details = `  EMA = ${targetSignal.ema?.toFixed(2)}
+  JMA = ${targetSignal.jma?.toFixed(2)}
   Last Candle = O:${targetSignal.lastCandle.open.toFixed(2)} H:${targetSignal.lastCandle.high.toFixed(2)} L:${targetSignal.lastCandle.low.toFixed(2)} C:${targetSignal.lastCandle.close.toFixed(2)}
-  Prev Candle = O:${targetSignal.prevCandle.open.toFixed(2)} H:${targetSignal.prevCandle.high.toFixed(2)} L:${targetSignal.prevCandle.low.toFixed(2)} C:${targetSignal.prevCandle.close.toFixed(2)}
-  lastNoWick = ${targetSignal.lastNoWick}
-  prevNoWick = ${targetSignal.prevNoWick}
-  jmaGtEma = ${targetSignal.jmaGtEma}
-  closeGtJma = ${targetSignal.closeGtJma}
-  lastGreen = ${targetSignal.lastGreen}
-  prevGreen = ${targetSignal.prevGreen}
+  Prev Candle = O:${targetSignal.prevCandle.open.toFixed(2)} H:${targetSignal.prevCandle.high.toFixed(2)} L:${targetSignal.prevCandle.low.toFixed(2)} C:${targetSignal.prevCandle.close.toFixed(2)}`;
+            } else if (targetSignal.diagnostics) {
+              details = `  Diagnostics = ${JSON.stringify(targetSignal.diagnostics)}`;
+            }
+
+            this.log(`[CANDLE EVALUATION - ${targetType} ${targetContract.tradingsymbol}] Time: ${timeStr}\n${details}
   Result: ${targetSignal.isEntry ? 'SIGNAL GENERATED (YES)' : 'NO ENTRY'}
   ${!targetSignal.isEntry && targetSignal.failedReasons?.length ? 'Reason:\n    ' + targetSignal.failedReasons.join('\n    ') : ''}`);
           }
@@ -527,7 +532,8 @@ class SingleStrategyRunner {
           if (ceSignal.isEntry && ceLastClosedTs !== this.lastEntryTime) {
             this.lastEntryTime = ceLastClosedTs;
             const signalMs = Date.now();
-            await this.executeEntry(this.ceContract, ceSignal.haClose, 'BULLISH', {
+            const signalPrice = ceSignal.haClose || ceSignal.close || (ceItems.length ? ceItems[ceItems.length - 1].close : 0);
+            await this.executeEntry(this.ceContract, signalPrice, 'BULLISH', {
               candleDetectedTs: scanStartTs,
               signalGeneratedMs: signalMs,
               signalGeneratedTs: formatPrecisionTime(new Date(signalMs)),
@@ -537,7 +543,8 @@ class SingleStrategyRunner {
           } else if (peSignal.isEntry && peLastClosedTs !== this.lastEntryTime) {
             this.lastEntryTime = peLastClosedTs;
             const signalMs = Date.now();
-            await this.executeEntry(this.peContract, peSignal.haClose, 'BEARISH', {
+            const signalPrice = peSignal.haClose || peSignal.close || (peItems.length ? peItems[peItems.length - 1].close : 0);
+            await this.executeEntry(this.peContract, signalPrice, 'BEARISH', {
               candleDetectedTs: scanStartTs,
               signalGeneratedMs: signalMs,
               signalGeneratedTs: formatPrecisionTime(new Date(signalMs)),

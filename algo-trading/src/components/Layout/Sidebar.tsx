@@ -14,11 +14,40 @@ import {
     History
 } from 'lucide-react';
 
+import { useEffect } from 'react';
+import { apiGet } from '../../trading';
+
+type PluginManifest = {
+    id: string;
+    name: string;
+};
+
 const Sidebar: React.FC = () => {
     const location = useLocation();
     const [isStrategiesOpen, setIsStrategiesOpen] = useState(true);
+    const [plugins, setPlugins] = useState<PluginManifest[]>([]);
 
-    const strategies = [
+    useEffect(() => {
+        let isMounted = true;
+        async function fetchPlugins() {
+            try {
+                const res = await apiGet<any>('/strategies/manifests');
+                const manifestList = res?.data?.manifests || res?.manifests || [];
+                if (isMounted && Array.isArray(manifestList)) {
+                    // Exclude builtin IDs that have dedicated routes
+                    const builtinIds = ['HeikenAshi', 'ModifiedHeikenAshi', '5minBreakout'];
+                    const customPlugins = manifestList.filter((m: PluginManifest) => !builtinIds.includes(m.id));
+                    setPlugins(customPlugins);
+                }
+            } catch (err) {
+                // Ignore API fetch errors gracefully
+            }
+        }
+        fetchPlugins();
+        return () => { isMounted = false; };
+    }, []);
+
+    const baseStrategies = [
         { name: 'Manual Trading', path: '/strategies/manual-trading', icon: Activity },
         { name: 'Heikenashi', path: '/strategies/heikenashi', icon: TrendingUp },
         { name: 'Mod Heikenashi', path: '/strategies/modified-heikenashi', icon: TrendingUp },
@@ -27,6 +56,14 @@ const Sidebar: React.FC = () => {
         { name: 'VWAP SMMA', path: '/strategies/vwap-smma', icon: Clock },
         { name: 'Expiry Strategy', path: '/strategies/expiry', icon: Target },
     ];
+
+    const dynamicPluginItems = plugins.map(p => ({
+        name: p.name,
+        path: `/strategies/plugin/${p.id}`,
+        icon: Zap
+    }));
+
+    const strategies = [...baseStrategies, ...dynamicPluginItems];
 
     const isActive = (path: string) => location.pathname === path;
     const isStrategyActive = strategies.some(s => isActive(s.path));

@@ -25,11 +25,12 @@ export default function StrategiesPage() {
   useEffect(() => {
     async function loadPlugins() {
       try {
-        const res = await apiGet<{ manifests: PluginManifest[] }>('/strategies/manifests')
-        if (res && Array.isArray(res.manifests)) {
+        const res = await apiGet<any>('/strategies/manifests')
+        const manifestList = res?.data?.manifests || res?.manifests || []
+        if (Array.isArray(manifestList)) {
           // Filter out existing hardcoded pages to prevent duplicates
           const builtinIds = ['HeikenAshi', 'ModifiedHeikenAshi', '5minBreakout']
-          const customPlugins = res.manifests.filter(m => !builtinIds.includes(m.id))
+          const customPlugins = manifestList.filter((m: PluginManifest) => !builtinIds.includes(m.id))
           setPlugins(customPlugins)
         }
       } catch (e) {}

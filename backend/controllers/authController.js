@@ -14,6 +14,9 @@ const createSendToken = (user, statusCode, res) => {
             Date.now() + process.env.JWT_COOKIE_EXPIRES_IN * 24 * 60 * 60 * 1000
         ),
         httpOnly: true,
+        // Issue #8 FIX: SameSite:'Strict' prevents the cookie from being sent
+        // on cross-site requests, blocking CSRF attacks.
+        sameSite: 'Strict',
         secure: process.env.NODE_ENV === 'production',
         path: '/'
     };
@@ -23,9 +26,11 @@ const createSendToken = (user, statusCode, res) => {
     // Remove password from output
     user.password = undefined;
 
+    // Issue #8 FIX: Do NOT return the token in the JSON body.
+    // Credentials are delivered exclusively via the HttpOnly cookie.
+    // Returning it in the body would allow client-side JS (and XSS) to read it.
     res.status(statusCode).json({
         status: 'success',
-        token,
         data: {
             user
         }
@@ -51,7 +56,10 @@ exports.login = async (req, res, next) => {
         // 3) If everything ok, send token to client
         createSendToken(user, 200, res);
     } catch (err) {
-        res.status(500).json({ status: 'error', message: err.message });
+        // Issue #18 FIX: Do not leak internal error details (stack traces,
+        // field names, Mongoose messages) to the caller. Log them server-side.
+        console.error('[AuthController] Login error:', err);
+        res.status(500).json({ status: 'error', message: 'Internal server error' });
     }
 };
 

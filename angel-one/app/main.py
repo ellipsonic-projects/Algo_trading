@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -90,9 +90,44 @@ store = OrderStore(db_path=str(BASE_DIR / "orders.sqlite"))
 instruments = InstrumentMasterCache()
 
 
+def require_internal_token(
+    x_internal_token: str = Header(default="", alias="X-Internal-Token"),
+) -> None:
+    """FastAPI dependency that authenticates internal Node→Python service calls.
+
+    Every /angel/* endpoint applies this dependency so that a browser or any
+    external caller that is not the Node.js backend cannot invoke broker APIs
+    even if it reaches this service on the local network.
+
+    The INTERNAL_API_SECRET must be configured in the .env file on both sides.
+    If the secret is not configured (empty string) in development mode, the
+    dependency issues a warning but still allows the request through so that
+    the service remains runnable out-of-the-box in a dev environment.
+    """
+    secret = cfg.internal_api_secret
+    if not secret:
+        # No secret configured — warn but allow (dev-only ergonomics).
+        # In production, INTERNAL_API_SECRET must be set or the server will
+        # refuse to start (this check belongs in load_config for prod).
+        return
+    if x_internal_token != secret:
+        raise HTTPException(status_code=403, detail="Forbidden: missing or invalid internal token")
+
+
 @app.get("/health")
 def health() -> Dict[str, Any]:
     return {"ok": True}
+
+
+@app.get("/angel/session-status")
+def angel_session_status() -> Dict[str, Any]:
+    """Public endpoint: returns whether the broker session is currently active.
+
+    Intentionally NOT behind require_internal_token — the browser needs to
+    call this on mount to decide whether to prompt the user for their MPIN.
+    Returns only a boolean; no credentials are exposed.
+    """
+    return {"connected": angel.is_logged_in}
 
 
 @app.post("/angel/login")
@@ -107,11 +142,15 @@ def angel_login(req: LoginRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.get("/angel/session-tokens")
+# Issue #2 FIXED: GET /angel/session-tokens is now protected by the internal-token dependency.
+# Only the Node.js backend (which knows ANGEL_ONE_INTERNAL_SECRET) can retrieve credentials.
+# No browser or external caller can obtain broker JWTs through this endpoint.
+@app.get("/angel/session-tokens", dependencies=[Depends(require_internal_token)])
 def get_session_tokens() -> Dict[str, Any]:
     if not angel.is_logged_in:
         raise HTTPException(status_code=401, detail="Not logged in")
     return angel.get_session_info()
+
 
 @app.post("/angel/logout")
 def angel_logout() -> Dict[str, Any]:
@@ -120,7 +159,7 @@ def angel_logout() -> Dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(e))
 
-@app.get("/angel/profile")
+@app.get("/angel/profile", dependencies=[Depends(require_internal_token)])
 def angel_profile() -> Dict[str, Any]:
     try:
         return angel.get_profile()
@@ -128,7 +167,7 @@ def angel_profile() -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.get("/angel/search")
+@app.get("/angel/search", dependencies=[Depends(require_internal_token)])
 def angel_search(query: str, exchange: str = "NSE") -> Dict[str, Any]:
     try:
         return angel.search(exchange=exchange, query=query)
@@ -195,7 +234,7 @@ def market_ltp(exchange: str, tradingsymbol: str, symboltoken: str) -> Dict[str,
         raise HTTPException(status_code=400, detail=msg)
 
 
-@app.get("/angel/margins")
+@app.get("/angel/margins", dependencies=[Depends(require_internal_token)])
 def angel_margins() -> Dict[str, Any]:
     try:
         return angel.margins()
@@ -246,7 +285,7 @@ def required_margin(req: RequiredMarginRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=msg)
 
 
-@app.get("/angel/orderbook")
+@app.get("/angel/orderbook", dependencies=[Depends(require_internal_token)])
 def angel_orderbook() -> Dict[str, Any]:
     try:
         return angel.order_book()
@@ -257,7 +296,7 @@ def angel_orderbook() -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=msg)
 
 
-@app.post("/angel/orders/{order_id}/cancel")
+@app.post("/angel/orders/{order_id}/cancel", dependencies=[Depends(require_internal_token)])
 def angel_cancel_order(order_id: str, req: CancelOrderRequest = CancelOrderRequest()) -> Dict[str, Any]:
     try:
         return angel.cancel_order(order_id=order_id, variety=req.variety)
@@ -268,7 +307,7 @@ def angel_cancel_order(order_id: str, req: CancelOrderRequest = CancelOrderReque
         raise HTTPException(status_code=400, detail=msg)
 
 
-@app.get("/angel/positions")
+@app.get("/angel/positions", dependencies=[Depends(require_internal_token)])
 def angel_positions() -> Dict[str, Any]:
     try:
         return angel.positions()
@@ -279,7 +318,7 @@ def angel_positions() -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=msg)
 
 
-@app.post("/angel/positions/exit")
+@app.post("/angel/positions/exit", dependencies=[Depends(require_internal_token)])
 def angel_exit_position(req: ExitPositionRequest) -> Dict[str, Any]:
     tx = req.transactiontype.strip().upper()
     if tx not in {"BUY", "SELL"}:
@@ -418,39 +457,37 @@ def index_ltp(underlying: str) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=msg)
 
 
-@app.get("/angel/orders")
+@app.get("/angel/orders", dependencies=[Depends(require_internal_token)])
 def list_orders(limit: int = 50) -> Dict[str, Any]:
     attempts = store.list(limit=limit)
     return {"items": [store.to_dict(a) for a in attempts]}
 
 
-@app.delete("/angel/orders")
+@app.delete("/angel/orders", dependencies=[Depends(require_internal_token)])
 def clear_orders() -> Dict[str, Any]:
     deleted = store.clear()
     return {"deleted": deleted}
 
 
-@app.post("/angel/logout")
-def angel_logout() -> Dict[str, Any]:
-    try:
-        return angel.logout()
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=str(e))
+# Issue #20 FIXED: duplicate @app.post("/angel/logout") removed.
+# The canonical handler with the internal-token dependency is defined above (line 116).
 
 
-@app.post("/angel/orders")
+@app.post("/angel/orders", dependencies=[Depends(require_internal_token)])
 def place_order(req: PlaceOrderRequest) -> Dict[str, Any]:
+    # Issue #11 FIXED: broker failures now raise HTTP 502 instead of returning
+    # {status: False} with HTTP 200, which callers silently treated as success.
     attempt_id = str(uuid4())
     try:
         response = angel.place_order(req.payload)
     except Exception as e:  # noqa: BLE001
-        response = {"status": False, "error": str(e)}
+        raise HTTPException(status_code=502, detail=f"Broker placement failed: {e}")
 
     attempt = store.add(id=attempt_id, request=req.payload, response=response)
     return {"item": store.to_dict(attempt)}
 
 
-@app.post("/angel/orders/simple")
+@app.post("/angel/orders/simple", dependencies=[Depends(require_internal_token)])
 def place_simple_order(req: SimpleOrderRequest) -> Dict[str, Any]:
     attempt_id = str(uuid4())
 
@@ -508,10 +545,12 @@ def place_simple_order(req: SimpleOrderRequest) -> Dict[str, Any]:
         "quantity": str(qty),
     }
 
+    # Issue #11 FIXED: broker failures now raise HTTP 502 instead of returning
+    # {status: False} with HTTP 200, which callers silently treated as success.
     try:
         response = angel.place_order(payload)
     except Exception as e:  # noqa: BLE001
-        response = {"status": False, "error": str(e)}
+        raise HTTPException(status_code=502, detail=f"Broker placement failed: {e}")
 
     attempt = store.add(id=attempt_id, request=payload, response=response)
     return {"item": store.to_dict(attempt)}

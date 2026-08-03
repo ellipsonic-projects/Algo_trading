@@ -1,6 +1,8 @@
 const Trade = require('../models/Trade');
 
-async function getTradeOverlays(underlying, date) {
+// Issue #5 FIX: userId is now required. Overlays are scoped to the requesting user.
+// rawTrades is no longer returned — callers receive only chart-display objects.
+async function getTradeOverlays(underlying, date, userId) {
   const und = (underlying || 'NIFTY').toUpperCase();
 
   let startDate, endDate;
@@ -14,8 +16,11 @@ async function getTradeOverlays(underlying, date) {
   }
 
   try {
+    // Issue #5 FIX: filter by userId so chart overlays only contain the requesting
+    // user's trades — previously queried all users' trades with no userId filter.
     const trades = await Trade.find({
       index: und,
+      userId,
       createdAt: { $gte: startDate, $lte: endDate },
     }).lean();
 
@@ -66,14 +71,15 @@ async function getTradeOverlays(underlying, date) {
     // Sort markers chronologically
     markers.sort((a, b) => a.time - b.time);
 
+    // rawTrades intentionally NOT returned — it would expose symbols, prices,
+    // P&L and order identifiers to any caller of this service.
     return {
       markers,
       priceLines,
-      rawTrades: trades,
     };
   } catch (err) {
     console.error('Failed to query trade overlays:', err.message);
-    return { markers: [], priceLines: [], rawTrades: [] };
+    return { markers: [], priceLines: [] };
   }
 }
 

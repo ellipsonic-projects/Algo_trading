@@ -2,10 +2,11 @@ const candleService = require('./candleService');
 const indicatorService = require('./indicatorService');
 const tradeOverlayService = require('./tradeOverlayService');
 
-async function getMarketChartData({ underlying, date, interval }) {
+// Issue #5 FIX: userId is now threaded through so overlay queries are user-scoped.
+async function getMarketChartData({ underlying, date, interval, userId }) {
   const candles = await candleService.getCandles(underlying, date, interval);
   const indicators = indicatorService.computeChartIndicators(candles);
-  const tradeOverlays = await tradeOverlayService.getTradeOverlays(underlying, date);
+  const tradeOverlays = await tradeOverlayService.getTradeOverlays(underlying, date, userId);
 
   return {
     underlying: (underlying || 'NIFTY').toUpperCase(),

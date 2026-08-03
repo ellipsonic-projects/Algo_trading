@@ -11,20 +11,27 @@ const indicators = require('../trading/indicators');
 strategyRegistry.init().catch(err => console.error('[StrategyEngine] Registry init error:', err.message));
 
 const ANGEL_API_BASE = process.env.ANGEL_ONE_API_BASE || 'http://localhost:8000';
-
 const INDEX_CONFIG = {
   SENSEX: { qty: 20, step: 20, exchange: 'BFO' },
   NIFTY: { qty: 65, step: 65, exchange: 'NFO' },
   BANKNIFTY: { qty: 30, step: 30, exchange: 'NFO' },
   CRUDEOILM: { qty: 1, step: 1, exchange: 'MCX' }
 };
+// Shared secret sent as X-Internal-Token header on every call to the Python service.
+// Must match INTERNAL_API_SECRET in angel-one/.env.
+const ANGEL_ONE_INTERNAL_SECRET = process.env.ANGEL_ONE_INTERNAL_SECRET || '';
+
 
 // Helper: HTTP request to Python Angel One Wrapper
 async function callAngelApi(endpoint, method = 'GET', body = null) {
   const url = `${ANGEL_API_BASE}${endpoint}`;
   const options = {
     method,
-    headers: { 'Content-Type': 'application/json' }
+    headers: {
+      'Content-Type': 'application/json',
+      // Issue #1 FIX: authenticate every backend→Python service call with the shared secret.
+      'X-Internal-Token': ANGEL_ONE_INTERNAL_SECRET,
+    }
   };
   if (body !== null) {
     options.body = JSON.stringify(body);
@@ -220,6 +227,15 @@ class SingleStrategyRunner {
   }
 
   stop() {
+    // Issue #9 FIX: refuse to stop while a real position is open.
+    // Stopping mid-position would leave an unmanaged broker position.
+    // The caller must first execute a manual exit before calling stop.
+    if (this.state === 'IN_POSITION') {
+      const msg = 'Cannot stop strategy while a position is open. Use manual exit first.';
+      this.log(`STOP BLOCKED: ${msg}`);
+      throw new Error(msg);
+    }
+
     this.isRunning = false;
     this.state = 'STOPPED';
     this.log('Strategy execution halted.');
@@ -266,7 +282,9 @@ class SingleStrategyRunner {
 
   async recoverTrade() {
     try {
-      const strategyDoc = await Strategy.findOne({ name: this.strategyName });
+      // Issue #10 FIX: scope strategy lookup to this.userId so recovery cannot
+      // cross user boundaries (previously used only name, no userId predicate).
+      const strategyDoc = await Strategy.findOne({ name: this.strategyName, userId: this.userId });
       if (!strategyDoc) return;
 
       const trade = await Trade.findOne({
@@ -624,7 +642,13 @@ class SingleStrategyRunner {
           }
         }
       } catch (err) {
+        // Issue #3 FIX: a failed live BUY now aborts entry entirely.
+        // Previously execution fell through to IN_POSITION regardless, creating
+        // a fictitious position and later firing an unmatched sell order.
         console.error(`[${this.strategyName}] LIVE BUY Order failed:`, err.message);
+        this.log(`ENTRY ABORTED: broker placement failed — ${err.message}`);
+        this.activeOrderId = null;
+        return; // <-- abort; do NOT transition to IN_POSITION
       }
     } else {
       // Paper trading simulation timing logging
@@ -659,7 +683,9 @@ class SingleStrategyRunner {
     // Record trade to MongoDB
     const dbStartMs = Date.now();
     try {
-      const strategyDoc = await Strategy.findOne({ name: this.strategyName });
+      // Issue #6 FIX: scope strategy lookup to userId so one user's strategy
+      // record cannot be found or modified by another user's engine instance.
+      const strategyDoc = await Strategy.findOne({ name: this.strategyName, userId: this.userId });
       if (strategyDoc) {
         const tradeDoc = await Trade.create({
           userId: this.userId,
@@ -1039,6 +1065,8 @@ class StrategyEngineManager {
   stopStrategy(userId, strategyName) {
     const key = `${userId}_${strategyName}`;
     const runner = this.getRunner(key);
+    // Issue #9 FIX: stop() throws if a position is open. Surface the error
+    // back to the caller (strategyController) so the API can return a 409.
     runner.stop();
     return runner.getStatus();
   }

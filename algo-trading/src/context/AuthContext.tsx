@@ -23,14 +23,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     useEffect(() => {
         const fetchMe = async () => {
             try {
-                const token = localStorage.getItem('jwt');
-                const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-                if (token) {
-                    headers['Authorization'] = `Bearer ${token}`;
-                }
-
+                // Issue #8 FIX: Do NOT read JWT from localStorage.
+                // The HttpOnly cookie is sent automatically by the browser
+                // when credentials:'include' is set — no Authorization header needed.
                 const res = await fetch(`${API_BASE}/me`, {
-                    headers,
+                    headers: { 'Content-Type': 'application/json' },
                     credentials: 'include'
                 });
                 if (res.ok) {
@@ -60,9 +57,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
 
         const data = await res.json();
-        if (data.token) {
-            localStorage.setItem('jwt', data.token);
-        }
+        // Issue #8 FIX: Do NOT store the token in localStorage.
+        // The server no longer includes it in the response body.
+        // Authentication state is managed entirely via the HttpOnly cookie.
         setUser(data.data.user);
     };
 
@@ -71,7 +68,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             method: 'POST',
             credentials: 'include'
         });
-        localStorage.removeItem('jwt');
+        // Issue #8 FIX: No localStorage token to remove.
         setUser(null);
     };
 

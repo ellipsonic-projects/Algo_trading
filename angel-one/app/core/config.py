@@ -21,6 +21,7 @@ class AppConfig:
     port: int
     cors_origins: List[str]
     angel: AngelOneConfig
+    internal_api_secret: str  # shared secret for Node→Python service calls
 
 
 def _require_env(name: str) -> str:
@@ -46,4 +47,12 @@ def load_config(dotenv_path: Optional[str] = None) -> AppConfig:
         base_url=os.getenv("ANGEL_BASE_URL", "https://apiconnect.angelone.in").strip(),
     )
 
-    return AppConfig(env=env, port=port, cors_origins=cors_origins, angel=angel)
+    internal_api_secret = os.getenv("INTERNAL_API_SECRET", "").strip()
+
+    return AppConfig(
+        env=env,
+        port=port,
+        cors_origins=cors_origins,
+        angel=angel,
+        internal_api_secret=internal_api_secret,
+    )

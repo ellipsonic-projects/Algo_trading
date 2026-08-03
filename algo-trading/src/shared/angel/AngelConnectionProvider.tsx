@@ -9,6 +9,8 @@ type AngelLoginResponse = {
   client_code?: string
 }
 
+// Issue #7 FIX: VITE_ANGEL_MPIN removed. The MPIN must never be stored in the
+// client bundle or any environment variable that gets inlined at build time.
 type ConnectStatus = 'idle' | 'connecting' | 'connected' | 'error'
 
 type AngelConnectionContextValue = {
@@ -28,6 +30,18 @@ async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   })
   if (!res.ok) throw new Error(await res.text())
   return (await res.json()) as T
+}
+
+/** Issue #7 FIX: Check session status without exposing credentials. */
+async function apiGetSessionStatus(): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/angel/session-status`)
+    if (!res.ok) return false
+    const data = await res.json() as { connected: boolean }
+    return data.connected === true
+  } catch {
+    return false
+  }
 }
 
 const AngelConnectionContext = createContext<AngelConnectionContextValue | null>(null)
@@ -51,42 +65,63 @@ export function AngelConnectionProvider({ children }: { children: ReactNode }) {
     setConnectMessage('Disconnected')
   }, [])
 
-  const submitMpin = useCallback(async (mpin: string, silent = false) => {
-    if (!silent) {
-      setConnectStatus('connecting')
-      setConnectMessage('')
-    }
+  const submitMpin = useCallback(async (mpin: string) => {
+    setConnectStatus('connecting')
+    setConnectMessage('')
     try {
       const login = await apiPost<AngelLoginResponse>('/angel/login', { mpin })
       setConnectStatus('connected')
-      if (!silent) {
-        setConnectMessage(login.message ?? 'Connected')
-      }
+      setConnectMessage(login.message ?? 'Connected')
       setMpinOpen(false)
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Connect failed'
-      if (!silent) {
-        setConnectStatus('error')
-        setConnectMessage('')
-      }
+      setConnectStatus('error')
+      setConnectMessage('')
       throw new Error(msg)
     }
   }, [])
 
-  // Auto-login & 5 min reconnect
+  // Issue #7 FIX: On mount, check whether the broker session is already active
+  // via a public status endpoint. If connected, update UI state silently.
+  // If not connected, open the MPIN modal so the user can enter their PIN manually.
+  // The MPIN is NEVER stored in env vars, the bundle, or any persistent storage.
   useEffect(() => {
-    const mpin = import.meta.env.VITE_ANGEL_MPIN ?? ''
+    let cancelled = false
 
-    // Auto login on mount
-    submitMpin(mpin, false).catch(console.error)
+    const checkAndConnect = async () => {
+      const isConnected = await apiGetSessionStatus()
+      if (cancelled) return
 
-    // Auto reconnect every 5 minutes
-    const intervalId = setInterval(() => {
-      submitMpin(mpin, true).catch(console.error)
+      if (isConnected) {
+        // Session already active (e.g., server kept the session alive after hot-reload)
+        setConnectStatus('connected')
+        setConnectMessage('Session active')
+      } else {
+        // Session not active — prompt the user to enter their MPIN manually
+        setMpinOpen(true)
+      }
+    }
+
+    checkAndConnect()
+
+    // Re-check session status every 5 minutes.
+    // If the session has dropped, re-open the prompt (no auto-submit).
+    const intervalId = setInterval(async () => {
+      const isConnected = await apiGetSessionStatus()
+      if (cancelled) return
+      if (!isConnected && connectStatus === 'connected') {
+        setConnectStatus('idle')
+        setConnectMessage('')
+        setMpinOpen(true)
+      }
     }, 300_000)
 
-    return () => clearInterval(intervalId)
-  }, [submitMpin])
+    return () => {
+      cancelled = true
+      clearInterval(intervalId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const value = useMemo<AngelConnectionContextValue>(
     () => ({

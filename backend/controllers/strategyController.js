@@ -86,6 +86,11 @@ exports.stopStrategy = async (req, res) => {
             data: status
         });
     } catch (err) {
+        // Issue #9 FIX: stop() throws when the strategy has an open position.
+        // Return 409 Conflict so the frontend knows to run a manual exit first.
+        if (err.message && err.message.includes('Cannot stop strategy while a position is open')) {
+            return res.status(409).json({ status: 'fail', message: err.message });
+        }
         res.status(500).json({ status: 'error', message: err.message });
     }
 };

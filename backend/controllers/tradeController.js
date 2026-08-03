@@ -36,8 +36,12 @@ exports.updateTradeExit = async (req, res) => {
     try {
         const { tradeId, exitPrice, exitReason } = req.body;
 
-        const trade = await Trade.findById(tradeId);
+        // Issue #4 FIX: query by _id AND userId so a user cannot modify
+        // another user's trade by knowing its ObjectId.
+        const trade = await Trade.findOne({ _id: tradeId, userId: req.user._id });
         if (!trade) {
+            // Return 404 regardless of whether the trade doesn't exist or belongs to
+            // another user — avoid leaking existence information.
             return res.status(404).json({ status: 'fail', message: 'Trade not found' });
         }
 
@@ -119,8 +123,17 @@ exports.getStats = async (req, res) => {
 };
 exports.getAllTrades = async (req, res) => {
     try {
-        const { strategyId, startDate, endDate, page = 1, limit = 10, searchQuery, exitReason, timeFrom, timeTo } = req.query;
+        const { strategyId, startDate, endDate, page = 1, exitReason, timeFrom, timeTo } = req.query;
+
+        // Issue #12 FIX: validate and cap limit so callers cannot issue unbounded queries.
+        const rawLimit = parseInt(req.query.limit, 10);
+        const limit = (!Number.isNaN(rawLimit) && rawLimit > 0) ? Math.min(rawLimit, 100) : 10;
+
         const query = { userId: req.user._id };
+
+        // Issue #12 FIX: escape searchQuery before inserting into $regex to prevent ReDoS.
+        const rawSearch = req.query.searchQuery;
+        const searchQuery = (typeof rawSearch === 'string') ? rawSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : null;
 
         const parseTimeToMinutes = (value) => {
             if (typeof value !== 'string' || value.trim() === '') return null;
@@ -148,6 +161,11 @@ exports.getAllTrades = async (req, res) => {
 
         if (strategyId) {
             const mongoose = require('mongoose');
+            // Issue #12 FIX: validate ObjectId format before constructing one — invalid
+            // IDs previously threw an unhandled exception returned as HTTP 500.
+            if (!mongoose.isValidObjectId(strategyId)) {
+                return res.status(400).json({ status: 'fail', message: 'Invalid strategyId format' });
+            }
             query.strategyId = new mongoose.Types.ObjectId(strategyId);
         }
 

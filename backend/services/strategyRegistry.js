@@ -15,12 +15,14 @@ class StrategyRegistry {
 
   /**
    * Initializes startup-only plugin discovery.
+   * NOTE: Database strategy records are no longer auto-seeded here.
+   * They are created per-user when a user explicitly starts a strategy.
+   * See Issue #6: seeding to User.findOne() (the first user) broke multi-user isolation.
    */
   async init() {
     if (this.isLoaded) return;
     console.log('[StrategyRegistry] Initializing startup strategy plugin discovery...');
     this.discoverPlugins();
-    await this.syncDatabaseRecords();
     this.isLoaded = true;
   }
 

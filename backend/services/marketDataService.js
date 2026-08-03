@@ -119,26 +119,38 @@ class MarketDataService extends EventEmitter {
   async pollRestLtpFallback() {
     if (this.subscribers.size === 0) return;
 
-    for (const [token, sub] of this.subscribers.entries()) {
-      try {
-        const url = `${ANGEL_API_BASE}/market/ltp?exchange=${encodeURIComponent(sub.exchange)}&tradingsymbol=&symboltoken=${encodeURIComponent(token)}`;
-        const res = await fetch(url);
-        if (res.ok) {
-          const json = await res.json();
-          if (json && json.ltp > 0) {
-            this.handleTick({
-              token,
-              exchangeType: sub.exchangeType,
-              ltp: json.ltp,
-              timestamp: Date.now(),
-              isFallback: true
-            });
+    // Issue #15 FIX: Replaced sequential for-of await loop with concurrent
+    // Promise.allSettled. Each fetch has a 3-second AbortController timeout.
+    // This prevents one stalled request from blocking all others when the
+    // 2-second polling interval fires again before the loop is done.
+    const fetchPromises = Array.from(this.subscribers.entries()).map(([token, sub]) => {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
+
+      const url = `${ANGEL_API_BASE}/market/ltp?exchange=${encodeURIComponent(sub.exchange)}&tradingsymbol=&symboltoken=${encodeURIComponent(token)}`;
+      return fetch(url, { signal: controller.signal })
+        .then(async (res) => {
+          clearTimeout(timeoutId);
+          if (res.ok) {
+            const json = await res.json();
+            if (json && json.ltp > 0) {
+              this.handleTick({
+                token,
+                exchangeType: sub.exchangeType,
+                ltp: json.ltp,
+                timestamp: Date.now(),
+                isFallback: true
+              });
+            }
           }
-        }
-      } catch (err) {
-        // Suppress fallback error output
-      }
-    }
+        })
+        .catch(() => {
+          clearTimeout(timeoutId);
+          // Suppress individual fetch errors (timeout, network error, etc.)
+        });
+    });
+
+    await Promise.allSettled(fetchPromises);
   }
 
   handleTick(tick) {
@@ -246,7 +258,12 @@ class MarketDataService extends EventEmitter {
   async autoInitSession() {
     if ((smartStream.isConnected || smartStream.isConnecting) && (orderUpdateService.isConnected || orderUpdateService.isConnecting)) return;
     try {
-      const res = await fetch(`${ANGEL_API_BASE}/angel/session-tokens`);
+      // Issue #1/#2 FIX: send X-Internal-Token so the now-protected /angel/session-tokens
+      // endpoint accepts this request from the Node backend.
+      const internalSecret = process.env.ANGEL_ONE_INTERNAL_SECRET || '';
+      const res = await fetch(`${ANGEL_API_BASE}/angel/session-tokens`, {
+        headers: { 'X-Internal-Token': internalSecret }
+      });
       if (res.ok) {
         const data = await res.json();
         if (data && data.status && data.client_code && data.feed_token) {

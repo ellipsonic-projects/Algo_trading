@@ -13,4 +13,7 @@ const strategySchema = new mongoose.Schema({
     }
 }, { timestamps: true });
 
+// Compound index to optimize user-scoped strategy lookup by name
+strategySchema.index({ userId: 1, name: 1 });
+
 module.exports = mongoose.model('Strategy', strategySchema);

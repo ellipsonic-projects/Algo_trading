@@ -9,5 +9,6 @@ router.use(authController.protect);
 
 router.get('/market-data', chartController.getMarketChartData);
 router.get('/index-ltp', chartController.getIndexLtp);
+router.get('/margins', chartController.getMargins);
 
 module.exports = router;

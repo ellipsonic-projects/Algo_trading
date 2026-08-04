@@ -48,4 +48,9 @@ const tradeSchema = new mongoose.Schema({
     }
 }, { timestamps: true });
 
+// Compound indexes to optimize query performance
+tradeSchema.index({ userId: 1, createdAt: -1 });
+tradeSchema.index({ userId: 1, strategyId: 1, exitPrice: 1 });
+tradeSchema.index({ userId: 1, exitPrice: 1 });
+
 module.exports = mongoose.model('Trade', tradeSchema);

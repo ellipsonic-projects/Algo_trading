@@ -41,3 +41,22 @@ exports.getIndexLtp = async (req, res) => {
     res.status(500).json({ status: 'error', message: err.message });
   }
 };
+
+exports.getMargins = async (req, res) => {
+  try {
+    const response = await fetch(`${config.API.ANGEL_ONE_API_BASE}/angel/margins`, {
+      headers: {
+        'X-Internal-Token': process.env.ANGEL_ONE_INTERNAL_SECRET || ''
+      }
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      return res.status(response.status).send(text);
+    }
+    const data = await response.json();
+    res.status(200).json(data);
+  } catch (err) {
+    res.status(500).json({ status: 'error', message: err.message });
+  }
+};
+

@@ -15,13 +15,36 @@ module.exports = {
     grouping: 'Core Settings',
     order: 2
   },
+  baseTimeframe: {
+    type: 'select',
+    label: 'Primary Timeframe',
+    options: ['ONE_MINUTE', 'THREE_MINUTE', 'FIVE_MINUTE', 'FIFTEEN_MINUTE', 'THIRTY_MINUTE'],
+    default: 'FIVE_MINUTE',
+    grouping: 'Core Settings',
+    order: 3
+  },
+  needConfirmation: {
+    type: 'boolean',
+    label: 'Higher Timeframe Sync',
+    default: false,
+    grouping: 'Core Settings',
+    order: 4
+  },
+  confirmationTimeframe: {
+    type: 'select',
+    label: 'Confirmation Timeframe',
+    options: ['ONE_MINUTE', 'THREE_MINUTE', 'FIVE_MINUTE', 'FIFTEEN_MINUTE', 'THIRTY_MINUTE'],
+    default: 'FIFTEEN_MINUTE',
+    grouping: 'Core Settings',
+    order: 5
+  },
   strikeMode: {
     type: 'select',
     label: 'Strike Preference',
     options: ['ITM', 'ATM', 'OTM'],
     default: 'ATM',
     grouping: 'Strike Selection',
-    order: 3
+    order: 6
   },
   strikeDepth: {
     type: 'number',
@@ -29,7 +52,7 @@ module.exports = {
     default: 1,
     min: 1,
     grouping: 'Strike Selection',
-    order: 4,
+    order: 7,
     visibilityCondition: 'strikeMode != "ATM"'
   },
   premiumMin: {
@@ -38,7 +61,7 @@ module.exports = {
     default: 300,
     min: 1,
     grouping: 'Strike Selection',
-    order: 5
+    order: 8
   },
   premiumMax: {
     type: 'number',
@@ -46,15 +69,15 @@ module.exports = {
     default: 400,
     min: 1,
     grouping: 'Strike Selection',
-    order: 6
+    order: 9
   },
   exitStrategy: {
     type: 'select',
     label: 'Exit Strategy',
-    options: ['POINTS', 'CANDLES', 'REVERSAL'],
+    options: ['POINTS', 'CANDLES', 'REVERSAL', 'TARGET', 'TRAILING_SL'],
     default: 'POINTS',
     grouping: 'Exit Settings',
-    order: 7
+    order: 10
   },
   targetPoints: {
     type: 'number',
@@ -62,7 +85,7 @@ module.exports = {
     default: 20,
     min: 1,
     grouping: 'Exit Settings',
-    order: 8
+    order: 11
   },
   slPoints: {
     type: 'number',
@@ -70,7 +93,7 @@ module.exports = {
     default: 30,
     min: 1,
     grouping: 'Exit Settings',
-    order: 9
+    order: 12
   },
   trailingStopPoints: {
     type: 'number',
@@ -78,13 +101,14 @@ module.exports = {
     default: 0,
     min: 0,
     grouping: 'Exit Settings',
-    order: 10
+    order: 13
   },
   liveTradingConsent: {
     type: 'boolean',
     label: 'Live Trading Consent',
     default: false,
     grouping: 'Risk Settings',
-    order: 11
+    order: 14
   }
 };
+

@@ -18,10 +18,9 @@ class AngelSession:
 
 
 class AngelClient:
-    def __init__(self, *, api_key: str, client_code: str, totp_secret: str) -> None:
+    def __init__(self, *, api_key: str, client_code: str) -> None:
         self._api_key = api_key
         self._client_code = client_code
-        self._totp_secret = totp_secret
         self._smart = SmartConnect(api_key=self._api_key)
         self._session: Optional[AngelSession] = None
 
@@ -29,8 +28,7 @@ class AngelClient:
     def is_logged_in(self) -> bool:
         return self._session is not None
 
-    def login(self, mpin: str) -> Dict[str, Any]:
-        totp = generate_totp(self._totp_secret)
+    def login(self, mpin: str, totp: str) -> Dict[str, Any]:
         data = self._smart.generateSession(self._client_code, mpin, totp)
 
         if not isinstance(data, dict):
@@ -61,6 +59,37 @@ class AngelClient:
             "client_code": self._client_code,
             "jwt_token": jwt_token,
             "feed_token": feed_token,
+            "api_key": self._api_key,
+        }
+
+    def refresh_session(self, refresh_token: str) -> Dict[str, Any]:
+        res = self._smart.renewAccessToken(refresh_token)
+        if not isinstance(res, dict) or not res.get("status"):
+            message = res.get("message") if isinstance(res, dict) else "Token renewal failed"
+            raise RuntimeError(str(message))
+
+        tokens = res.get("data") or {}
+        jwt_token = str(tokens.get("jwtToken") or "")
+        new_refresh = str(tokens.get("refreshToken") or refresh_token)
+        feed_token = str(self._smart.getfeedToken() or "")
+
+        if not jwt_token:
+            raise RuntimeError("Token renewal succeeded but jwtToken was empty")
+
+        self._session = AngelSession(
+            jwt_token=jwt_token,
+            refresh_token=new_refresh,
+            feed_token=feed_token,
+            client_code=self._client_code,
+        )
+
+        return {
+            "status": True,
+            "message": "Token renewed successfully",
+            "jwt_token": jwt_token,
+            "refresh_token": new_refresh,
+            "feed_token": feed_token,
+            "client_code": self._client_code,
             "api_key": self._api_key,
         }
 

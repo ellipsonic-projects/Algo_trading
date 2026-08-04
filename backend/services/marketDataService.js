@@ -37,22 +37,21 @@ const INTERVAL_MS_MAP = {
 class MarketDataService extends EventEmitter {
   constructor() {
     super();
-    this.ltpCache = new Map(); // token -> { ltp, timestamp }
-    this.subscribers = new Map(); // token -> { exchange, exchangeType, refCount }
-    this.candleBuilders = new Map(); // bufferKey -> builder object
+    this.ltpCache = new Map(); // userId_token -> { ltp, timestamp }
+    this.subscribers = new Map(); // userId_token -> { exchange, exchangeType, refCount }
+    this.candleBuilders = new Map(); // userId_exchange_token_interval -> builder object
 
     this.wsConsecutiveTicks = 0;
     this.fallbackTimer = null;
     this.fallbackPollingInterval = null;
     this.isRestFallbackActive = false;
 
-    smartStream.on('tick', (tick) => this.handleTick(tick));
-    smartStream.on('disconnected', () => this.handleStreamDisconnect());
-    smartStream.on('connected', () => this.handleStreamConnect());
+    // Listen to ticks from multi-user smartStreamPool
+    smartStream.on('tick', (tick, userId) => this.handleTick(userId, tick));
   }
 
-  getBufferKey(exchange, symboltoken, interval) {
-    return `${exchange}_${symboltoken}_${interval}`;
+  getBufferKey(userId, exchange, symboltoken, interval) {
+    return `${userId}_${exchange}_${symboltoken}_${interval}`;
   }
 
   getExchangeType(exchange) {
@@ -66,98 +65,16 @@ class MarketDataService extends EventEmitter {
   }
 
   initSession(credentials) {
-    if (credentials) {
-      if (!smartStream.isConnected && !smartStream.isConnecting) {
-        smartStream.connect(credentials);
-      }
-      if (credentials.jwtToken && !orderUpdateService.isConnected && !orderUpdateService.isConnecting) {
-        orderUpdateService.connect(credentials.jwtToken);
-      }
-    }
+    // Legacy support placeholder
   }
 
-  handleStreamConnect() {
-    console.log('[MarketDataService] Smart Stream connected. Monitoring consecutive ticks...');
-    this.wsConsecutiveTicks = 0;
-    if (this.fallbackTimer) {
-      clearTimeout(this.fallbackTimer);
-      this.fallbackTimer = null;
-    }
-  }
-
-  handleStreamDisconnect() {
-    console.warn('[MarketDataService] Smart Stream disconnected. Starting 10s timeout for REST fallback...');
-    this.wsConsecutiveTicks = 0;
-    if (!this.fallbackTimer) {
-      this.fallbackTimer = setTimeout(() => {
-        this.startRestFallback();
-      }, 10000);
-    }
-  }
-
-  startRestFallback() {
-    if (this.isRestFallbackActive) return;
-    console.warn('[MarketDataService] 10s WebSocket disconnect timeout reached. Enabling REST Fallback Polling (2s interval)...');
-    this.isRestFallbackActive = true;
-
-    if (this.fallbackPollingInterval) clearInterval(this.fallbackPollingInterval);
-    this.fallbackPollingInterval = setInterval(() => {
-      this.pollRestLtpFallback();
-    }, 2000);
-  }
-
-  stopRestFallback() {
-    if (!this.isRestFallbackActive) return;
-    console.log('[MarketDataService] WebSocket feed restored with 3 consecutive ticks. Disabling REST Fallback Polling.');
-    this.isRestFallbackActive = false;
-    if (this.fallbackPollingInterval) {
-      clearInterval(this.fallbackPollingInterval);
-      this.fallbackPollingInterval = null;
-    }
-  }
-
-  async pollRestLtpFallback() {
-    if (this.subscribers.size === 0) return;
-
-    // Issue #15 FIX: Replaced sequential for-of await loop with concurrent
-    // Promise.allSettled. Each fetch has a 3-second AbortController timeout.
-    // This prevents one stalled request from blocking all others when the
-    // 2-second polling interval fires again before the loop is done.
-    const fetchPromises = Array.from(this.subscribers.entries()).map(([token, sub]) => {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3000);
-
-      const url = `${ANGEL_API_BASE}/market/ltp?exchange=${encodeURIComponent(sub.exchange)}&tradingsymbol=&symboltoken=${encodeURIComponent(token)}`;
-      return fetch(url, { signal: controller.signal })
-        .then(async (res) => {
-          clearTimeout(timeoutId);
-          if (res.ok) {
-            const json = await res.json();
-            if (json && json.ltp > 0) {
-              this.handleTick({
-                token,
-                exchangeType: sub.exchangeType,
-                ltp: json.ltp,
-                timestamp: Date.now(),
-                isFallback: true
-              });
-            }
-          }
-        })
-        .catch(() => {
-          clearTimeout(timeoutId);
-          // Suppress individual fetch errors (timeout, network error, etc.)
-        });
-    });
-
-    await Promise.allSettled(fetchPromises);
-  }
-
-  handleTick(tick) {
+  handleTick(userId, tick) {
     if (!tick || !tick.token || typeof tick.ltp !== 'number' || tick.ltp <= 0) return;
 
+    const uid = String(userId || 'default');
     const token = String(tick.token);
-    this.ltpCache.set(token, { ltp: tick.ltp, timestamp: tick.timestamp });
+    const userTokenKey = `${uid}_${token}`;
+    this.ltpCache.set(userTokenKey, { ltp: tick.ltp, timestamp: tick.timestamp });
 
     if (!tick.isFallback) {
       this.wsConsecutiveTicks++;
@@ -166,9 +83,9 @@ class MarketDataService extends EventEmitter {
       }
     }
 
-    // Distribute tick to all matching candle builders for this token
+    // Distribute tick to all matching candle builders for this user and token
     for (const [key, builder] of this.candleBuilders.entries()) {
-      if (builder.symboltoken === token) {
+      if (builder.userId === uid && builder.symboltoken === token) {
         this.processTickForBuilder(builder, tick);
       }
     }
@@ -203,13 +120,13 @@ class MarketDataService extends EventEmitter {
       builder.activeCandle.low = Math.min(builder.activeCandle.low, tick.ltp);
       builder.activeCandle.close = tick.ltp;
     } else if (candleStartMs > builder.activeCandle.candleStartMs) {
-      // Close current active candle
       const closedCandle = { ...builder.activeCandle };
       delete closedCandle.candleStartMs;
       builder.candles.push(closedCandle);
       if (builder.candles.length > 200) builder.candles.shift();
 
       this.emit('candle:closed', {
+        userId: builder.userId,
         exchange: builder.exchange,
         symboltoken: builder.symboltoken,
         interval: builder.interval,
@@ -232,6 +149,7 @@ class MarketDataService extends EventEmitter {
         if (builder.candles.length > 200) builder.candles.shift();
 
         this.emit('candle:closed', {
+          userId: builder.userId,
           exchange: builder.exchange,
           symboltoken: builder.symboltoken,
           interval: builder.interval,
@@ -255,48 +173,95 @@ class MarketDataService extends EventEmitter {
     }
   }
 
-  async autoInitSession() {
-    if ((smartStream.isConnected || smartStream.isConnecting) && (orderUpdateService.isConnected || orderUpdateService.isConnecting)) return;
-    try {
-      // Issue #1/#2 FIX: send X-Internal-Token so the now-protected /angel/session-tokens
-      // endpoint accepts this request from the Node backend.
+  async pollRestLtpFallback() {
+    if (this.subscribers.size === 0) return;
+
+    const fetchPromises = Array.from(this.subscribers.entries()).map(([userTokenKey, sub]) => {
+      const parts = userTokenKey.split('_');
+      const uid = parts[0];
+      const token = parts[1];
+      if (!uid || !token) return Promise.resolve();
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
+
       const internalSecret = process.env.ANGEL_ONE_INTERNAL_SECRET || '';
-      const res = await fetch(`${ANGEL_API_BASE}/angel/session-tokens`, {
-        headers: { 'X-Internal-Token': internalSecret }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data && data.status && data.client_code && data.feed_token) {
-          this.initSession({
-            clientCode: data.client_code,
-            feedToken: data.feed_token,
-            jwtToken: data.jwt_token,
-            apiKey: data.api_key
-          });
+      const url = `${ANGEL_API_BASE}/market/ltp?exchange=${encodeURIComponent(sub.exchange)}&tradingsymbol=&symboltoken=${encodeURIComponent(token)}`;
+      
+      return fetch(url, { 
+        signal: controller.signal,
+        headers: {
+          'X-Internal-Token': internalSecret,
+          'X-User-Id': uid
         }
-      }
-    } catch (e) {
-      // Session fetch error
-    }
+      })
+        .then(async (res) => {
+          clearTimeout(timeoutId);
+          if (res.status === 401) {
+            const strategyEngine = require('./strategyEngine');
+            if (strategyEngine && typeof strategyEngine.handleSessionExpiry === 'function') {
+              strategyEngine.handleSessionExpiry(uid).catch(() => {});
+            }
+          }
+          if (res.ok) {
+            const json = await res.json();
+            if (json && json.ltp > 0) {
+              this.handleTick(uid, {
+                token,
+                exchangeType: sub.exchangeType,
+                ltp: json.ltp,
+                timestamp: Date.now(),
+                isFallback: true
+              });
+            }
+          }
+        })
+        .catch(() => {
+          clearTimeout(timeoutId);
+        });
+    });
+
+    await Promise.allSettled(fetchPromises);
   }
 
-  async subscribe(exchange, symboltoken, interval = 'FIVE_MINUTE', lookbackMinutes = null) {
-    await this.autoInitSession();
+  async subscribe(userIdOrExchange, exchangeOrSymbol, symbolOrInterval, intervalOrLookback, lookbackMinutes) {
+    let userId = 'default';
+    let exchange, symboltoken, interval, lookback;
 
+    // Detect legacy calls that omit userId
+    const isLegacy = typeof userIdOrExchange === 'string' &&
+      (['NSE', 'NFO', 'BSE', 'BFO', 'MCX'].includes(userIdOrExchange.toUpperCase()) || userIdOrExchange.length < 5);
+
+    if (isLegacy) {
+      exchange = userIdOrExchange;
+      symboltoken = exchangeOrSymbol;
+      interval = symbolOrInterval || 'FIVE_MINUTE';
+      lookback = intervalOrLookback || null;
+    } else {
+      userId = userIdOrExchange || 'default';
+      exchange = exchangeOrSymbol;
+      symboltoken = symbolOrInterval;
+      interval = intervalOrLookback || 'FIVE_MINUTE';
+      lookback = lookbackMinutes || null;
+    }
+
+    const uid = String(userId);
     const token = String(symboltoken);
     const exchType = this.getExchangeType(exchange);
-    const key = this.getBufferKey(exchange, token, interval);
+    
+    const userTokenKey = `${uid}_${token}`;
+    const key = this.getBufferKey(uid, exchange, token, interval);
 
     // Reference Counting
-    let sub = this.subscribers.get(token);
+    let sub = this.subscribers.get(userTokenKey);
     if (!sub) {
       sub = { exchange, exchangeType: exchType, refCount: 0 };
-      this.subscribers.set(token, sub);
+      this.subscribers.set(userTokenKey, sub);
     }
     sub.refCount++;
 
     if (sub.refCount === 1) {
-      smartStream.subscribe([{ exchangeType: exchType, tokens: [token] }]);
+      smartStream.subscribe(uid, [{ exchangeType: exchType, tokens: [token] }]);
     }
 
     // Builder Setup
@@ -304,6 +269,7 @@ class MarketDataService extends EventEmitter {
     if (!builder) {
       builder = {
         key,
+        userId: uid,
         exchange,
         symboltoken: token,
         interval,
@@ -317,7 +283,19 @@ class MarketDataService extends EventEmitter {
       try {
         const targetDate = new Date().toISOString().split('T')[0];
         const url = `${ANGEL_API_BASE}/market/candles?exchange=${encodeURIComponent(exchange)}&symboltoken=${encodeURIComponent(token)}&interval=${encodeURIComponent(interval)}&date=${targetDate}`;
-        const res = await fetch(url);
+        const internalSecret = process.env.ANGEL_ONE_INTERNAL_SECRET || '';
+        const res = await fetch(url, {
+          headers: {
+            'X-Internal-Token': internalSecret,
+            'X-User-Id': uid
+          }
+        });
+        if (res.status === 401) {
+          const strategyEngine = require('./strategyEngine');
+          if (strategyEngine && typeof strategyEngine.handleSessionExpiry === 'function') {
+            strategyEngine.handleSessionExpiry(uid).catch(() => {});
+          }
+        }
         if (res.ok) {
           const json = await res.json();
           if (Array.isArray(json.items)) {
@@ -339,31 +317,76 @@ class MarketDataService extends EventEmitter {
     return builder.candles;
   }
 
-  unsubscribe(exchange, symboltoken, interval = 'FIVE_MINUTE') {
+  unsubscribe(userIdOrExchange, exchangeOrSymbol, symbolOrInterval, interval) {
+    let userId = 'default';
+    let exchange, symboltoken, intv;
+
+    const isLegacy = typeof userIdOrExchange === 'string' &&
+      (['NSE', 'NFO', 'BSE', 'BFO', 'MCX'].includes(userIdOrExchange.toUpperCase()) || userIdOrExchange.length < 5);
+
+    if (isLegacy) {
+      exchange = userIdOrExchange;
+      symboltoken = exchangeOrSymbol;
+      intv = symbolOrInterval || 'FIVE_MINUTE';
+    } else {
+      userId = userIdOrExchange || 'default';
+      exchange = exchangeOrSymbol;
+      symboltoken = symbolOrInterval;
+      intv = interval || 'FIVE_MINUTE';
+    }
+
+    const uid = String(userId);
     const token = String(symboltoken);
-    const key = this.getBufferKey(exchange, token, interval);
+    const userTokenKey = `${uid}_${token}`;
+    const key = this.getBufferKey(uid, exchange, token, intv);
 
     this.candleBuilders.delete(key);
 
-    const sub = this.subscribers.get(token);
+    const sub = this.subscribers.get(userTokenKey);
     if (sub) {
       sub.refCount--;
       if (sub.refCount <= 0) {
-        smartStream.unsubscribe([{ exchangeType: sub.exchangeType, tokens: [token] }]);
-        this.subscribers.delete(token);
-        this.ltpCache.delete(token);
+        smartStream.unsubscribe(uid, [{ exchangeType: sub.exchangeType, tokens: [token] }]);
+        this.subscribers.delete(userTokenKey);
+        this.ltpCache.delete(userTokenKey);
       }
     }
   }
 
-  getLtp(exchange, symboltoken) {
-    const token = String(symboltoken);
-    const cached = this.ltpCache.get(token);
+  getLtp(userIdOrExchange, exchangeOrSymbol, symboltoken) {
+    let userId = 'default';
+    let token;
+
+    if (symboltoken !== undefined) {
+      userId = userIdOrExchange;
+      token = String(symboltoken);
+    } else {
+      token = String(exchangeOrSymbol);
+    }
+
+    const uid = String(userId || 'default');
+    const userTokenKey = `${uid}_${token}`;
+    const cached = this.ltpCache.get(userTokenKey);
     return cached ? cached.ltp : null;
   }
 
-  getBuffer(exchange, symboltoken, interval) {
-    const key = this.getBufferKey(exchange, symboltoken, interval);
+  getBuffer(userIdOrExchange, exchangeOrSymbol, symbolOrInterval, interval) {
+    let userId = 'default';
+    let exchange, token, intv;
+
+    if (interval !== undefined) {
+      userId = userIdOrExchange;
+      exchange = exchangeOrSymbol;
+      token = symbolOrInterval;
+      intv = interval;
+    } else {
+      exchange = userIdOrExchange;
+      token = exchangeOrSymbol;
+      intv = symbolOrInterval;
+    }
+
+    const uid = String(userId || 'default');
+    const key = this.getBufferKey(uid, exchange, token, intv);
     const builder = this.candleBuilders.get(key);
     return builder ? builder.candles : [];
   }

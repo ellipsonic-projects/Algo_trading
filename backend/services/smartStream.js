@@ -1,158 +1,138 @@
 const EventEmitter = require('events');
+const config = require('../config');
+const orderUpdateService = require('./orderUpdateService');
 
-class SmartStreamService extends EventEmitter {
+class SmartStreamPool extends EventEmitter {
   constructor() {
     super();
-    this.ws = null;
-    this.credentials = null; // { clientCode, feedToken, apiKey, jwtToken }
-    this.pingTimer = null;
-    this.reconnectTimer = null;
-    this.isConnected = false;
-    this.isConnecting = false;
-    this.reconnectAttempts = 0;
-    this.subscribedTokens = new Map(); // token -> exchangeType
-    this.isExplicitDisconnect = false;
+    this.connections = new Map(); // userId -> WebSocket instance
+    this.subscribedTokens = new Map(); // userId -> Map(token -> exchangeType)
   }
 
-  connect(credentials) {
-    if (credentials) {
-      this.credentials = credentials;
+  connect(userId) {
+    if (!userId) return;
+    const uid = String(userId);
+    if (this.connections.has(uid)) {
+      return; // Already connected
     }
 
-    if (!this.credentials || !this.credentials.clientCode || !this.credentials.feedToken || !this.credentials.apiKey) {
-      console.warn('[SmartStreamService] Cannot connect without valid credentials');
-      return;
-    }
+    const WebSocketImpl = globalThis.WebSocket || require('ws');
+    const internalSecret = process.env.ANGEL_ONE_INTERNAL_SECRET || '';
+    const wsBase = process.env.ANGEL_ONE_WS_URL || 'ws://localhost:8000';
+    const wsUrl = `${wsBase}/ws/broker-stream?token=${encodeURIComponent(internalSecret)}&userId=${uid}`;
 
-    if (this.isConnected || this.isConnecting) {
-      if (this.ws && (this.ws.readyState === 0 || this.ws.readyState === 1)) {
-        return; // Already connecting or connected
-      }
-    }
+    console.log(`[SmartStreamPool] Connecting private WebSocket for user ${uid}...`);
+    const ws = new WebSocketImpl(wsUrl);
 
-    this.disconnect(false);
-    this.isExplicitDisconnect = false;
+    this.connections.set(uid, ws);
 
-    try {
-      const WebSocketImpl = globalThis.WebSocket || require('ws');
-      const params = new URLSearchParams({
-        clientCode: this.credentials.clientCode,
-        feedToken: this.credentials.feedToken,
-        apiKey: this.credentials.apiKey
-      });
+    ws.onopen = () => {
+      console.log(`[SmartStreamPool] Connected to Python stream for user ${uid}`);
+      this.emit('connected', uid);
+      this.resubscribeAll(uid);
+    };
 
-      const wsUrl = `wss://smartapisocket.angelone.in/smart-stream?${params.toString()}`;
-      console.log('[SmartStreamService] Connecting to Smart Stream 2.0...');
-      this.isConnecting = true;
-
-      const headers = {};
-      if (this.credentials.jwtToken) {
-        headers['Authorization'] = this.credentials.jwtToken.startsWith('Bearer ')
-          ? this.credentials.jwtToken
-          : `Bearer ${this.credentials.jwtToken}`;
-        headers['x-api-key'] = this.credentials.apiKey;
-        headers['x-client-code'] = this.credentials.clientCode;
-        headers['x-feed-token'] = this.credentials.feedToken;
-      }
-
-      this.ws = new WebSocketImpl(wsUrl, { headers });
-      this.ws.binaryType = 'arraybuffer';
-
-      this.ws.onopen = () => {
-        console.log('[SmartStreamService] Smart Stream WebSocket connected');
-        this.isConnected = true;
-        this.isConnecting = false;
-        this.reconnectAttempts = 0;
-        this.startKeepalive();
-        this.resubscribeAll();
-        this.emit('connected');
-      };
-
-      this.ws.onmessage = (event) => {
-        this.handleMessage(event.data);
-      };
-
-      this.ws.onerror = (err) => {
-        console.error('[SmartStreamService] WebSocket error:', err.message || err);
-      };
-
-      this.ws.onclose = (event) => {
-        console.warn(`[SmartStreamService] WebSocket closed (code: ${event.code})`);
-        this.cleanup();
-        if (!this.isExplicitDisconnect) {
-          this.scheduleReconnect();
+    ws.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        if (payload.type === 'tick') {
+          this.emit('tick', payload.data, uid);
+        } else if (payload.type === 'order') {
+          const orderData = typeof payload.data === 'string' ? JSON.parse(payload.data) : payload.data;
+          orderUpdateService.emit('order:update', orderData, uid);
         }
-      };
-    } catch (err) {
-      this.isConnecting = false;
-      console.error('[SmartStreamService] Error initiating WebSocket:', err.message);
-      this.scheduleReconnect();
-    }
-  }
-
-  startKeepalive() {
-    if (this.pingTimer) clearInterval(this.pingTimer);
-    this.pingTimer = setInterval(() => {
-      if (this.ws && this.isConnected) {
-        try {
-          this.ws.send('ping');
-        } catch (e) {
-          console.warn('[SmartStreamService] Ping failed:', e.message);
-        }
+      } catch (err) {
+        console.error(`[SmartStreamPool] Error handling message for user ${uid}:`, err.message);
       }
-    }, 30000);
+    };
+
+    ws.onerror = (err) => {
+      console.error(`[SmartStreamPool] Error on socket for user ${uid}:`, err.message);
+    };
+
+    ws.onclose = (event) => {
+      const code = event?.code;
+      console.warn(`[SmartStreamPool] Connection closed for user ${uid} (Code: ${code || 'unknown'})`);
+      this.connections.delete(uid);
+      this.emit('disconnected', uid);
+      
+      // Stop reconnecting if the session has expired or is unauthorized in Python
+      if (code === 4000 || code === 4001 || code === 4003) {
+        console.error(`[SmartStreamPool] Fatal websocket close code ${code} for user ${uid}. Halting reconnect loop.`);
+        const BrokerConnection = require('../models/BrokerConnection');
+        BrokerConnection.findOneAndUpdate({ userId: uid }, { sessionStatus: 'DISCONNECTED' }).catch(() => {});
+        return;
+      }
+
+      // Auto-reconnect after 5 seconds if connection was not explicitly deleted
+      setTimeout(() => {
+        const conn = this.subscribedTokens.get(uid);
+        if (conn && !this.connections.has(uid)) {
+          this.connect(uid);
+        }
+      }, 5000);
+    };
   }
 
-  subscribe(tokenList) {
-    if (!Array.isArray(tokenList) || tokenList.length === 0) return;
+  subscribe(userId, tokenList) {
+    const uid = String(userId);
+    const ws = this.connections.get(uid);
+
+    if (!this.subscribedTokens.has(uid)) {
+      this.subscribedTokens.set(uid, new Map());
+    }
+    const userSubs = this.subscribedTokens.get(uid);
 
     for (const item of tokenList) {
       const exchType = Number(item.exchangeType);
       for (const token of item.tokens) {
-        this.subscribedTokens.set(String(token), exchType);
+        userSubs.set(String(token), exchType);
       }
     }
 
-    if (this.ws && this.isConnected) {
-      const payload = {
-        correlationID: `sub_${Date.now()}`,
-        action: 1, // Subscribe
-        params: {
-          mode: 1, // LTP Mode
-          tokenList: tokenList
-        }
-      };
-      this.ws.send(JSON.stringify(payload));
+    if (ws && ws.readyState === 1) {
+      for (const item of tokenList) {
+        ws.send(JSON.stringify({
+          action: 'subscribe',
+          exchangeType: item.exchangeType,
+          tokens: item.tokens
+        }));
+      }
+    } else {
+      // Connect if not already connected
+      this.connect(uid);
     }
   }
 
-  unsubscribe(tokenList) {
-    if (!Array.isArray(tokenList) || tokenList.length === 0) return;
+  unsubscribe(userId, tokenList) {
+    const uid = String(userId);
+    const ws = this.connections.get(uid);
+    const userSubs = this.subscribedTokens.get(uid);
 
     for (const item of tokenList) {
       for (const token of item.tokens) {
-        this.subscribedTokens.delete(String(token));
+        if (userSubs) userSubs.delete(String(token));
       }
     }
 
-    if (this.ws && this.isConnected) {
-      const payload = {
-        correlationID: `unsub_${Date.now()}`,
-        action: 0, // Unsubscribe
-        params: {
-          mode: 1,
-          tokenList: tokenList
-        }
-      };
-      this.ws.send(JSON.stringify(payload));
+    if (ws && ws.readyState === 1) {
+      for (const item of tokenList) {
+        ws.send(JSON.stringify({
+          action: 'unsubscribe',
+          exchangeType: item.exchangeType,
+          tokens: item.tokens
+        }));
+      }
     }
   }
 
-  resubscribeAll() {
-    if (this.subscribedTokens.size === 0) return;
+  resubscribeAll(userId) {
+    const uid = String(userId);
+    const userSubs = this.subscribedTokens.get(uid);
+    if (!userSubs || userSubs.size === 0) return;
 
     const byExch = new Map();
-    for (const [token, exchType] of this.subscribedTokens.entries()) {
+    for (const [token, exchType] of userSubs.entries()) {
       if (!byExch.has(exchType)) byExch.set(exchType, []);
       byExch.get(exchType).push(token);
     }
@@ -162,110 +142,18 @@ class SmartStreamService extends EventEmitter {
       tokenList.push({ exchangeType: exchType, tokens });
     }
 
-    this.subscribe(tokenList);
+    this.subscribe(uid, tokenList);
   }
 
-  handleMessage(data) {
-    if (typeof data === 'string') {
-      if (data === 'pong' || data === 'ping') return;
-      try {
-        const json = JSON.parse(data);
-        if (json.errorCode) {
-          console.error('[SmartStreamService] Error response:', json.errorCode, json.errorMessage);
-        }
-      } catch (e) {}
-      return;
+  disconnect(userId) {
+    const uid = String(userId);
+    const ws = this.connections.get(uid);
+    if (ws) {
+      ws.close();
+      this.connections.delete(uid);
     }
-
-    // Binary packet decoding for LTP Mode
-    try {
-      const buf = data instanceof ArrayBuffer ? Buffer.from(data) : Buffer.from(data);
-      if (buf.length < 51) return; // Mode 1 LTP packet size = 51 bytes
-
-      const subscriptionMode = buf.readInt8(0);
-      const exchangeType = buf.readInt8(1);
-
-      // Token starting at index 2 (25 bytes char array)
-      let tokenStr = buf.toString('utf8', 2, 27);
-      const nullIdx = tokenStr.indexOf('\0');
-      if (nullIdx !== -1) {
-        tokenStr = tokenStr.substring(0, nullIdx);
-      }
-      tokenStr = tokenStr.trim();
-
-      // Sequence Number starting at index 27 (8 bytes int64)
-      const sequenceNumber = Number(buf.readBigInt64LE(27));
-
-      // Exchange Timestamp starting at index 35 (8 bytes int64 epoch ms)
-      const exchangeTimestamp = Number(buf.readBigInt64LE(35));
-
-      // LTP starting at index 43 (4 bytes int32 or 8 bytes int64 - read as Int32LE)
-      const rawLtp = buf.readInt32LE(43);
-      const ltp = rawLtp / 100.0; // Convert paise to Rupees
-
-      if (tokenStr && ltp > 0) {
-        const tick = {
-          token: tokenStr,
-          exchangeType,
-          ltp,
-          timestamp: exchangeTimestamp > 0 ? exchangeTimestamp : Date.now(),
-          sequenceNumber
-        };
-        this.emit('tick', tick);
-      }
-    } catch (err) {
-      console.error('[SmartStreamService] Error decoding binary packet:', err.message);
-    }
-  }
-
-  scheduleReconnect() {
-    if (this.reconnectTimer) return;
-    if (this.reconnectAttempts >= 5) {
-      console.error('[SmartStreamService] Maximum reconnection attempts reached (5). Halting reconnection.');
-      this.emit('reconnect_failed');
-      return;
-    }
-    this.reconnectAttempts++;
-    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
-    console.log(`[SmartStreamService] Scheduling reconnect in ${delay}ms (Attempt ${this.reconnectAttempts})`);
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      this.connect();
-    }, delay);
-  }
-
-  cleanup() {
-    this.isConnected = false;
-    this.isConnecting = false;
-    if (this.pingTimer) {
-      clearInterval(this.pingTimer);
-      this.pingTimer = null;
-    }
-    this.emit('disconnected');
-  }
-
-  disconnect(clearCredentials = true) {
-    this.isExplicitDisconnect = true;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    this.cleanup();
-    if (this.ws) {
-      try {
-        this.ws.onopen = null;
-        this.ws.onmessage = null;
-        this.ws.onerror = null;
-        this.ws.onclose = null;
-        this.ws.close();
-      } catch (e) {}
-      this.ws = null;
-    }
-    if (clearCredentials) {
-      this.credentials = null;
-      this.subscribedTokens.clear();
-    }
+    this.subscribedTokens.delete(uid);
   }
 }
 
-module.exports = new SmartStreamService();
+module.exports = new SmartStreamPool();

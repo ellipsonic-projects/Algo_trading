@@ -4,14 +4,6 @@ import type { ReactNode } from 'react'
 import MpinModal from './MpinModal'
 import { useAuth } from '../../context/AuthContext'
 
-type AngelLoginResponse = {
-  status: boolean
-  message?: string
-  client_code?: string
-}
-
-// Issue #7 FIX: VITE_ANGEL_MPIN removed. The MPIN must never be stored in the
-// client bundle or any environment variable that gets inlined at build time.
 type ConnectStatus = 'idle' | 'connecting' | 'connected' | 'error'
 
 type AngelConnectionContextValue = {
@@ -21,28 +13,32 @@ type AngelConnectionContextValue = {
   disconnect: () => Promise<void>
 }
 
-const API_BASE = import.meta.env.VITE_ANGEL_ONE_API_BASE ?? 'http://localhost:8000'
+const API_BASE = 'http://localhost:5000/api/v1/broker/angel'
 
-async function apiPost<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
-  if (!res.ok) throw new Error(await res.text())
-  return (await res.json()) as T
-}
-
-/** Issue #7 FIX: Check session status without exposing credentials. */
-async function apiGetSessionStatus(): Promise<boolean> {
-  try {
-    const res = await fetch(`${API_BASE}/angel/session-status`)
-    if (!res.ok) return false
-    const data = await res.json() as { connected: boolean }
-    return data.connected === true
-  } catch {
-    return false
+async function apiRequest<T>(path: string, method: string, body?: unknown): Promise<T> {
+  const token = localStorage.getItem('jwt')
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
   }
+  const res = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+    credentials: 'include'
+  })
+  if (!res.ok) {
+    const errText = await res.text()
+    let msg = errText
+    try {
+      const errJson = JSON.parse(errText)
+      msg = errJson.message || errText
+    } catch {
+      // ignore
+    }
+    throw new Error(msg)
+  }
+  return (await res.json()) as T
 }
 
 const AngelConnectionContext = createContext<AngelConnectionContextValue | null>(null)
@@ -51,6 +47,7 @@ export function AngelConnectionProvider({ children }: { children: ReactNode }) {
   const [connectStatus, setConnectStatus] = useState<ConnectStatus>('idle')
   const [connectMessage, setConnectMessage] = useState('')
   const [mpinOpen, setMpinOpen] = useState(false)
+  const [hasProfile, setHasProfile] = useState(false)
 
   const openConnect = useCallback(() => {
     setMpinOpen(true)
@@ -58,7 +55,7 @@ export function AngelConnectionProvider({ children }: { children: ReactNode }) {
 
   const disconnect = useCallback(async () => {
     try {
-      await apiPost<Record<string, unknown>>('/angel/logout')
+      await apiRequest<Record<string, unknown>>('/disconnect', 'POST')
     } catch {
       // ignore
     }
@@ -66,26 +63,34 @@ export function AngelConnectionProvider({ children }: { children: ReactNode }) {
     setConnectMessage('Disconnected')
   }, [])
 
-  const submitMpin = useCallback(async (mpin: string) => {
+  const submitMpin = useCallback(async (data: { clientCode?: string; apiKey?: string; mpin: string; totp: string }) => {
     setConnectStatus('connecting')
     setConnectMessage('')
     try {
-      const login = await apiPost<AngelLoginResponse>('/angel/login', { mpin })
+      if (hasProfile) {
+        await apiRequest<any>('/reauthenticate', 'POST', { mpin: data.mpin, totp: data.totp })
+      } else {
+        await apiRequest<any>('/connect', 'POST', {
+          clientCode: data.clientCode,
+          apiKey: data.apiKey,
+          mpin: data.mpin,
+          totp: data.totp
+        })
+        setHasProfile(true)
+      }
       setConnectStatus('connected')
-      setConnectMessage(login.message ?? 'Connected')
+      setConnectMessage('Connected')
       setMpinOpen(false)
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Connect failed'
       setConnectStatus('error')
-      setConnectMessage('')
-      throw new Error(msg)
+      setConnectMessage(msg)
+      throw e
     }
-  }, [])
+  }, [hasProfile])
 
   const { user, loading } = useAuth()
 
-  // On mount or user login state change: check broker session status ONLY if the
-  // user is logged into the app. If not logged in or still loading auth, do not prompt.
   useEffect(() => {
     if (loading || !user) {
       setMpinOpen(false)
@@ -96,30 +101,57 @@ export function AngelConnectionProvider({ children }: { children: ReactNode }) {
     let cancelled = false
 
     const checkAndConnect = async () => {
-      const isConnected = await apiGetSessionStatus()
-      if (cancelled) return
-
-      if (isConnected) {
-        // Session already active (e.g., server kept the session alive)
-        setConnectStatus('connected')
-        setConnectMessage('Session active')
-      } else {
-        // Session not active — prompt the logged-in user to enter their MPIN manually
-        setMpinOpen(true)
+      try {
+        const token = localStorage.getItem('jwt')
+        const headers: Record<string, string> = {}
+        if (token) {
+          headers['Authorization'] = `Bearer ${token}`
+        }
+        const res = await fetch('http://localhost:5000/api/v1/broker/angel/status', { headers, credentials: 'include' })
+        if (res.ok) {
+          const json = await res.json() as { status: string, data: { sessionStatus: string; hasProfile: boolean } }
+          if (cancelled) return
+          
+          setHasProfile(json.data.hasProfile)
+          const isConnected = json.status === 'success' && json.data.sessionStatus === 'CONNECTED'
+          
+          if (isConnected) {
+            setConnectStatus('connected')
+            setConnectMessage('Session active')
+          } else {
+            setMpinOpen(true)
+          }
+        }
+      } catch {
+        if (!cancelled) setMpinOpen(true)
       }
     }
 
     checkAndConnect()
 
-    // Re-check session status every 5 minutes.
-    // If the session has dropped, re-open the prompt (no auto-submit).
     const intervalId = setInterval(async () => {
-      const isConnected = await apiGetSessionStatus()
-      if (cancelled) return
-      if (!isConnected && connectStatus === 'connected') {
-        setConnectStatus('idle')
-        setConnectMessage('')
-        setMpinOpen(true)
+      try {
+        const token = localStorage.getItem('jwt')
+        const headers: Record<string, string> = {}
+        if (token) {
+          headers['Authorization'] = `Bearer ${token}`
+        }
+        const res = await fetch('http://localhost:5000/api/v1/broker/angel/status', { headers, credentials: 'include' })
+        if (res.ok) {
+          const json = await res.json() as { status: string, data: { sessionStatus: string; hasProfile: boolean } }
+          if (cancelled) return
+          
+          setHasProfile(json.data.hasProfile)
+          const isConnected = json.status === 'success' && json.data.sessionStatus === 'CONNECTED'
+          
+          if (!isConnected && connectStatus === 'connected') {
+            setConnectStatus('idle')
+            setConnectMessage('')
+            setMpinOpen(true)
+          }
+        }
+      } catch {
+        // ignore
       }
     }, 300_000)
 
@@ -127,7 +159,7 @@ export function AngelConnectionProvider({ children }: { children: ReactNode }) {
       cancelled = true
       clearInterval(intervalId)
     }
-  }, [user, loading])
+  }, [user, loading, connectStatus])
 
   const value = useMemo<AngelConnectionContextValue>(
     () => ({
@@ -144,9 +176,10 @@ export function AngelConnectionProvider({ children }: { children: ReactNode }) {
       {children}
       <MpinModal
         open={mpinOpen}
+        hasProfile={hasProfile}
         onCancel={() => setMpinOpen(false)}
-        onSubmit={async (mpin) => {
-          await submitMpin(mpin)
+        onSubmit={async (data) => {
+          await submitMpin(data)
         }}
       />
     </AngelConnectionContext.Provider>

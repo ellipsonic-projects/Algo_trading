@@ -20,12 +20,24 @@ const INTERVAL_MAP = {
   ONE_HOUR: 'ONE_HOUR',
 };
 
-async function getCandles(underlying, date, interval = '5m') {
+// Build the required internal auth headers for every Python wrapper call.
+// Python's require_internal_token dep returns 403 without X-Internal-Token.
+// Python's require_user_id dep returns 400 without X-User-Id.
+function buildInternalHeaders(userId) {
+  return {
+    'Content-Type': 'application/json',
+    'X-Internal-Token': process.env.ANGEL_ONE_INTERNAL_SECRET || '',
+    'X-User-Id': userId ? String(userId) : ''
+  };
+}
+
+async function getCandles(underlying, date, interval = '5m', userId = null) {
   const und = (underlying || 'NIFTY').toUpperCase();
   const iv = INTERVAL_MAP[interval] || 'FIVE_MINUTE';
   const targetDate = date || new Date().toISOString().split('T')[0];
+  const uid = userId ? String(userId) : 'default';
 
-  // 1. Check Cache (Cache Key = underlying:date:interval)
+  // 1. Check Cache
   const cached = candleCache.get(und, targetDate, interval);
   if (cached && cached.length > 0) {
     console.log(`[candleService] Returning ${cached.length} cached candles for ${und} (${targetDate}, ${interval})`);
@@ -35,15 +47,18 @@ async function getCandles(underlying, date, interval = '5m') {
   // 2. Resolve token
   const info = INDEX_SPOT_TOKENS[und] || INDEX_SPOT_TOKENS.NIFTY;
 
-  // 3. Fetch from Python Angel One wrapper with 6-second timeout
+  // 3. Fetch from Python Angel One wrapper with required auth headers
   let rawItems = [];
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 6000);
     const url = `${ANGEL_API_URL}/market/candles?exchange=${info.exchange}&symboltoken=${info.symboltoken}&interval=${iv}&date=${targetDate}`;
-    
-    console.log(`[candleService] Fetching candles for ${und} (Token: ${info.symboltoken}) date: ${targetDate} interval: ${iv}`);
-    const res = await fetch(url, { signal: controller.signal });
+
+    console.log(`[candleService] Fetching candles for ${und} (Token: ${info.symboltoken}) date: ${targetDate} interval: ${iv} userId: ${uid}`);
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: buildInternalHeaders(uid)
+    });
     clearTimeout(timer);
 
     if (res.ok) {

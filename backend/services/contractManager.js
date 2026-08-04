@@ -2,6 +2,7 @@ const EventEmitter = require('events');
 const config = require('../config');
 
 const ANGEL_API_BASE = config.API.ANGEL_ONE_API_BASE;
+const ANGEL_ONE_INTERNAL_SECRET = process.env.ANGEL_ONE_INTERNAL_SECRET || '';
 
 const INDEX_CONFIG = {
   SENSEX: { qty: 20, step: 20, exchange: 'BFO' },
@@ -10,18 +11,34 @@ const INDEX_CONFIG = {
   CRUDEOILM: { qty: 1, step: 1, exchange: 'MCX' }
 };
 
-async function callAngelApi(endpoint, method = 'GET', body = null) {
+async function callAngelApi(endpoint, userId, method = 'GET', body = null) {
   const url = `${ANGEL_API_BASE}${endpoint}`;
   const options = {
     method,
-    headers: { 'Content-Type': 'application/json' }
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Internal-Token': ANGEL_ONE_INTERNAL_SECRET
+    }
   };
+  if (userId) {
+    options.headers['X-User-Id'] = String(userId);
+  }
   if (body !== null) {
     options.body = JSON.stringify(body);
   }
   const res = await fetch(url, options);
   if (!res.ok) {
     const text = await res.text();
+    if (res.status === 401 && userId) {
+      try {
+        const strategyEngine = require('./strategyEngine');
+        if (strategyEngine && typeof strategyEngine.handleSessionExpiry === 'function') {
+          strategyEngine.handleSessionExpiry(userId).catch(() => {});
+        }
+      } catch (err) {
+        // ignore
+      }
+    }
     throw new Error(`Angel API Error [${res.status}]: ${text}`);
   }
   return await res.json();
@@ -69,41 +86,54 @@ class ContractManagerService extends EventEmitter {
     this.cache = new Map();
   }
 
-  async resolveContracts(underlying = 'SENSEX', strikeMode = 'ATM', strikeDepth = 1) {
-    const key = `${underlying}_${strikeMode}_${strikeDepth}`;
+  async resolveContracts(userId, underlying, strikeMode, strikeDepth) {
+    let uid = userId;
+    let und = underlying;
+    let mode = strikeMode;
+    let depth = strikeDepth;
+
+    // Backward compatibility parameter shifting
+    if (typeof uid === 'string' && (uid === 'SENSEX' || uid === 'NIFTY' || uid === 'BANKNIFTY' || uid === 'CRUDEOILM')) {
+      depth = mode;
+      mode = und;
+      und = uid;
+      uid = undefined;
+    }
+
+    const key = `${uid || 'legacy'}_${und || 'SENSEX'}_${mode || 'ATM'}_${depth || 1}`;
     const cached = this.cache.get(key);
     if (cached && Date.now() - cached.timestamp < 60_000) {
       return cached.data;
     }
 
     try {
-      const indexConf = INDEX_CONFIG[underlying] || INDEX_CONFIG.SENSEX;
+      const indexConf = INDEX_CONFIG[und || 'SENSEX'] || INDEX_CONFIG.SENSEX;
       const exchange = indexConf.exchange;
 
-      const indexRes = await callAngelApi(`/market/index-ltp?underlying=${encodeURIComponent(underlying)}`);
-      const optRes = await callAngelApi(`/instruments/index-options?exchange=${encodeURIComponent(exchange)}&underlying=${encodeURIComponent(underlying)}`);
+      const indexRes = await callAngelApi(`/market/index-ltp?underlying=${encodeURIComponent(und || 'SENSEX')}`, uid);
+      const optRes = await callAngelApi(`/instruments/index-options?exchange=${encodeURIComponent(exchange)}&underlying=${encodeURIComponent(und || 'SENSEX')}`, uid);
 
       const selectedExpiry = pickNearestExpiry(optRes.expiries);
       const atmStrike = pickNearestStrike(optRes.strikes, indexRes.ltp);
 
       if (!selectedExpiry || atmStrike === null) {
-        throw new Error(`Unable to resolve expiry or ATM strike for ${underlying}`);
+        throw new Error(`Unable to resolve expiry or ATM strike for ${und}`);
       }
 
-      const optChain = await callAngelApi(`/instruments/index-options?exchange=${encodeURIComponent(exchange)}&underlying=${encodeURIComponent(underlying)}&expiry=${encodeURIComponent(selectedExpiry)}`);
+      const optChain = await callAngelApi(`/instruments/index-options?exchange=${encodeURIComponent(exchange)}&underlying=${encodeURIComponent(und || 'SENSEX')}&expiry=${encodeURIComponent(selectedExpiry)}`, uid);
 
       const ceStrike = resolveStrikeForSide({
         strikes: optChain.strikes,
         atmStrike,
-        mode: strikeMode,
-        depth: strikeDepth,
+        mode: mode,
+        depth: depth,
         side: 'CE'
       });
       const peStrike = resolveStrikeForSide({
         strikes: optChain.strikes,
         atmStrike,
-        mode: strikeMode,
-        depth: strikeDepth,
+        mode: mode,
+        depth: depth,
         side: 'PE'
       });
 

@@ -1,5 +1,3 @@
-const API_BASE = import.meta.env.VITE_ANGEL_ONE_API_BASE ?? 'http://localhost:8000';
-
 function getUrl(path: string): string {
   if (path.startsWith('/market/index-ltp')) {
     return `http://localhost:5000/api/v1/chart/index-ltp${path.replace('/market/index-ltp', '')}`;
@@ -7,9 +5,9 @@ function getUrl(path: string): string {
   if (path === '/angel/margins') {
     return `http://localhost:5000/api/v1/chart/margins`;
   }
-  // Python Angel One Wrapper routes
+  // Python Angel One Wrapper routes proxied via Node.js broker routing
   if (path.startsWith('/market') || path.startsWith('/angel') || path.startsWith('/instruments')) {
-    return `${API_BASE}${path}`;
+    return `http://localhost:5000/api/v1/broker/angel${path}`;
   }
   // Node.js Main Backend routes (/chart, /trades, /strategies, /users, etc.)
   return `http://localhost:5000/api/v1${path}`;

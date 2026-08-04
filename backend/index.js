@@ -12,6 +12,7 @@ const authRoutes = require('./routes/authRoutes');
 const tradeRoutes = require('./routes/tradeRoutes');
 const strategyRoutes = require('./routes/strategyRoutes');
 const chartRoutes = require('./routes/chartRoutes');
+const brokerRoutes = require('./routes/brokerRoutes');
 
 const app = express();
 
@@ -44,6 +45,7 @@ app.use('/api/v1/users', authRoutes);
 app.use('/api/v1/trades', tradeRoutes);
 app.use('/api/v1/strategies', strategyRoutes);
 app.use('/api/v1/chart', chartRoutes);
+app.use('/api/v1/broker/angel', brokerRoutes);
 
 // Root Route
 app.get('/', (req, res) => {
@@ -92,10 +94,6 @@ async function startServer() {
 
     const server = app.listen(port, () => {
         console.log(`App running on port ${port}...`);
-        // Auto-poll Python wrapper for active session tokens
-        setInterval(() => {
-            marketDataService.autoInitSession();
-        }, 10000);
     });
 
     // Issue #17 FIX: Graceful shutdown on SIGTERM (sent by process managers,

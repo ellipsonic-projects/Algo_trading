@@ -23,7 +23,7 @@ const ANGEL_ONE_INTERNAL_SECRET = process.env.ANGEL_ONE_INTERNAL_SECRET || '';
 
 
 // Helper: HTTP request to Python Angel One Wrapper
-async function callAngelApi(endpoint, method = 'GET', body = null) {
+async function callAngelApi(endpoint, userId, method = 'GET', body = null) {
   const url = `${ANGEL_API_BASE}${endpoint}`;
   const options = {
     method,
@@ -33,12 +33,18 @@ async function callAngelApi(endpoint, method = 'GET', body = null) {
       'X-Internal-Token': ANGEL_ONE_INTERNAL_SECRET,
     }
   };
+  if (userId) {
+    options.headers['X-User-Id'] = String(userId);
+  }
   if (body !== null) {
     options.body = JSON.stringify(body);
   }
   const res = await fetch(url, options);
   if (!res.ok) {
     const text = await res.text();
+    if (res.status === 401 && userId) {
+      module.exports.handleSessionExpiry(userId).catch(() => {});
+    }
     throw new Error(`Angel API Error [${res.status}]: ${text}`);
   }
   return await res.json();
@@ -247,14 +253,54 @@ class SingleStrategyRunner {
       this.candleListener = null;
     }
     if (this.ceContract) {
-      marketDataService.unsubscribe(this.ceContract.exchange, this.subscribedCeToken || this.ceContract.symboltoken, baseTimeframe);
+      marketDataService.unsubscribe(this.userId, this.ceContract.exchange, this.subscribedCeToken || this.ceContract.symboltoken, baseTimeframe);
     }
     if (this.peContract) {
-      marketDataService.unsubscribe(this.peContract.exchange, this.subscribedPeToken || this.peContract.symboltoken, baseTimeframe);
+      marketDataService.unsubscribe(this.userId, this.peContract.exchange, this.subscribedPeToken || this.peContract.symboltoken, baseTimeframe);
     }
 
     this.ceContract = null;
     this.peContract = null;
+    this.atmStrike = null;
+    this.selectedExpiry = null;
+    this.activeTradeId = null;
+    this.activeTradePremium = null;
+    this.entryPrice = null;
+    this.activeTradeContract = null;
+    this.currentLtp = null;
+    this.activeTrailingSl = null;
+    this.stopLoss = null;
+    this.target = null;
+    this.rangeSide = null;
+    this.monitoredPremiums = { ce: '---', pe: '---' };
+  }
+
+  forceStop() {
+    this.isRunning = false;
+    this.state = 'STOPPED';
+    this.log('Strategy execution force-halted due to session expiry.');
+    this.clearAllIntervals();
+
+    const baseTimeframe = this.getBaseTimeframe();
+    if (this.candleListener) {
+      marketDataService.removeListener('candle:closed', this.candleListener);
+      this.candleListener = null;
+    }
+    try {
+      if (this.ceContract) {
+        marketDataService.unsubscribe(this.userId, this.ceContract.exchange, this.subscribedCeToken || this.ceContract.symboltoken, baseTimeframe);
+      }
+      if (this.peContract) {
+        marketDataService.unsubscribe(this.userId, this.peContract.exchange, this.subscribedPeToken || this.peContract.symboltoken, baseTimeframe);
+      }
+    } catch (e) {
+      // ignore
+    }
+
+    this.ceContract = null;
+    this.peContract = null;
+    this.subscribedCeToken = null;
+    this.subscribedPeToken = null;
     this.atmStrike = null;
     this.selectedExpiry = null;
     this.activeTradeId = null;
@@ -297,21 +343,20 @@ class SingleStrategyRunner {
         let isStillOpenOnBroker = true;
         if (this.config.liveTradingConsent) {
           try {
-            const posRes = await callAngelApi('/angel/positions');
+            const posRes = await callAngelApi('/angel/positions', this.userId);
             const posList = Array.isArray(posRes?.data) ? posRes.data : [];
             const held = posList.find(p => (trade.symbolToken && String(p.symboltoken) === String(trade.symbolToken)) || p.tradingsymbol === trade.premium);
             const netQty = held ? parseInt(held.netqty || '0', 10) : 0;
             if (netQty <= 0) {
               isStillOpenOnBroker = false;
             }
-          } catch (e) {
-            // Keep existing status if position check fails
+          } catch (err) {
+            this.log(`Warning: Failed to check active positions on broker during recovery: ${err.message}`);
           }
         }
 
         if (isStillOpenOnBroker) {
           this.activeTradeId = trade._id.toString();
-          this.activeOrderId = trade.orderId || null;
           this.activeTradePremium = trade.premium;
           this.entryPrice = trade.buyPrice;
           this.state = 'IN_POSITION';
@@ -321,12 +366,12 @@ class SingleStrategyRunner {
           try {
             const underlyingIndex = trade.index || 'SENSEX';
             const exchange = trade.exchange || ((underlyingIndex === 'SENSEX') ? 'BFO' : 'NFO');
-            const optRes = await callAngelApi(`/instruments/index-options?exchange=${exchange}&underlying=${underlyingIndex}`);
+            const optRes = await callAngelApi(`/instruments/index-options?exchange=${exchange}&underlying=${underlyingIndex}`, this.userId);
             const todayIso = new Date().toISOString().split('T')[0];
             const validExpiries = (optRes.expiries || []).filter(Boolean).sort();
             const expiry = validExpiries.find(e => e >= todayIso) || (validExpiries.length ? validExpiries[validExpiries.length - 1] : null);
             if (expiry) {
-              const optChain = await callAngelApi(`/instruments/index-options?exchange=${exchange}&underlying=${underlyingIndex}&expiry=${expiry}`);
+              const optChain = await callAngelApi(`/instruments/index-options?exchange=${exchange}&underlying=${underlyingIndex}&expiry=${expiry}`, this.userId);
               const contract = optChain.contracts.find(c => (trade.symbolToken && String(c.symboltoken) === String(trade.symbolToken)) || c.tradingsymbol === trade.premium);
               if (contract) {
                 this.activeTradeContract = contract;
@@ -360,7 +405,7 @@ class SingleStrategyRunner {
         const strikeMode = this.config.strikeMode || 'ATM';
         const strikeDepth = this.config.strikeDepth || 1;
 
-        const resolved = await contractManager.resolveContracts(underlying, strikeMode, strikeDepth);
+        const resolved = await contractManager.resolveContracts(this.userId, underlying, strikeMode, strikeDepth);
 
         if (!this.selectedExpiry) {
           this.selectedExpiry = resolved.selectedExpiry;
@@ -379,16 +424,16 @@ class SingleStrategyRunner {
           const baseTimeframe = this.getBaseTimeframe();
           if (!this.subscribedCeToken || this.subscribedCeToken !== this.ceContract.symboltoken) {
             if (this.subscribedCeToken) {
-              marketDataService.unsubscribe(this.ceContract.exchange, this.subscribedCeToken, baseTimeframe);
+              marketDataService.unsubscribe(this.userId, this.ceContract.exchange, this.subscribedCeToken, baseTimeframe);
             }
-            await marketDataService.subscribe(this.ceContract.exchange, this.ceContract.symboltoken, baseTimeframe);
+            await marketDataService.subscribe(this.userId, this.ceContract.exchange, this.ceContract.symboltoken, baseTimeframe);
             this.subscribedCeToken = this.ceContract.symboltoken;
           }
           if (!this.subscribedPeToken || this.subscribedPeToken !== this.peContract.symboltoken) {
             if (this.subscribedPeToken) {
-              marketDataService.unsubscribe(this.peContract.exchange, this.subscribedPeToken, baseTimeframe);
+              marketDataService.unsubscribe(this.userId, this.peContract.exchange, this.subscribedPeToken, baseTimeframe);
             }
-            await marketDataService.subscribe(this.peContract.exchange, this.peContract.symboltoken, baseTimeframe);
+            await marketDataService.subscribe(this.userId, this.peContract.exchange, this.peContract.symboltoken, baseTimeframe);
             this.subscribedPeToken = this.peContract.symboltoken;
           }
         }
@@ -464,14 +509,14 @@ class SingleStrategyRunner {
 
         if (this.strategyName === '5minBreakout') {
           const fetchStartMs = Date.now();
-          let ceItems = marketDataService.getBuffer(this.ceContract.exchange, this.ceContract.symboltoken, 'ONE_MINUTE');
-          let peItems = marketDataService.getBuffer(this.peContract.exchange, this.peContract.symboltoken, 'ONE_MINUTE');
+          let ceItems = marketDataService.getBuffer(this.userId, this.ceContract.exchange, this.ceContract.symboltoken, 'ONE_MINUTE');
+          let peItems = marketDataService.getBuffer(this.userId, this.peContract.exchange, this.peContract.symboltoken, 'ONE_MINUTE');
 
           if (!ceItems || ceItems.length < requiredCandles) {
-            try { ceItems = await marketDataService.subscribe(this.ceContract.exchange, this.ceContract.symboltoken, 'ONE_MINUTE', 20); } catch (err) { return; }
+            try { ceItems = await marketDataService.subscribe(this.userId, this.ceContract.exchange, this.ceContract.symboltoken, 'ONE_MINUTE', 20); } catch (err) { return; }
           }
           if (!peItems || peItems.length < requiredCandles) {
-            try { peItems = await marketDataService.subscribe(this.peContract.exchange, this.peContract.symboltoken, 'ONE_MINUTE', 20); } catch (err) { return; }
+            try { peItems = await marketDataService.subscribe(this.userId, this.peContract.exchange, this.peContract.symboltoken, 'ONE_MINUTE', 20); } catch (err) { return; }
           }
           if (!ceItems || ceItems.length < requiredCandles || !peItems || peItems.length < requiredCandles) return;
           const fetchEndMs = Date.now();
@@ -503,14 +548,14 @@ class SingleStrategyRunner {
         } else {
           const scanExchange = this.ceContract.exchange;
           const fetchStartMs = Date.now();
-          let ceItems = marketDataService.getBuffer(scanExchange, this.ceContract.symboltoken, baseTimeframe);
-          let peItems = marketDataService.getBuffer(scanExchange, this.peContract.symboltoken, baseTimeframe);
+          let ceItems = marketDataService.getBuffer(this.userId, scanExchange, this.ceContract.symboltoken, baseTimeframe);
+          let peItems = marketDataService.getBuffer(this.userId, scanExchange, this.peContract.symboltoken, baseTimeframe);
 
           if (!ceItems || ceItems.length < requiredCandles) {
-            try { ceItems = await marketDataService.subscribe(scanExchange, this.ceContract.symboltoken, baseTimeframe); } catch (err) { return; }
+            try { ceItems = await marketDataService.subscribe(this.userId, scanExchange, this.ceContract.symboltoken, baseTimeframe); } catch (err) { return; }
           }
           if (!peItems || peItems.length < requiredCandles) {
-            try { peItems = await marketDataService.subscribe(scanExchange, this.peContract.symboltoken, baseTimeframe); } catch (err) { return; }
+            try { peItems = await marketDataService.subscribe(this.userId, scanExchange, this.peContract.symboltoken, baseTimeframe); } catch (err) { return; }
           }
           if (!ceItems || ceItems.length < requiredCandles || !peItems || peItems.length < requiredCandles) return;
           const fetchEndMs = Date.now();
@@ -581,6 +626,9 @@ class SingleStrategyRunner {
     };
 
     this.candleListener = async (eventData) => {
+      if (eventData.userId && eventData.userId !== String(this.userId)) {
+        return;
+      }
       if (this.ceContract && this.peContract) {
         if (eventData.symboltoken === this.ceContract.symboltoken || eventData.symboltoken === this.peContract.symboltoken) {
           await runScan(eventData);
@@ -609,7 +657,7 @@ class SingleStrategyRunner {
       try {
         this.log(`BUY request sent: ${buySentTs}`);
         const sendStartMs = Date.now();
-        const orderRes = await callAngelApi('/angel/orders/simple', 'POST', {
+        const orderRes = await callAngelApi('/angel/orders/simple', this.userId, 'POST', {
           exchange: contract.exchange,
           tradingsymbol: contract.tradingsymbol,
           symboltoken: contract.symboltoken,
@@ -627,7 +675,7 @@ class SingleStrategyRunner {
         if (orderId) {
           for (let i = 0; i < 4; i++) {
             await new Promise(r => setTimeout(r, 1000));
-            const ob = await callAngelApi('/angel/orderbook');
+            const ob = await callAngelApi('/angel/orderbook', this.userId);
             const order = (ob?.data || []).find(o => String(o.orderid) === String(orderId));
             if (order && (order.status === 'complete' || order.status === 'executed' || order.orderstatus === 'complete')) {
               const execPrice = parseFloat(order.averageprice || order.price);
@@ -726,7 +774,7 @@ class SingleStrategyRunner {
       if (!contract) return;
 
       try {
-        const ltpRes = await callAngelApi(`/market/ltp?exchange=${encodeURIComponent(contract.exchange)}&tradingsymbol=${encodeURIComponent(contract.tradingsymbol)}&symboltoken=${encodeURIComponent(contract.symboltoken)}`);
+        const ltpRes = await callAngelApi(`/market/ltp?exchange=${encodeURIComponent(contract.exchange)}&tradingsymbol=${encodeURIComponent(contract.tradingsymbol)}&symboltoken=${encodeURIComponent(contract.symboltoken)}`, this.userId);
         const livePrice = ltpRes.ltp;
         this.currentLtp = livePrice;
 
@@ -828,7 +876,7 @@ class SingleStrategyRunner {
 
     if (this.config.liveTradingConsent && contract) {
       try {
-        const orderRes = await callAngelApi('/angel/orders/simple', 'POST', {
+        const orderRes = await callAngelApi('/angel/orders/simple', this.userId, 'POST', {
           exchange: contract.exchange,
           tradingsymbol: contract.tradingsymbol,
           symboltoken: contract.symboltoken,
@@ -846,7 +894,8 @@ class SingleStrategyRunner {
           let fallbackTimer = null;
 
           const orderPromise = new Promise((resolve, reject) => {
-            handleOrderUpdate = (data) => {
+            handleOrderUpdate = (data, uid) => {
+              if (uid && uid !== String(this.userId)) return;
               if (String(data.orderid) === String(orderId)) {
                 const status = (data.status || data.orderstatus || '').toLowerCase();
                 if (status === 'complete' || status === 'executed') {
@@ -863,7 +912,7 @@ class SingleStrategyRunner {
             fallbackTimer = setTimeout(async () => {
               try {
                 console.log(`[${this.strategyName}] WS order confirmation timeout (5s) for ${orderId}. Checking orderbook fallback...`);
-                const ob = await callAngelApi('/angel/orderbook');
+                const ob = await callAngelApi('/angel/orderbook', this.userId);
                 const order = (ob?.data || []).find(o => String(o.orderid) === String(orderId));
                 if (order && (order.status === 'complete' || order.status === 'executed' || order.orderstatus === 'complete')) {
                   const execPrice = parseFloat(order.averageprice || order.price);
@@ -982,7 +1031,7 @@ class SingleStrategyRunner {
     let exitPx = this.currentLtp || this.entryPrice || 0;
     if (contract) {
       try {
-        const ltpRes = await callAngelApi(`/market/ltp?exchange=${encodeURIComponent(contract.exchange)}&tradingsymbol=${encodeURIComponent(contract.tradingsymbol)}&symboltoken=${encodeURIComponent(contract.symboltoken)}`);
+        const ltpRes = await callAngelApi(`/market/ltp?exchange=${encodeURIComponent(contract.exchange)}&tradingsymbol=${encodeURIComponent(contract.tradingsymbol)}&symboltoken=${encodeURIComponent(contract.symboltoken)}`, this.userId);
         if (ltpRes.ltp > 0) exitPx = ltpRes.ltp;
       } catch (e) {
         // use fallback
@@ -1083,6 +1132,67 @@ class StrategyEngineManager {
     const runner = this.getRunner(key);
     return runner.getStatus();
   }
+
+  stopAllStrategiesForUser(userId) {
+    const uid = String(userId);
+    console.log(`[StrategyEngine] Stopping all running strategies for user: ${uid}`);
+    for (const [key, runner] of this.runners.entries()) {
+      if (key.startsWith(`${uid}_`)) {
+        try {
+          runner.forceStop();
+        } catch (err) {
+          console.error(`[StrategyEngine] Error force-stopping strategy ${key}:`, err.message);
+        }
+      }
+    }
+  }
+
+  async handleSessionExpiry(userId) {
+    try {
+      const uid = String(userId);
+      console.error(`[StrategyEngine] Session expired (401) for user: ${uid}. Invalidating cache and stopping strategies...`);
+      
+      // 1. Mark BrokerConnection as DISCONNECTED in MongoDB
+      const BrokerConnection = require('../models/BrokerConnection');
+      await BrokerConnection.findOneAndUpdate({ userId: uid }, { sessionStatus: 'DISCONNECTED', lastAuthError: 'Session expired' });
+      
+      // 2. Invalidate user's session cache in brokerController
+      const brokerController = require('../controllers/brokerController');
+      if (brokerController && brokerController.sessionCache) {
+        brokerController.sessionCache.delete(uid);
+      }
+      
+      // 3. Force stop all strategies cleanly for this user
+      this.stopAllStrategiesForUser(uid);
+
+      // 4. Disconnect active smartStream connection for this user
+      const smartStream = require('./smartStream');
+      if (smartStream && typeof smartStream.disconnect === 'function') {
+        smartStream.disconnect(uid);
+      }
+    } catch (err) {
+      console.error('[StrategyEngine] Error handling session expiry:', err.message);
+    }
+  }
 }
+
+// Auto-boot smartStream connections for connected users on startup
+const BrokerConnection = require('../models/BrokerConnection');
+const smartStream = require('./smartStream');
+
+async function autoBootBrokerStreams() {
+  try {
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    const connected = await BrokerConnection.find({ sessionStatus: 'CONNECTED' });
+    console.log(`[StrategyEngine] Auto-booting ${connected.length} active broker streams...`);
+    for (const conn of connected) {
+      smartStream.connect(conn.userId.toString());
+    }
+  } catch (err) {
+    console.error('[StrategyEngine] Error auto-booting broker streams:', err.message);
+  }
+}
+
+autoBootBrokerStreams();
 
 module.exports = new StrategyEngineManager();

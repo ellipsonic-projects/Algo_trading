@@ -40,14 +40,17 @@ def load_config(dotenv_path: Optional[str] = None) -> AppConfig:
     cors_raw = os.getenv("CORS_ORIGINS", "http://localhost:5173")
     cors_origins = [o.strip() for o in cors_raw.split(",") if o.strip()]
 
+    # Optional single-user environment credentials for development/fallback
     angel = AngelOneConfig(
-        api_key=_require_env("ANGEL_API_KEY"),
-        client_code=_require_env("ANGEL_CLIENT_CODE"),
-        totp_secret=_require_env("ANGEL_TOTP_SECRET"),
+        api_key=os.getenv("ANGEL_API_KEY", "").strip(),
+        client_code=os.getenv("ANGEL_CLIENT_CODE", "").strip(),
+        totp_secret=os.getenv("ANGEL_TOTP_SECRET", "").strip(),
         base_url=os.getenv("ANGEL_BASE_URL", "https://apiconnect.angelone.in").strip(),
     )
 
     internal_api_secret = os.getenv("INTERNAL_API_SECRET", "").strip()
+    if not internal_api_secret:
+        raise ValueError("CRITICAL SECURITY ERROR: INTERNAL_API_SECRET must be configured!")
 
     return AppConfig(
         env=env,

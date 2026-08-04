@@ -13,6 +13,25 @@ function getUrl(path: string): string {
   return `http://localhost:5000/api/v1${path}`;
 }
 
+// Only force-redirect to /login when the user is on an authenticated page.
+// If already on /login (e.g. during MPIN/TOTP entry), throw the error
+// back to the caller so the UI can display it instead of hard-reloading.
+function redirect401(): never {
+  if (window.location.pathname !== '/login') {
+    window.location.href = '/login';
+  }
+  throw new Error('Session expired. Please sign in again.');
+}
+
+async function parseError(res: Response): Promise<string> {
+  try {
+    const json = await res.clone().json();
+    return json.message || json.error || `Request failed (${res.status})`;
+  } catch {
+    return (await res.text()) || `Request failed (${res.status})`;
+  }
+}
+
 export async function apiGet<T>(path: string): Promise<T> {
   const url = getUrl(path);
 
@@ -24,10 +43,9 @@ export async function apiGet<T>(path: string): Promise<T> {
 
   const res = await fetch(url, { headers, credentials: 'include' });
   if (res.status === 401) {
-    window.location.href = '/login';
-    throw new Error('Unauthorized');
+    redirect401();
   }
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) throw new Error(await parseError(res));
   return (await res.json()) as T;
 }
 
@@ -47,9 +65,8 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
     credentials: 'include'
   });
   if (res.status === 401) {
-    window.location.href = '/login';
-    throw new Error('Unauthorized');
+    redirect401();
   }
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) throw new Error(await parseError(res));
   return (await res.json()) as T;
 }

@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useMemo, useState, useEffect } from 'react'
 import type { ReactNode } from 'react'
+import { useLocation } from 'react-router-dom'
 
 import MpinModal from './MpinModal'
 import { useAuth } from '../../context/AuthContext'
@@ -90,9 +91,11 @@ export function AngelConnectionProvider({ children }: { children: ReactNode }) {
   }, [hasProfile])
 
   const { user, loading } = useAuth()
+  const location = useLocation()
+  const isOnLoginPage = location.pathname === '/login'
 
   useEffect(() => {
-    if (loading || !user) {
+    if (loading || !user || isOnLoginPage) {
       setMpinOpen(false)
       setConnectStatus('idle')
       return
@@ -119,11 +122,15 @@ export function AngelConnectionProvider({ children }: { children: ReactNode }) {
             setConnectStatus('connected')
             setConnectMessage('Session active')
           } else {
-            setMpinOpen(true)
+            if (!isOnLoginPage) {
+              setMpinOpen(true)
+            }
           }
         }
       } catch {
-        if (!cancelled) setMpinOpen(true)
+        if (!cancelled && !isOnLoginPage) {
+          setMpinOpen(true)
+        }
       }
     }
 
@@ -147,7 +154,9 @@ export function AngelConnectionProvider({ children }: { children: ReactNode }) {
           if (!isConnected && connectStatus === 'connected') {
             setConnectStatus('idle')
             setConnectMessage('')
-            setMpinOpen(true)
+            if (!isOnLoginPage) {
+              setMpinOpen(true)
+            }
           }
         }
       } catch {
@@ -159,7 +168,7 @@ export function AngelConnectionProvider({ children }: { children: ReactNode }) {
       cancelled = true
       clearInterval(intervalId)
     }
-  }, [user, loading, connectStatus])
+  }, [user, loading, connectStatus, isOnLoginPage])
 
   const value = useMemo<AngelConnectionContextValue>(
     () => ({

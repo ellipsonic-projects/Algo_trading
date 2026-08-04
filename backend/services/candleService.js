@@ -66,6 +66,12 @@ async function getCandles(underlying, date, interval = '5m', userId = null) {
       rawItems = Array.isArray(json.items) ? json.items : [];
     } else {
       console.warn(`[candleService] Angel wrapper returned HTTP ${res.status} for ${und}`);
+      if (res.status === 401 && userId) {
+        const strategyEngine = require('./strategyEngine');
+        if (strategyEngine && typeof strategyEngine.handleSessionExpiry === 'function') {
+          strategyEngine.handleSessionExpiry(userId).catch(() => {});
+        }
+      }
     }
   } catch (err) {
     console.warn(`[candleService] Warning fetching candles for ${und}:`, err.message);

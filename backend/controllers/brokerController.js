@@ -133,6 +133,14 @@ exports.connect = async (req, res) => {
             updatedAt: Date.now()
         });
 
+        // Connect the broker websocket stream immediately upon login
+        try {
+            const smartStream = require('../services/smartStream');
+            smartStream.connect(userId.toString());
+        } catch (streamErr) {
+            console.error('[BrokerController] Failed to auto-connect smartStream after login:', streamErr.message);
+        }
+
         // Update expiry estimate (approx 24h)
         await BrokerConnection.findOneAndUpdate(
             { userId },
@@ -209,6 +217,14 @@ exports.reauthenticate = async (req, res) => {
             apiKey: creds.apiKey,
             updatedAt: Date.now()
         });
+
+        // Connect the broker websocket stream immediately upon reauthentication
+        try {
+            const smartStream = require('../services/smartStream');
+            smartStream.connect(userId.toString());
+        } catch (streamErr) {
+            console.error('[BrokerController] Failed to auto-connect smartStream after reauth:', streamErr.message);
+        }
 
         await BrokerConnection.findOneAndUpdate(
             { userId },

@@ -41,6 +41,17 @@ const Header: React.FC = () => {
         return 'Trading Terminal';
     };
 
+    const handleAngelClick = () => {
+        if (connectStatus === 'connected') {
+            const confirmDisconnect = window.confirm("Warning: Disconnecting the broker will stop live strategy execution and stream data. Do you want to disconnect?");
+            if (confirmDisconnect) {
+                disconnect();
+            }
+        } else {
+            openConnect();
+        }
+    };
+
     return (
         <header className="h-14 bg-white border-b border-[#E0E3EB] px-5 flex items-center justify-between sticky top-0 z-30 select-none">
             {/* Left Page Title & Live Badge */}
@@ -57,7 +68,7 @@ const Header: React.FC = () => {
             <div className="flex items-center gap-4">
                 {/* Angel One Broker Connection Button */}
                 <button
-                    onClick={connectStatus === 'connected' ? disconnect : openConnect}
+                    onClick={handleAngelClick}
                     className={`
                         flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-semibold transition-colors border
                         ${connectStatus === 'connected'

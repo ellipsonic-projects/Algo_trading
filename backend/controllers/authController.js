@@ -7,7 +7,7 @@ const signToken = (id) => {
     });
 };
 
-const createSendToken = (user, statusCode, res) => {
+const createSendToken = (user, statusCode, res, extraData = {}) => {
     const token = signToken(user._id);
     const cookieOptions = {
         expires: new Date(
@@ -32,9 +32,38 @@ const createSendToken = (user, statusCode, res) => {
     res.status(statusCode).json({
         status: 'success',
         data: {
-            user
+            user,
+            ...extraData
         }
     });
+};
+
+exports.register = async (req, res, next) => {
+    try {
+        const { email, password } = req.body;
+
+        if (!email || !password) {
+            return res.status(400).json({ status: 'fail', message: 'Please provide email and password!' });
+        }
+
+        // Check if email already exists
+        const existingUser = await User.findOne({ email });
+        if (existingUser) {
+            return res.status(400).json({ status: 'fail', message: 'Email already registered' });
+        }
+
+        // Create new user
+        const newUser = await User.create({
+            email,
+            password
+        });
+
+        // A new user has no broker profile yet
+        createSendToken(newUser, 201, res, { brokerStatus: 'NOT_CONFIGURED' });
+    } catch (err) {
+        console.error('[AuthController] Registration error:', err);
+        res.status(500).json({ status: 'error', message: 'Internal server error' });
+    }
 };
 
 exports.login = async (req, res, next) => {
@@ -49,12 +78,21 @@ exports.login = async (req, res, next) => {
         // 2) Check if user exists && password is correct
         const user = await User.findOne({ email }).select('+password');
 
-        if (!user || !(await user.comparePassword(password))) {
-            return res.status(401).json({ status: 'fail', message: 'Incorrect email or password' });
+        if (!user) {
+            return res.status(401).json({ status: 'fail', message: 'User does not exist' });
         }
 
-        // 3) If everything ok, send token to client
-        createSendToken(user, 200, res);
+        if (!(await user.comparePassword(password))) {
+            return res.status(401).json({ status: 'fail', message: 'Incorrect password' });
+        }
+
+        // 3) Check user's broker status
+        const BrokerConnection = require('../models/BrokerConnection');
+        const connection = await BrokerConnection.findOne({ userId: user._id });
+        const brokerStatus = connection ? connection.sessionStatus : 'NOT_CONFIGURED';
+
+        // 4) If everything ok, send token to client with broker status
+        createSendToken(user, 200, res, { brokerStatus });
     } catch (err) {
         // Issue #18 FIX: Do not leak internal error details (stack traces,
         // field names, Mongoose messages) to the caller. Log them server-side.
@@ -64,8 +102,12 @@ exports.login = async (req, res, next) => {
 };
 
 exports.logout = (req, res) => {
+    // IMPORTANT: clearCookie options MUST exactly match the options used when the cookie
+    // was set (in createSendToken). A mismatched sameSite/secure causes the browser to
+    // treat it as a different cookie and NOT clear it.
     res.clearCookie('jwt', {
         httpOnly: true,
+        sameSite: 'Strict',
         secure: process.env.NODE_ENV === 'production',
         path: '/'
     });

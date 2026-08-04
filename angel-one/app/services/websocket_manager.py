@@ -85,7 +85,9 @@ class UserWebSocketConnection:
             self.smart_stream.on_error = on_error
 
             # Run connection inside thread
-            self.smart_stream.connect()
+            import threading
+            thread = threading.Thread(target=self.smart_stream.connect, name=f"SmartStream-{self.user_id}", daemon=True)
+            thread.start()
 
         except Exception as e:
             logger.error(f"[WebSocketManager] Failed to start Smart Stream for user {self.user_id}: {e}")
@@ -109,7 +111,7 @@ class UserWebSocketConnection:
         while self.is_active:
             try:
                 logger.info(f"[WebSocketManager] Connecting order updates for user: {self.user_id}")
-                async with websockets.connect(uri, extra_headers=headers) as ws:
+                async with websockets.connect(uri, additional_headers=headers) as ws:
                     backoff = 1
                     while self.is_active:
                         msg = await ws.recv()

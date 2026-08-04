@@ -159,8 +159,10 @@ const DashboardPage: React.FC = () => {
   // Fetch Chart Market Data from Backend
   useEffect(() => {
     let active = true;
-    const fetchChart = async () => {
-      setChartLoading(true);
+    let timer: any = null;
+
+    const fetchChart = async (showLoading = true) => {
+      if (showLoading) setChartLoading(true);
       try {
         const url = `/chart/market-data?underlying=${encodeURIComponent(selectedUnderlying)}&date=${encodeURIComponent(selectedDate)}&interval=${encodeURIComponent(timeframe)}`;
         const res = await apiGet<{ data: ChartDataResponse }>(url);
@@ -170,12 +172,23 @@ const DashboardPage: React.FC = () => {
       } catch (err) {
         console.error('Failed to fetch chart data:', err);
       } finally {
-        if (active) setChartLoading(false);
+        if (active && showLoading) setChartLoading(false);
       }
     };
 
-    fetchChart();
-    return () => { active = false; };
+    fetchChart(true);
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    if (selectedDate === todayStr) {
+      timer = setInterval(() => {
+        fetchChart(false);
+      }, 5000);
+    }
+
+    return () => {
+      active = false;
+      if (timer) clearInterval(timer);
+    };
   }, [selectedUnderlying, timeframe, selectedDate]);
 
   // Client-Side Visualization Indicator Computation (< 1ms recalculation)

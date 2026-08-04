@@ -20,10 +20,10 @@ export default function AppRouter() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/" element={<Navigate to="/login" replace />} />
 
       {/* Protected Routes Wrapper */}
       <Route element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>
-        <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/strategies" element={<StrategiesPage />} />
         <Route path="/strategies/manual-trading" element={<ManualTradingPage />} />

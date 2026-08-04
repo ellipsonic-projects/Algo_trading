@@ -549,6 +549,7 @@ def place_simple_order(req: SimpleOrderRequest, user_id: str = Depends(require_u
 @app.websocket("/ws/broker-stream")
 async def websocket_broker_stream(websocket: WebSocket, token: str = "", userId: str = ""):
     """Secure private WebSocket endpoint streaming ticks and order events to Node.js backend."""
+    await websocket.accept()
     secret = cfg.internal_api_secret
     if not secret or token != secret:
         await websocket.close(code=4003, reason="Forbidden: invalid internal token")
@@ -568,8 +569,6 @@ async def websocket_broker_stream(websocket: WebSocket, token: str = "", userId:
     feed_token = info.get("feed_token")
     client_code = info.get("client_code")
     api_key = info.get("api_key")
-
-    await websocket.accept()
     logger = logging.getLogger("uvicorn.error")
     logger.info(f"[FastAPI WS] Accepted internal socket for user: {userId}")
 

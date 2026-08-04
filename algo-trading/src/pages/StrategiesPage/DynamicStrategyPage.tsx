@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
-import { Play, Square, XCircle, Target, Shield, Clock, Activity, ShieldAlert, ChevronRight } from 'lucide-react'
+import { useParams } from 'react-router-dom'
+import { Play, Square, XCircle, Target, Activity, ShieldAlert, ChevronRight } from 'lucide-react'
 import { apiGet, apiPost } from '../../trading'
 import { usePageTitle } from '../../hooks/usePageTitle'
 import { useAngelConnection } from '../../shared/angel/AngelConnectionProvider'
 import StrategiesLayout from './StrategiesLayout'
 
+// ─── Domain Types ──────────────────────────────────────────────────────────────
+
 type ParameterSchema = {
   type: string
-  default: any
+  default: string | number | boolean
   label: string
   min?: number
   max?: number
@@ -32,29 +34,96 @@ type StrategyManifest = {
   parameters: Record<string, ParameterSchema>
 }
 
+type OptionContract = {
+  exchange: string
+  tradingsymbol: string
+  symboltoken: string
+}
+
+type Checkpoint = {
+  id: string
+  label: string
+  status: 'success' | 'pending' | 'error'
+}
+
+/** Shape returned verbatim by strategyEngine.getStatus() */
+type StrategyStatus = {
+  strategyName: string
+  isRunning: boolean
+  state: string
+  message: string
+  trend: string
+  selectedExpiry: string | null
+  atmStrike: number | null
+  ceContract: OptionContract | null
+  peContract: OptionContract | null
+  monitoredPremiums: { ce: string; pe: string }
+  checkpoints: Checkpoint[]
+  activeTradeId: string | null
+  activeTradePremium: string | null
+  entryPrice: number | null
+  currentLtp: number | null
+  activeTrailingSl: number | null
+  stopLoss: number | null
+  target: number | null
+  lastCompletedTrade: Record<string, unknown> | null
+  exitInProgress: boolean
+  exitTriggered: boolean
+  exitReasonStored: string | null
+  lastExitError: string | null
+  exitRetryCount: number
+  lastExitAttemptTime: number
+  logs: string[]
+}
+
+type ManifestsApiResponse = {
+  data?: { manifests: StrategyManifest[]; engineSchema: Record<string, ParameterSchema> }
+  manifests?: StrategyManifest[]
+  engineSchema?: Record<string, ParameterSchema>
+}
+
+type StatusApiResponse = {
+  data?: StrategyStatus
+} & Partial<StrategyStatus>
+
+// ─── Pure helpers (module scope — no stale-closure risk) ──────────────────────
+
+function computeSchemaSignature(
+  schemaObj: Record<string, ParameterSchema>,
+  manifestObj: StrategyManifest | null
+): string {
+  const schemaKeys = Object.keys(schemaObj).sort().join(',')
+  const manifestKeys = Object.keys(manifestObj?.parameters || {}).sort().join(',')
+  return `${schemaKeys}|${manifestKeys}`
+}
+
+/** Narrow a config value to number (for input[type=number] value prop and arithmetic) */
+function cfgNum(val: string | number | boolean | undefined, fallback: number): number {
+  return typeof val === 'number' ? val : fallback
+}
+
+/** Narrow a config value to string (for select/text input value prop) */
+function cfgStr(val: string | number | boolean | undefined, fallback: string): string {
+  return val !== undefined && val !== null ? String(val) : fallback
+}
+
 export default function DynamicStrategyPage() {
   const { strategyId } = useParams<{ strategyId: string }>()
-  const navigate = useNavigate()
   const { connectStatus } = useAngelConnection()
   const [manifest, setManifest] = useState<StrategyManifest | null>(null)
   const [engineSchema, setEngineSchema] = useState<Record<string, ParameterSchema>>({})
-  const [config, setConfig] = useState<Record<string, any>>({})
-  const [status, setStatus] = useState<any>(null)
+  const [config, setConfig] = useState<Record<string, string | number | boolean>>({})
+  const [status, setStatus] = useState<StrategyStatus | null>(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [isExiting, setIsExiting] = useState(false)
 
   usePageTitle(manifest ? manifest.name : 'Strategy Execution')
 
-  const computeSchemaSignature = (schemaObj: any, manifestObj: any) => {
-    const schemaKeys = Object.keys(schemaObj).sort().join(',')
-    const manifestKeys = Object.keys(manifestObj?.parameters || {}).sort().join(',')
-    return `${schemaKeys}|${manifestKeys}`
-  }
-
   useEffect(() => {
     async function loadManifestAndSchema() {
       try {
-        const res = await apiGet<any>('/strategies/manifests')
+        const res = await apiGet<ManifestsApiResponse>('/strategies/manifests')
         const manifestList = res?.data?.manifests || res?.manifests || []
         const schema = res?.data?.engineSchema || res?.engineSchema || {}
         setEngineSchema(schema)
@@ -68,13 +137,13 @@ export default function DynamicStrategyPage() {
           const signature = computeSchemaSignature(schema, found)
           if (savedStr) {
             try {
-              const parsed = JSON.parse(savedStr)
+              const parsed = JSON.parse(savedStr) as { signature: string; config: Record<string, string | number | boolean> }
               if (parsed && parsed.signature === signature) {
                 setConfig(parsed.config)
               } else {
                 initializeDefaults(schema, found)
               }
-            } catch (e) {
+            } catch {
               initializeDefaults(schema, found)
             }
           } else {
@@ -82,14 +151,16 @@ export default function DynamicStrategyPage() {
           }
         }
       } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
         console.error('Failed to load strategy manifest & schema:', err)
+        setLoadError(`Failed to load strategy configuration: ${msg}`)
       } finally {
         setLoading(false)
       }
     }
 
     function initializeDefaults(schema: Record<string, ParameterSchema>, foundManifest: StrategyManifest) {
-      const initialConfig: Record<string, any> = {}
+      const initialConfig: Record<string, string | number | boolean> = {}
       // 1. Engine Schema Defaults
       Object.entries(schema).forEach(([key, param]) => {
         initialConfig[key] = param.default
@@ -116,10 +187,12 @@ export default function DynamicStrategyPage() {
     if (!strategyId) return
     const fetchStatus = async () => {
       try {
-        const res = await apiGet<any>(`/strategies/${strategyId}/status`)
-        const data = res?.data || res
+        const res = await apiGet<StatusApiResponse>(`/strategies/${strategyId}/status`)
+        const data: StrategyStatus = (res?.data ?? res) as StrategyStatus
         setStatus(data)
-      } catch (e) {}
+      } catch {
+        // status fetch errors are silently ignored; the interval will retry
+      }
     }
     fetchStatus()
     const interval = setInterval(fetchStatus, 2000)
@@ -129,22 +202,22 @@ export default function DynamicStrategyPage() {
   const handleStart = async () => {
     if (!strategyId) return
     try {
-      const res = await apiPost<any>(`/strategies/${strategyId}/start`, config)
-      const data = res?.data || res
+      const res = await apiPost<StatusApiResponse>(`/strategies/${strategyId}/start`, config)
+      const data: StrategyStatus = (res?.data ?? res) as StrategyStatus
       setStatus(data)
-    } catch (e: any) {
-      alert(`Start failed: ${e.message}`)
+    } catch (e: unknown) {
+      alert(`Start failed: ${e instanceof Error ? e.message : String(e)}`)
     }
   }
 
   const handleStop = async () => {
     if (!strategyId) return
     try {
-      const res = await apiPost<any>(`/strategies/${strategyId}/stop`)
-      const data = res?.data || res
+      const res = await apiPost<StatusApiResponse>(`/strategies/${strategyId}/stop`)
+      const data: StrategyStatus = (res?.data ?? res) as StrategyStatus
       setStatus(data)
-    } catch (e: any) {
-      alert(`Stop failed: ${e.message}`)
+    } catch (e: unknown) {
+      alert(`Stop failed: ${e instanceof Error ? e.message : String(e)}`)
     }
   }
 
@@ -152,11 +225,11 @@ export default function DynamicStrategyPage() {
     if (!strategyId) return
     setIsExiting(true)
     try {
-      const res = await apiPost<any>(`/strategies/${strategyId}/exit`)
-      const data = res?.data || res
+      const res = await apiPost<StatusApiResponse>(`/strategies/${strategyId}/exit`)
+      const data: StrategyStatus = (res?.data ?? res) as StrategyStatus
       setStatus(data)
-    } catch (e: any) {
-      alert(`Exit failed: ${e.message}`)
+    } catch (e: unknown) {
+      alert(`Exit failed: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       setIsExiting(false)
     }
@@ -166,7 +239,7 @@ export default function DynamicStrategyPage() {
     if (!condition) return true
     const match = condition.match(/([a-zA-Z0-9_]+)\s*(!=|==)\s*['"]?([a-zA-Z0-9_]+)['"]?/)
     if (!match) return true
-    const [_, field, operator, value] = match
+    const [, field, operator, value] = match
     const currentVal = config[field]
     if (operator === '!=') {
       return String(currentVal) !== value
@@ -185,11 +258,28 @@ export default function DynamicStrategyPage() {
     )
   }
 
+  if (loadError) {
+    return (
+      <StrategiesLayout title="Configuration Error" backTo="/strategies">
+        <div className="p-6 bg-white rounded border border-[#F23645] shadow-sm">
+          <div className="flex items-start gap-3">
+            <ShieldAlert className="w-5 h-5 text-[#F23645] mt-0.5 shrink-0" />
+            <div>
+              <p className="text-sm font-bold text-[#1E222D] mb-1">Failed to Load Strategy</p>
+              <p className="text-xs text-[#787B86] font-medium">{loadError}</p>
+              <p className="text-xs text-[#787B86] mt-2">Check that the backend is running and the strategy plugin is registered.</p>
+            </div>
+          </div>
+        </div>
+      </StrategiesLayout>
+    )
+  }
+
   if (!manifest) {
     return (
       <StrategiesLayout title="Strategy Not Found" backTo="/strategies">
         <div className="p-8 text-center text-sm font-semibold text-red-500">
-          Strategy plugin "{strategyId}" is not registered or supported by the current engine.
+          Strategy plugin &ldquo;{strategyId}&rdquo; is not registered or supported by the current engine.
         </div>
       </StrategiesLayout>
     )
@@ -198,7 +288,7 @@ export default function DynamicStrategyPage() {
   // Position Monitor stats
   const ltp = status?.currentLtp || null
   const entryPrice = status?.entryPrice || null
-  const quantity = config?.quantity || 1
+
   const trend = status?.trend || 'NEUTRAL'
   const isRunning = !!status?.isRunning
   const state = status?.state || 'STOPPED'
@@ -291,7 +381,7 @@ export default function DynamicStrategyPage() {
                   <div>
                     <label className="text-[10px] font-bold uppercase text-[#787B86] mb-1 block">Underlying Instrument</label>
                     <select
-                      value={config.underlying ?? 'SENSEX'}
+                      value={cfgStr(config.underlying, 'SENSEX')}
                       disabled={isRunning}
                       onChange={(e) => setConfig({ ...config, underlying: e.target.value })}
                       className="w-full bg-[#F0F3FA] border border-[#E0E3EB] rounded px-3 py-1.5 text-xs font-semibold text-[#1E222D] outline-none focus:border-[#0052FF] disabled:opacity-50"
@@ -314,7 +404,7 @@ export default function DynamicStrategyPage() {
                     <label className="text-[10px] font-bold uppercase text-[#787B86] mb-1 block">Order Quantity</label>
                     <input
                       type="number"
-                      value={config.quantity ?? 1}
+                      value={cfgNum(config.quantity, 1)}
                       disabled={isRunning}
                       onChange={(e) => setConfig({ ...config, quantity: Number(e.target.value) })}
                       className="w-full bg-[#F0F3FA] border border-[#E0E3EB] rounded px-3 py-1.5 text-xs font-semibold text-[#1E222D] outline-none focus:border-[#0052FF] disabled:opacity-50"
@@ -341,7 +431,7 @@ export default function DynamicStrategyPage() {
                       <label className="text-[10px] font-bold uppercase text-[#787B86] mb-1 block">{param.label || key}</label>
                       <input
                         type={param.type === 'number' ? 'number' : 'text'}
-                        value={config[key] ?? param.default}
+                        value={cfgNum(config[key], typeof param.default === 'number' ? param.default : 0)}
                         disabled={isRunning}
                         onChange={(e) => setConfig({ ...config, [key]: param.type === 'number' ? Number(e.target.value) : e.target.value })}
                         className="w-full bg-[#F0F3FA] border border-[#E0E3EB] rounded px-3 py-1.5 text-xs font-semibold text-[#1E222D] outline-none focus:border-[#0052FF] disabled:opacity-50"
@@ -396,7 +486,7 @@ export default function DynamicStrategyPage() {
                         ? ltp >= entryPrice ? 'text-[#089981]' : 'text-[#F23645]'
                         : 'text-[#787B86]'
                         }`}>
-                        {ltp && entryPrice ? `₹${((ltp - entryPrice) * quantity).toFixed(2)}` : '---'}
+                        {ltp && entryPrice ? `₹${((ltp - entryPrice) * cfgNum(config.quantity, 1)).toFixed(2)}` : '---'}
                       </p>
                     </div>
                     <div>
@@ -479,14 +569,14 @@ export default function DynamicStrategyPage() {
                     <div className="flex items-center justify-between p-1 bg-[#F0F3FA] border border-[#E0E3EB] rounded">
                       <button
                         type="button"
-                        onClick={() => setConfig({ ...config, strikeDepth: Math.max(1, (config.strikeDepth ?? 1) - 1) })}
+                        onClick={() => setConfig({ ...config, strikeDepth: Math.max(1, cfgNum(config.strikeDepth, 1) - 1) })}
                         disabled={isRunning}
                         className="w-7 h-7 flex items-center justify-center text-[#434651] font-bold text-base disabled:opacity-50"
                       >-</button>
                       <span className="text-xs font-bold text-[#1E222D]">{config.strikeDepth ?? 1}</span>
                       <button
                         type="button"
-                        onClick={() => setConfig({ ...config, strikeDepth: (config.strikeDepth ?? 1) + 1 })}
+                        onClick={() => setConfig({ ...config, strikeDepth: cfgNum(config.strikeDepth, 1) + 1 })}
                         disabled={isRunning}
                         className="w-7 h-7 flex items-center justify-center text-[#434651] font-bold text-base disabled:opacity-50"
                       >+</button>
@@ -500,7 +590,7 @@ export default function DynamicStrategyPage() {
                   <div className="flex items-center gap-2">
                     <input
                       type="number"
-                      value={config.premiumMin ?? 300}
+                      value={cfgNum(config.premiumMin, 300)}
                       disabled={isRunning}
                       onChange={(e) => setConfig({ ...config, premiumMin: Number(e.target.value) })}
                       placeholder="Min"
@@ -509,7 +599,7 @@ export default function DynamicStrategyPage() {
                     <ChevronRight className="w-3.5 h-3.5 text-[#787B86]" />
                     <input
                       type="number"
-                      value={config.premiumMax ?? 400}
+                      value={cfgNum(config.premiumMax, 400)}
                       disabled={isRunning}
                       onChange={(e) => setConfig({ ...config, premiumMax: Number(e.target.value) })}
                       placeholder="Max"
@@ -545,7 +635,7 @@ export default function DynamicStrategyPage() {
                       <label className="text-[10px] font-bold uppercase text-[#787B86] mb-1 block">Target Points</label>
                       <input
                         type="number"
-                        value={config.targetPoints ?? 20}
+                        value={cfgNum(config.targetPoints, 20)}
                         onChange={(e) => setConfig({ ...config, targetPoints: Number(e.target.value) })}
                         disabled={isRunning}
                         className="w-full bg-[#F0F3FA] border border-[#E0E3EB] rounded px-3 py-1.5 text-xs font-semibold text-[#1E222D] outline-none focus:border-[#089981] disabled:opacity-50"
@@ -555,7 +645,7 @@ export default function DynamicStrategyPage() {
                       <label className="text-[10px] font-bold uppercase text-[#787B86] mb-1 block">Stop Loss Points</label>
                       <input
                         type="number"
-                        value={config.slPoints ?? 30}
+                        value={cfgNum(config.slPoints, 30)}
                         onChange={(e) => setConfig({ ...config, slPoints: Number(e.target.value) })}
                         disabled={isRunning}
                         className="w-full bg-[#F0F3FA] border border-[#E0E3EB] rounded px-3 py-1.5 text-xs font-semibold text-[#1E222D] outline-none focus:border-[#F23645] disabled:opacity-50"
@@ -587,25 +677,18 @@ export default function DynamicStrategyPage() {
               : 'bg-[#F8F9FA] border-[#E0E3EB]'
               }`}>
               <p className="text-[10px] font-bold text-[#F23645] uppercase mb-1">Monitored PE Option</p>
-              <p className="text-sm font-bold text-[#1E222D]">{monitoredPremiums.pe}</p>
+              <p className="text-sm font-bold text-[#1E222D]">{monitoredPremiums?.pe ?? '---'}</p>
             </div>
           </div>
-
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
-            {checkpoints.map((cp: any) => (
+            {checkpoints?.map((cp: Checkpoint) => (
               <div key={cp.id} className="flex items-center gap-2 bg-[#F8F9FA] border border-[#E0E3EB] px-3 py-2 rounded">
-                <div className={`w-2 h-2 rounded-full ${cp.status === 'success'
-                  ? 'bg-[#089981]'
-                  : cp.status === 'error'
-                    ? 'bg-[#F23645]'
-                    : 'bg-[#787B86]'
-                  }`} />
+                <div className={`w-2 h-2 rounded-full ${cp.status === 'success' ? 'bg-[#089981]' : cp.status === 'error' ? 'bg-[#F23645]' : 'bg-[#787B86]'}`} />
                 <span className="text-[10px] font-semibold text-[#434651] uppercase truncate">{cp.label}</span>
               </div>
             ))}
           </div>
         </div>
-
       </div>
     </StrategiesLayout>
   )

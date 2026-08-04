@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useMemo, useState, useEffect } 
 import type { ReactNode } from 'react'
 
 import MpinModal from './MpinModal'
+import { useAuth } from '../../context/AuthContext'
 
 type AngelLoginResponse = {
   status: boolean
@@ -81,11 +82,17 @@ export function AngelConnectionProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  // Issue #7 FIX: On mount, check whether the broker session is already active
-  // via a public status endpoint. If connected, update UI state silently.
-  // If not connected, open the MPIN modal so the user can enter their PIN manually.
-  // The MPIN is NEVER stored in env vars, the bundle, or any persistent storage.
+  const { user, loading } = useAuth()
+
+  // On mount or user login state change: check broker session status ONLY if the
+  // user is logged into the app. If not logged in or still loading auth, do not prompt.
   useEffect(() => {
+    if (loading || !user) {
+      setMpinOpen(false)
+      setConnectStatus('idle')
+      return
+    }
+
     let cancelled = false
 
     const checkAndConnect = async () => {
@@ -93,11 +100,11 @@ export function AngelConnectionProvider({ children }: { children: ReactNode }) {
       if (cancelled) return
 
       if (isConnected) {
-        // Session already active (e.g., server kept the session alive after hot-reload)
+        // Session already active (e.g., server kept the session alive)
         setConnectStatus('connected')
         setConnectMessage('Session active')
       } else {
-        // Session not active — prompt the user to enter their MPIN manually
+        // Session not active — prompt the logged-in user to enter their MPIN manually
         setMpinOpen(true)
       }
     }
@@ -120,8 +127,7 @@ export function AngelConnectionProvider({ children }: { children: ReactNode }) {
       cancelled = true
       clearInterval(intervalId)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [user, loading])
 
   const value = useMemo<AngelConnectionContextValue>(
     () => ({

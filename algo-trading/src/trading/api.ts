@@ -4,6 +4,9 @@ function getUrl(path: string): string {
   if (path.startsWith('/market/index-ltp')) {
     return `http://localhost:5000/api/v1/chart/index-ltp${path.replace('/market/index-ltp', '')}`;
   }
+  if (path === '/angel/margins') {
+    return `http://localhost:5000/api/v1/chart/margins`;
+  }
   // Python Angel One Wrapper routes
   if (path.startsWith('/market') || path.startsWith('/angel') || path.startsWith('/instruments')) {
     return `${API_BASE}${path}`;

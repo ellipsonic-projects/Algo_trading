@@ -15,10 +15,10 @@ class VaultAdapter {
 class LocalDevVaultAdapter extends VaultAdapter {
     constructor() {
         super();
-        if (process.env.NODE_ENV === 'production') {
-            throw new Error('[VaultService] SECURITY ERROR: Local fallback vault is strictly prohibited in production mode!');
+        if (process.env.NODE_ENV === 'production' && process.env.ALLOW_LOCAL_VAULT_IN_PROD !== 'true') {
+            throw new Error('[VaultService] SECURITY ERROR: Local fallback vault is strictly prohibited in production mode! Set ALLOW_LOCAL_VAULT_IN_PROD=true in Render environment variables to allow using env key vault.');
         }
-        console.warn('[VaultService] WARNING: Using local development vault fallback. DO NOT USE IN PRODUCTION.');
+        console.warn('[VaultService] WARNING: Using local development vault fallback.');
     }
 
     async getMasterKey() {

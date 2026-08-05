@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import struct
-from typing import Any, Dict, Set
+from typing import Any, Dict, Set, Optional
 from fastapi import WebSocket
 import websockets
 
@@ -103,16 +103,21 @@ class UserWebSocketConnection:
             self.is_active = False
 
     async def _run_order_updates(self, jwt_token: str) -> None:
-        """Asynchronous listener for the Order Update WebSocket."""
+        """Asynchronous listener for the Order Update WebSocket.
+
+        Automatically refreshes the Angel One JWT token when a 1011 (internal
+        error / token expired) disconnect is received, so reconnects succeed.
+        """
         uri = "wss://tns.angelone.in/smart-order-update"
-        headers = {"Authorization": f"Bearer {jwt_token}"}
+        current_token = jwt_token
         backoff = 1
 
         while self.is_active:
+            headers = {"Authorization": f"Bearer {current_token}"}
             try:
                 logger.info(f"[WebSocketManager] Connecting order updates for user: {self.user_id}")
                 async with websockets.connect(uri, additional_headers=headers) as ws:
-                    backoff = 1
+                    backoff = 1  # reset on successful connect
                     while self.is_active:
                         msg = await ws.recv()
                         if msg == "pong" or msg == "ping":
@@ -123,8 +128,51 @@ class UserWebSocketConnection:
 
             except asyncio.CancelledError:
                 break
+            except websockets.exceptions.ConnectionClosedError as e:
+                # Code 1011 = server internal error, almost always means the
+                # Angel One JWT has expired. Refresh before retrying.
+                if e.code == 1011:
+                    logger.warning(
+                        f"[WebSocketManager] Order WS token expired for user {self.user_id} "
+                        f"(code 1011). Refreshing Angel One token..."
+                    )
+                    try:
+                        client = session_manager.get_session(self.user_id)
+                        if client and client._session:
+                            refresh_result = await asyncio.get_event_loop().run_in_executor(
+                                None, client.refresh_session, client._session.refresh_token
+                            )
+                            current_token = refresh_result["jwt_token"]
+                            logger.info(
+                                f"[WebSocketManager] Token refreshed for user {self.user_id}. Reconnecting..."
+                            )
+                            backoff = 1  # reset backoff after successful refresh
+                        else:
+                            logger.warning(
+                                f"[WebSocketManager] No active session for user {self.user_id}. "
+                                f"Cannot refresh token. Retrying in {backoff}s..."
+                            )
+                            await asyncio.sleep(backoff)
+                            backoff = min(backoff * 2, 60)
+                    except Exception as refresh_err:
+                        logger.error(
+                            f"[WebSocketManager] Token refresh failed for user {self.user_id}: "
+                            f"{refresh_err}. Retrying in {backoff}s..."
+                        )
+                        await asyncio.sleep(backoff)
+                        backoff = min(backoff * 2, 60)
+                else:
+                    logger.warning(
+                        f"[WebSocketManager] Order WS disconnect for user {self.user_id}: "
+                        f"{e}. Retrying in {backoff}s..."
+                    )
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 30)
             except Exception as e:
-                logger.warning(f"[WebSocketManager] Order WS disconnect for user {self.user_id}: {e}. Retrying in {backoff}s...")
+                logger.warning(
+                    f"[WebSocketManager] Order WS disconnect for user {self.user_id}: "
+                    f"{e}. Retrying in {backoff}s..."
+                )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30)
 

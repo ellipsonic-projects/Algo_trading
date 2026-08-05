@@ -108,8 +108,8 @@ exports.connect = async (req, res) => {
                 totp
             });
         } catch (err) {
-            console.error('[BrokerController] Onboarding FastAPI call failed');
-            return res.status(401).json({ status: 'fail', message: 'Broker authentication failed' });
+            console.error('[BrokerController] Onboarding FastAPI call failed:', err.message);
+            return res.status(401).json({ status: 'fail', message: `Broker authentication failed: ${err.message}` });
         }
 
         if (!loginRes || !loginRes.status || !loginRes.jwt_token) {
@@ -194,8 +194,8 @@ exports.reauthenticate = async (req, res) => {
                 totp
             });
         } catch (err) {
-            console.error('[BrokerController] Reauthentication FastAPI call failed');
-            return res.status(401).json({ status: 'fail', message: 'Broker reauthentication failed' });
+            console.error('[BrokerController] Reauthentication FastAPI call failed:', err.message);
+            return res.status(401).json({ status: 'fail', message: `Broker reauthentication failed: ${err.message}` });
         }
 
         if (!loginRes || !loginRes.status || !loginRes.jwt_token) {
@@ -268,7 +268,7 @@ exports.testConnection = async (req, res) => {
                 totp
             });
         } catch (err) {
-            return res.status(401).json({ status: 'fail', message: 'Connection test failed' });
+            return res.status(401).json({ status: 'fail', message: `Connection test failed: ${err.message}` });
         }
 
         if (loginRes && loginRes.status) {

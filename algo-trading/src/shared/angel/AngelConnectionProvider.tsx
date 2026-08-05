@@ -14,7 +14,9 @@ type AngelConnectionContextValue = {
   disconnect: () => Promise<void>
 }
 
-const API_BASE = 'http://localhost:5000/api/v1/broker/angel'
+import { API_BASE } from '../../config/env'
+
+const API_BASE_BROKER = `${API_BASE}/api/v1/broker/angel`
 
 async function apiRequest<T>(path: string, method: string, body?: unknown): Promise<T> {
   const token = localStorage.getItem('jwt')
@@ -22,7 +24,7 @@ async function apiRequest<T>(path: string, method: string, body?: unknown): Prom
   if (token) {
     headers['Authorization'] = `Bearer ${token}`
   }
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetch(`${API_BASE_BROKER}${path}`, {
     method,
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -110,7 +112,7 @@ export function AngelConnectionProvider({ children }: { children: ReactNode }) {
         if (token) {
           headers['Authorization'] = `Bearer ${token}`
         }
-        const res = await fetch('http://localhost:5000/api/v1/broker/angel/status', { headers, credentials: 'include' })
+        const res = await fetch(`${API_BASE_BROKER}/status`, { headers, credentials: 'include' })
         if (res.ok) {
           const json = await res.json() as { status: string, data: { sessionStatus: string; hasProfile: boolean } }
           if (cancelled) return
@@ -143,7 +145,7 @@ export function AngelConnectionProvider({ children }: { children: ReactNode }) {
         if (token) {
           headers['Authorization'] = `Bearer ${token}`
         }
-        const res = await fetch('http://localhost:5000/api/v1/broker/angel/status', { headers, credentials: 'include' })
+        const res = await fetch(`${API_BASE_BROKER}/status`, { headers, credentials: 'include' })
         if (res.ok) {
           const json = await res.json() as { status: string, data: { sessionStatus: string; hasProfile: boolean } }
           if (cancelled) return

@@ -17,7 +17,9 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const API_BASE = 'http://localhost:5000/api/v1/users';
+import { API_BASE } from '../config/env';
+
+const API_BASE_USERS = `${API_BASE}/api/v1/users`;
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const [user, setUser] = useState<User | null>(null);
@@ -36,7 +38,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         const fetchMe = async () => {
             try {
-                const res = await fetch(`${API_BASE}/me`, {
+                const res = await fetch(`${API_BASE_USERS}/me`, {
                     headers: { 'Content-Type': 'application/json' },
                     credentials: 'include'
                 });
@@ -54,7 +56,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }, [location.pathname]);
 
     const login = async (email: string, password: string) => {
-        const res = await fetch(`${API_BASE}/login`, {
+        const res = await fetch(`${API_BASE_USERS}/login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email, password }),
@@ -75,7 +77,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     const register = async (email: string, password: string) => {
-        const res = await fetch(`${API_BASE}/register`, {
+        const res = await fetch(`${API_BASE_USERS}/register`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email, password }),
@@ -99,7 +101,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     const logout = async () => {
-        await fetch(`${API_BASE}/logout`, {
+        await fetch(`${API_BASE_USERS}/logout`, {
             method: 'POST',
             credentials: 'include'
         });

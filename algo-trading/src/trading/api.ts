@@ -1,16 +1,18 @@
+import { API_BASE } from '../config/env';
+
 function getUrl(path: string): string {
   if (path.startsWith('/market/index-ltp')) {
-    return `http://localhost:5000/api/v1/chart/index-ltp${path.replace('/market/index-ltp', '')}`;
+    return `${API_BASE}/api/v1/chart/index-ltp${path.replace('/market/index-ltp', '')}`;
   }
   if (path === '/angel/margins') {
-    return `http://localhost:5000/api/v1/chart/margins`;
+    return `${API_BASE}/api/v1/chart/margins`;
   }
   // Python Angel One Wrapper routes proxied via Node.js broker routing
   if (path.startsWith('/market') || path.startsWith('/angel') || path.startsWith('/instruments')) {
-    return `http://localhost:5000/api/v1/broker/angel${path}`;
+    return `${API_BASE}/api/v1/broker/angel${path}`;
   }
   // Node.js Main Backend routes (/chart, /trades, /strategies, /users, etc.)
-  return `http://localhost:5000/api/v1${path}`;
+  return `${API_BASE}/api/v1${path}`;
 }
 
 // Only force-redirect to /login when the user is on an authenticated page.

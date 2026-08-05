@@ -19,14 +19,9 @@ import { API_BASE } from '../../config/env'
 const API_BASE_BROKER = `${API_BASE}/api/v1/broker/angel`
 
 async function apiRequest<T>(path: string, method: string, body?: unknown): Promise<T> {
-  const token = localStorage.getItem('jwt')
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`
-  }
   const res = await fetch(`${API_BASE_BROKER}${path}`, {
     method,
-    headers,
+    headers: { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
     credentials: 'include'
   })
@@ -107,12 +102,7 @@ export function AngelConnectionProvider({ children }: { children: ReactNode }) {
 
     const checkAndConnect = async () => {
       try {
-        const token = localStorage.getItem('jwt')
-        const headers: Record<string, string> = {}
-        if (token) {
-          headers['Authorization'] = `Bearer ${token}`
-        }
-        const res = await fetch(`${API_BASE_BROKER}/status`, { headers, credentials: 'include' })
+        const res = await fetch(`${API_BASE_BROKER}/status`, { credentials: 'include' })
         if (res.ok) {
           const json = await res.json() as { status: string, data: { sessionStatus: string; hasProfile: boolean } }
           if (cancelled) return
@@ -140,12 +130,7 @@ export function AngelConnectionProvider({ children }: { children: ReactNode }) {
 
     const intervalId = setInterval(async () => {
       try {
-        const token = localStorage.getItem('jwt')
-        const headers: Record<string, string> = {}
-        if (token) {
-          headers['Authorization'] = `Bearer ${token}`
-        }
-        const res = await fetch(`${API_BASE_BROKER}/status`, { headers, credentials: 'include' })
+        const res = await fetch(`${API_BASE_BROKER}/status`, { credentials: 'include' })
         if (res.ok) {
           const json = await res.json() as { status: string, data: { sessionStatus: string; hasProfile: boolean } }
           if (cancelled) return

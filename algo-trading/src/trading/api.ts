@@ -37,13 +37,9 @@ async function parseError(res: Response): Promise<string> {
 export async function apiGet<T>(path: string): Promise<T> {
   const url = getUrl(path);
 
-  const token = localStorage.getItem('jwt');
-  const headers: Record<string, string> = {};
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-
-  const res = await fetch(url, { headers, credentials: 'include' });
+  // Auth is cookie-based — the browser sends the HttpOnly jwt cookie
+  // automatically on every request via credentials: 'include'.
+  const res = await fetch(url, { credentials: 'include' });
   if (res.status === 401) {
     redirect401();
   }
@@ -54,15 +50,9 @@ export async function apiGet<T>(path: string): Promise<T> {
 export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   const url = getUrl(path);
 
-  const token = localStorage.getItem('jwt');
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-
   const res = await fetch(url, {
     method: 'POST',
-    headers,
+    headers: { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
     credentials: 'include'
   });

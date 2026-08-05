@@ -31,7 +31,8 @@ router.all('/{*path}', async (req, res) => {
         // Extract original request path relative to /api/v1/broker/angel
         const path = req.params[0] || req.path;
         const query = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
-        const url = `http://localhost:8000${path}${query}`;
+        const apiBase = process.env.ANGEL_ONE_API_BASE || 'http://localhost:8000';
+        const url = `${apiBase}${path}${query}`;
 
         const internalSecret = process.env.ANGEL_ONE_INTERNAL_SECRET || '';
         const options = {

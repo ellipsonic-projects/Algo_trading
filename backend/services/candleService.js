@@ -1,6 +1,6 @@
 const candleCache = require('./candleCache');
 
-const ANGEL_API_URL = process.env.ANGEL_API_URL || 'http://localhost:8000';
+const ANGEL_API_URL = process.env.ANGEL_ONE_API_BASE || process.env.ANGEL_API_URL || 'http://localhost:8000';
 
 const INDEX_SPOT_TOKENS = {
   SENSEX: { exchange: 'BSE', symboltoken: '99919000' },

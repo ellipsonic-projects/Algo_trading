@@ -2,7 +2,7 @@
 
 This repository contains a full-stack Algorithmic Trading application integrated with the **Angel One SmartAPI**.
 
-The application is structured into three main directories/services:
+The application is structured into 3 main directories/services:
 
 1. **`backend`**: Node.js Express server with MongoDB (stores users, user strategies, and mock/live trade execution histories).
 2. **`angel-one`**: Python FastAPI microservice (handles direct SmartAPI connection, fetches real-time quotes, checks margins, and executes trades).

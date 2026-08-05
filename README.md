@@ -1,6 +1,6 @@
 # Angel One Algorithmic Trading Platform
 
-This repository contains a full-stack Algorithmic Trading application integrate with the **Angel One SmartAPI**.
+This repository contains a full-stack Algorithmic Trading application integrated with the **Angel One SmartAPI**.
 
 The application is structured into three main directories/services:
 

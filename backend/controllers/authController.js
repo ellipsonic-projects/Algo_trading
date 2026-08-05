@@ -9,15 +9,17 @@ const signToken = (id) => {
 
 const createSendToken = (user, statusCode, res, extraData = {}) => {
     const token = signToken(user._id);
+    const isProduction = process.env.NODE_ENV === 'production';
     const cookieOptions = {
         expires: new Date(
             Date.now() + process.env.JWT_COOKIE_EXPIRES_IN * 24 * 60 * 60 * 1000
         ),
         httpOnly: true,
-        // Issue #8 FIX: SameSite:'Strict' prevents the cookie from being sent
-        // on cross-site requests, blocking CSRF attacks.
-        sameSite: 'Strict',
-        secure: process.env.NODE_ENV === 'production',
+        // In production the frontend (Vercel) and backend (Render) are on different
+        // domains, so SameSite must be 'None' + Secure to allow the cookie to be
+        // sent cross-origin. In local dev, 'Strict' is sufficient and more secure.
+        sameSite: isProduction ? 'None' : 'Strict',
+        secure: isProduction,
         path: '/'
     };
 
@@ -105,10 +107,11 @@ exports.logout = (req, res) => {
     // IMPORTANT: clearCookie options MUST exactly match the options used when the cookie
     // was set (in createSendToken). A mismatched sameSite/secure causes the browser to
     // treat it as a different cookie and NOT clear it.
+    const isProduction = process.env.NODE_ENV === 'production';
     res.clearCookie('jwt', {
         httpOnly: true,
-        sameSite: 'Strict',
-        secure: process.env.NODE_ENV === 'production',
+        sameSite: isProduction ? 'None' : 'Strict',
+        secure: isProduction,
         path: '/'
     });
     res.status(200).json({ status: 'success' });

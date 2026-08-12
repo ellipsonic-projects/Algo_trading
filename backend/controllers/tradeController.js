@@ -5,16 +5,17 @@ exports.recordTrade = async (req, res) => {
     try {
         const { strategyName, index, premium, qty, buyPrice } = req.body;
 
-        // 1. Find strategy
-        const strategy = await Strategy.findOne({ name: strategyName });
+        // 1. Find strategy scoped to authenticated user
+        const strategy = await Strategy.findOne({ name: strategyName, userId: req.user._id });
         if (!strategy) {
             return res.status(404).json({ status: 'fail', message: 'Strategy not found' });
         }
 
-        // 2. Create trade log
+        // 2. Create trade log with default IN_POSITION / ENTRY_PENDING status
         const trade = await Trade.create({
             userId: req.user._id,
             strategyId: strategy._id,
+            status: 'IN_POSITION',
             index,
             premium,
             qty,
@@ -40,17 +41,18 @@ exports.updateTradeExit = async (req, res) => {
         // another user's trade by knowing its ObjectId.
         const trade = await Trade.findOne({ _id: tradeId, userId: req.user._id });
         if (!trade) {
-            // Return 404 regardless of whether the trade doesn't exist or belongs to
-            // another user — avoid leaking existence information.
             return res.status(404).json({ status: 'fail', message: 'Trade not found' });
         }
 
-        // Calculate PNL
+        // Calculate PNL and estimated fee
         const pnl = (exitPrice - trade.buyPrice) * trade.qty;
+        const charges = 60; // Rs. 60 flat brokerage + STT estimate
 
         trade.exitPrice = exitPrice;
         trade.exitReason = exitReason;
         trade.pnl = pnl;
+        trade.charges = charges;
+        trade.status = 'CLOSED';
 
         await trade.save();
 
@@ -68,7 +70,7 @@ exports.updateTradeExit = async (req, res) => {
 exports.getLatestOpenTrade = async (req, res) => {
     try {
         const { strategyName } = req.query;
-        const strategy = await Strategy.findOne({ name: strategyName });
+        const strategy = await Strategy.findOne({ name: strategyName, userId: req.user._id });
 
         if (!strategy) {
             return res.status(404).json({ status: 'fail', message: 'Strategy not found' });
@@ -77,7 +79,10 @@ exports.getLatestOpenTrade = async (req, res) => {
         const trade = await Trade.findOne({
             userId: req.user._id,
             strategyId: strategy._id,
-            exitPrice: { $exists: false }
+            $or: [
+                { status: { $in: ['ENTRY_PENDING', 'IN_POSITION', 'EXIT_PENDING'] } },
+                { exitPrice: { $exists: false } }
+            ]
         }).sort({ createdAt: -1 });
 
         res.status(200).json({
@@ -92,8 +97,10 @@ exports.getLatestOpenTrade = async (req, res) => {
 };
 exports.getStats = async (req, res) => {
     try {
+        const mongoose = require('mongoose');
+        const userObjId = new mongoose.Types.ObjectId(req.user._id);
         const stats = await Trade.aggregate([
-            { $match: { userId: req.user._id, pnl: { $exists: true } } },
+            { $match: { userId: userObjId, pnl: { $exists: true } } },
             {
                 $group: {
                     _id: null,

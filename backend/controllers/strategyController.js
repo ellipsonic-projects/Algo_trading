@@ -80,7 +80,7 @@ exports.startStrategy = async (req, res) => {
 exports.stopStrategy = async (req, res) => {
     try {
         const { strategyName } = req.params;
-        const status = strategyEngine.stopStrategy(req.user._id.toString(), strategyName);
+        const status = await strategyEngine.stopStrategy(req.user._id.toString(), strategyName);
         res.status(200).json({
             status: 'success',
             data: status

@@ -70,13 +70,15 @@ class SmartStreamPool extends EventEmitter {
         return;
       }
 
-      // Auto-reconnect after 5 seconds if connection was not explicitly deleted
-      setTimeout(() => {
-        const conn = this.subscribedTokens.get(uid);
-        if (conn && !this.connections.has(uid)) {
-          this.connect(uid);
-        }
-      }, 5000);
+      // Auto-reconnect after 5 seconds only if subscriptions exist and connection was not explicitly deleted
+      if (this.subscribedTokens.has(uid)) {
+        setTimeout(() => {
+          const conn = this.subscribedTokens.get(uid);
+          if (conn && !this.connections.has(uid)) {
+            this.connect(uid);
+          }
+        }, 5000);
+      }
     };
   }
 
@@ -153,12 +155,12 @@ class SmartStreamPool extends EventEmitter {
 
   disconnect(userId) {
     const uid = String(userId);
+    this.subscribedTokens.delete(uid);
     const ws = this.connections.get(uid);
     if (ws) {
-      ws.close();
       this.connections.delete(uid);
+      ws.close();
     }
-    this.subscribedTokens.delete(uid);
   }
 }
 

@@ -585,7 +585,7 @@ async def websocket_broker_stream(
 
     loop = asyncio.get_running_loop()
     from app.services.websocket_manager import UserWebSocketConnection
-    conn = UserWebSocketConnection(userId, websocket, loop)
+    conn = UserWebSocketConnection(uid_header, websocket, loop)
     await conn.start(jwt_token, feed_token, client_code, api_key)
 
     try:
@@ -605,8 +605,8 @@ async def websocket_broker_stream(
                 conn.unsubscribe(int(exchange_type), tokens)
 
     except WebSocketDisconnect:
-        logger.info(f"[FastAPI WS] Internal socket disconnected for user: {userId}")
+        logger.info(f"[FastAPI WS] Internal socket disconnected for user: {uid_header}")
     except Exception as e:
-        logger.error(f"[FastAPI WS] Internal connection error for user {userId}: {e}")
+        logger.error(f"[FastAPI WS] Internal connection error for user {uid_header}: {e}")
     finally:
         await conn.stop()

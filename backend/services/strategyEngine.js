@@ -4,7 +4,18 @@ const contractManager = require('./contractManager');
 const marketDataService = require('./marketDataService');
 const orderUpdateService = require('./orderUpdateService');
 const marketSessionManager = require('./marketSessionManager');
+const distributedLock = require('./distributedLock');
+const riskService = require('./riskService');
+const { randomUUID } = require('crypto');
 marketSessionManager.startMonitoring();
+
+/**
+ * Unique identifier for this process instance.
+ * Used as part of distributed lock ownerIds so that two server replicas
+ * running for the same user cannot accidentally share a re-entrant lock.
+ */
+const PROCESS_INSTANCE_ID = randomUUID();
+
 
 const strategyRegistry = require('./strategyRegistry');
 const indicators = require('../trading/indicators');
@@ -19,7 +30,7 @@ const INDEX_CONFIG = {
 };
 // Shared secret sent as X-Internal-Token header on every call to the Python service.
 // Must match INTERNAL_API_SECRET in angel-one/.env.
-const ANGEL_ONE_INTERNAL_SECRET = process.env.ANGEL_ONE_INTERNAL_SECRET || '';
+const ANGEL_ONE_INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET || process.env.ANGEL_ONE_INTERNAL_SECRET || '';
 
 
 // Helper: HTTP request to Python Angel One Wrapper
@@ -328,19 +339,36 @@ class SingleStrategyRunner {
 
   async recoverTrade() {
     try {
-      // Issue #10 FIX: scope strategy lookup to this.userId so recovery cannot
-      // cross user boundaries (previously used only name, no userId predicate).
+      // Scope strategy lookup strictly to this.userId for tenant isolation
       const strategyDoc = await Strategy.findOne({ name: this.strategyName, userId: this.userId });
       if (!strategyDoc) return;
 
       const trade = await Trade.findOne({
         userId: this.userId,
         strategyId: strategyDoc._id,
-        exitPrice: { $exists: false }
+        $or: [
+          { status: { $in: ['ENTRY_PENDING', 'IN_POSITION', 'EXIT_PENDING'] } },
+          { exitPrice: { $exists: false } }
+        ]
       }).sort({ createdAt: -1 });
 
       if (trade) {
         let isStillOpenOnBroker = true;
+
+        if (trade.status === 'ENTRY_PENDING' && trade.orderId && this.config.liveTradingConsent) {
+          try {
+            const ob = await callAngelApi('/angel/orderbook', this.userId);
+            const order = (ob?.data || []).find(o => String(o.orderid) === String(trade.orderId));
+            if (order && (order.status === 'rejected' || order.status === 'cancelled' || order.orderstatus === 'rejected')) {
+              trade.status = 'REJECTED';
+              await trade.save();
+              return;
+            }
+          } catch (e) {
+            // Ignore orderbook read error during startup recovery
+          }
+        }
+
         if (this.config.liveTradingConsent) {
           try {
             const posRes = await callAngelApi('/angel/positions', this.userId);
@@ -356,6 +384,9 @@ class SingleStrategyRunner {
         }
 
         if (isStillOpenOnBroker) {
+          trade.status = 'IN_POSITION';
+          await trade.save();
+
           this.activeTradeId = trade._id.toString();
           this.activeTradePremium = trade.premium;
           this.entryPrice = trade.buyPrice;
@@ -385,10 +416,13 @@ class SingleStrategyRunner {
           this.log(`Recovered active open trade for ${trade.premium} @ ₹${trade.buyPrice}`);
           this.startMonitorLoop();
         } else {
-          this.log(`Stale MongoDB trade ${trade.premium} found closed on broker. Cleaning up DB...`);
+          this.log(`Stale MongoDB trade ${trade.premium} found closed on broker. Reconciling to CLOSED in DB...`);
+          trade.status = 'CLOSED';
           trade.exitPrice = trade.buyPrice;
           trade.exitReason = 'RECOVERY_CLEANUP';
           trade.pnl = 0;
+          trade.charges = 60;
+          trade.reconciled = true;
           await trade.save();
         }
       }
@@ -640,6 +674,20 @@ class SingleStrategyRunner {
   }
 
   async executeEntry(contract, signalPrice, trendSide, timingInfo = {}) {
+    if (!this.isRunning || this.state === 'IN_POSITION' || this.state === 'ENTRY_PENDING') {
+      return;
+    }
+
+    // Include PROCESS_INSTANCE_ID so two server replicas for the same user
+    // cannot accidentally re-acquire each other's active entry lock.
+    const lockKey = `entry_${this.userId}_${this.strategyName}`;
+    const ownerId = `${String(this.userId)}_${PROCESS_INSTANCE_ID}`;
+    const acquired = await distributedLock.acquireLock(lockKey, ownerId, 15000);
+    if (!acquired) {
+      this.log('Concurrent entry lock active. Skipping duplicate entry trigger.');
+      return;
+    }
+
     const signalGeneratedMs = timingInfo.signalGeneratedMs || Date.now();
     const candleDetectedTs = timingInfo.candleDetectedTs || formatPrecisionTime(new Date(signalGeneratedMs));
     const signalGeneratedTs = timingInfo.signalGeneratedTs || formatPrecisionTime(new Date(signalGeneratedMs));
@@ -653,8 +701,41 @@ class SingleStrategyRunner {
     let buySentMs = Date.now();
     let buySentTs = formatPrecisionTime(new Date(buySentMs));
 
-    if (this.config.liveTradingConsent) {
-      try {
+    try {
+      // Find strategy document
+      let strategyDoc = await Strategy.findOne({ name: this.strategyName, userId: this.userId });
+      if (!strategyDoc) {
+        strategyDoc = await Strategy.create({ name: this.strategyName, userId: this.userId });
+      }
+
+      // Pre-trade financial safety & risk validation
+      await riskService.validateEntry({
+        userId: this.userId,
+        strategyId: strategyDoc._id,
+        strategyName: this.strategyName,
+        underlying: this.config.underlying || 'SENSEX',
+        quantity: qty,
+        isLive: !!this.config.liveTradingConsent,
+        config: this.config
+      });
+
+      this.state = 'ENTRY_PENDING';
+
+      // Create persistent Trade in ENTRY_PENDING state
+      const tradeDoc = await Trade.create({
+        userId: this.userId,
+        strategyId: strategyDoc._id,
+        status: 'ENTRY_PENDING',
+        index: this.config.underlying || 'SENSEX',
+        premium: contract.tradingsymbol,
+        qty,
+        buyPrice: signalPrice,
+        symbolToken: contract.symboltoken,
+        exchange: contract.exchange
+      });
+      this.activeTradeId = tradeDoc._id.toString();
+
+      if (this.config.liveTradingConsent) {
         this.log(`BUY request sent: ${buySentTs}`);
         const sendStartMs = Date.now();
         const orderRes = await callAngelApi('/angel/orders/simple', this.userId, 'POST', {
@@ -672,89 +753,125 @@ class SingleStrategyRunner {
 
         const orderId = orderRes?.item?.response?.data?.orderid || orderRes?.item?.response?.orderid;
         this.activeOrderId = orderId || null;
-        if (orderId) {
-          for (let i = 0; i < 4; i++) {
-            await new Promise(r => setTimeout(r, 1000));
-            const ob = await callAngelApi('/angel/orderbook', this.userId);
-            const order = (ob?.data || []).find(o => String(o.orderid) === String(orderId));
-            if (order && (order.status === 'complete' || order.status === 'executed' || order.orderstatus === 'complete')) {
+
+        if (!orderId) {
+          tradeDoc.status = 'REJECTED';
+          await tradeDoc.save();
+          this.state = this.strategyName === '5minBreakout' ? 'WAITING' : 'SCANNING';
+          this.activeTradeId = null;
+          throw new Error('Broker returned empty orderId during BUY placement');
+        }
+
+        tradeDoc.orderId = orderId;
+        await tradeDoc.save();
+
+        // Reconcile order fill confirmation: orderbook polling with fallback
+        let fillConfirmed = false;
+        for (let i = 0; i < 5; i++) {
+          await new Promise(r => setTimeout(r, 1000));
+          const ob = await callAngelApi('/angel/orderbook', this.userId);
+          const order = (ob?.data || []).find(o => String(o.orderid) === String(orderId));
+          if (order) {
+            const status = (order.status || order.orderstatus || '').toLowerCase();
+            if (status === 'complete' || status === 'executed') {
               const execPrice = parseFloat(order.averageprice || order.price);
               if (!isNaN(execPrice) && execPrice > 0) {
                 actualPrice = execPrice;
+                fillConfirmed = true;
                 const completedMs = Date.now();
                 const completedTs = formatPrecisionTime(new Date(completedMs));
                 this.log(`Order completed: ${completedTs}`);
                 break;
               }
+            } else if (status === 'rejected' || status === 'cancelled') {
+              tradeDoc.status = 'REJECTED';
+              await tradeDoc.save();
+              this.state = this.strategyName === '5minBreakout' ? 'WAITING' : 'SCANNING';
+              this.activeTradeId = null;
+              this.activeOrderId = null;
+              this.log(`Broker BUY rejected: ${order.text || status}`);
+              return;
             }
           }
         }
-      } catch (err) {
-        // Issue #3 FIX: a failed live BUY now aborts entry entirely.
-        // Previously execution fell through to IN_POSITION regardless, creating
-        // a fictitious position and later firing an unmatched sell order.
-        console.error(`[${this.strategyName}] LIVE BUY Order failed:`, err.message);
-        this.log(`ENTRY ABORTED: broker placement failed — ${err.message}`);
-        this.activeOrderId = null;
-        return; // <-- abort; do NOT transition to IN_POSITION
+
+        if (!fillConfirmed) {
+          // Check broker position
+          const posRes = await callAngelApi('/angel/positions', this.userId);
+          const posList = Array.isArray(posRes?.data) ? posRes.data : [];
+          const held = posList.find(p => (contract.symboltoken && String(p.symboltoken) === String(contract.symboltoken)) || p.tradingsymbol === contract.tradingsymbol);
+          const netQty = held ? parseInt(held.netqty || '0', 10) : 0;
+          if (netQty >= qty) {
+            fillConfirmed = true;
+            actualPrice = parseFloat(held.avgprice || held.buyavgprice) || signalPrice;
+          }
+        }
+
+        if (!fillConfirmed) {
+          tradeDoc.status = 'REJECTED';
+          await tradeDoc.save();
+          this.state = this.strategyName === '5minBreakout' ? 'WAITING' : 'SCANNING';
+          this.activeTradeId = null;
+          this.activeOrderId = null;
+          this.log('BUY order confirmation timed out. Aborting position entry.');
+          return;
+        }
+      } else {
+        // Paper trading simulation timing logging
+        this.log(`BUY request sent: ${buySentTs}`);
+        this.log(`Broker acknowledged: ${buySentTs}`);
+        this.log(`Order completed: ${buySentTs}`);
       }
-    } else {
-      // Paper trading simulation timing logging
-      this.log(`BUY request sent: ${buySentTs}`);
-      this.log(`Broker acknowledged: ${buySentTs}`);
-      this.log(`Order completed: ${buySentTs}`);
-    }
 
-    const confirmedMs = Date.now();
-    const confirmedTs = formatPrecisionTime(new Date(confirmedMs));
-    this.log(`Execution confirmed: ${confirmedTs}`);
+      const confirmedMs = Date.now();
+      const confirmedTs = formatPrecisionTime(new Date(confirmedMs));
+      this.log(`Execution confirmed: ${confirmedTs}`);
 
-    const totalLatencyMs = confirmedMs - signalGeneratedMs;
-    this.log(`Total execution latency: ${totalLatencyMs} ms`);
+      const totalLatencyMs = confirmedMs - signalGeneratedMs;
+      this.log(`Total execution latency: ${totalLatencyMs} ms`);
 
-    this.entryPrice = actualPrice;
-    this.activeTradePremium = contract.tradingsymbol;
-    this.activeTradeContract = contract;
-    this.state = 'IN_POSITION';
-    this.trend = trendSide;
+      // Update trade to IN_POSITION
+      tradeDoc.status = 'IN_POSITION';
+      tradeDoc.buyPrice = actualPrice;
+      await tradeDoc.save();
 
-    if (this.strategyName === '5minBreakout') {
-      const targetPoints = Number(this.config.targetPoints) || 20;
-      this.target = actualPrice + targetPoints;
-    } else if (this.strategyName === 'ModifiedHeikenAshi') {
-      const initialSlPoints = Number(this.config.initialSlPoints) || 30;
-      this.activeTrailingSl = actualPrice - initialSlPoints;
-    }
+      this.entryPrice = actualPrice;
+      this.activeTradePremium = contract.tradingsymbol;
+      this.activeTradeContract = contract;
+      this.state = 'IN_POSITION';
+      this.trend = trendSide;
 
-    this.log(`ENTRY ${contract.tradingsymbol} @ ₹${actualPrice}`);
-
-    // Record trade to MongoDB
-    const dbStartMs = Date.now();
-    try {
-      // Issue #6 FIX: scope strategy lookup to userId so one user's strategy
-      // record cannot be found or modified by another user's engine instance.
-      const strategyDoc = await Strategy.findOne({ name: this.strategyName, userId: this.userId });
-      if (strategyDoc) {
-        const tradeDoc = await Trade.create({
-          userId: this.userId,
-          strategyId: strategyDoc._id,
-          index: this.config.underlying || 'SENSEX',
-          premium: contract.tradingsymbol,
-          qty,
-          buyPrice: actualPrice,
-          orderId: this.activeOrderId || null,
-          symbolToken: contract.symboltoken,
-          exchange: contract.exchange
-        });
-        this.activeTradeId = tradeDoc._id.toString();
-        const dbEndMs = Date.now();
-        this.log(`Database update complete: ${formatPrecisionTime(new Date(dbEndMs))} (DB write delay: ${dbEndMs - dbStartMs}ms)`);
+      if (this.strategyName === '5minBreakout') {
+        const targetPoints = Number(this.config.targetPoints) || 20;
+        this.target = actualPrice + targetPoints;
+      } else if (this.strategyName === 'ModifiedHeikenAshi') {
+        const initialSlPoints = Number(this.config.initialSlPoints) || 30;
+        this.activeTrailingSl = actualPrice - initialSlPoints;
       }
+
+      this.log(`ENTRY ${contract.tradingsymbol} @ ₹${actualPrice}`);
+      this.startMonitorLoop();
+
     } catch (err) {
-      console.error(`[${this.strategyName}] Trade DB Record error:`, err.message);
+      console.error(`[${this.strategyName}] Entry execution error:`, err.message);
+      this.log(`ENTRY ERROR: ${err.message}`);
+      if (this.state === 'ENTRY_PENDING') {
+        // If Trade.create() succeeded before the error, mark the dangling
+        // ENTRY_PENDING record as REJECTED so the risk service does not
+        // permanently block future entry attempts for this strategy.
+        if (this.activeTradeId) {
+          try {
+            await Trade.findByIdAndUpdate(this.activeTradeId, { status: 'REJECTED' });
+          } catch (updateErr) {
+            console.error(`[${this.strategyName}] Failed to mark dangling ENTRY_PENDING trade as REJECTED:`, updateErr.message);
+          }
+        }
+        this.state = this.strategyName === '5minBreakout' ? 'WAITING' : 'SCANNING';
+        this.activeTradeId = null;
+      }
+    } finally {
+      await distributedLock.releaseLock(lockKey, ownerId);
     }
-
-    this.startMonitorLoop();
   }
 
   startMonitorLoop() {
@@ -863,10 +980,21 @@ class SingleStrategyRunner {
   }
 
   async executeExit(contract, price, exitReason) {
-    if (this.exitInProgress) {
-      this.log('Exit order execution already in progress. Skipping duplicate call.');
+    if (this.exitInProgress || this.state === 'EXIT_PENDING' || this.state === 'CLOSED') {
+      this.log('Exit order execution already in progress or closed. Skipping duplicate call.');
       return;
     }
+
+    // Include PROCESS_INSTANCE_ID so two server replicas for the same user
+    // cannot accidentally re-acquire each other's active exit lock.
+    const lockKey = `exit_${this.userId}_${this.strategyName}`;
+    const ownerId = `${String(this.userId)}_${PROCESS_INSTANCE_ID}`;
+    const acquired = await distributedLock.acquireLock(lockKey, ownerId, 20000);
+    if (!acquired) {
+      this.log('Concurrent exit lock active. Skipping duplicate exit trigger.');
+      return;
+    }
+
     this.exitInProgress = true;
     this.isExiting = true;
     this.lastExitAttemptTime = Date.now();
@@ -874,149 +1002,178 @@ class SingleStrategyRunner {
     const qty = this.config.quantity || 10;
     let exitSuccess = false;
 
-    if (this.config.liveTradingConsent && contract) {
-      try {
-        const orderRes = await callAngelApi('/angel/orders/simple', this.userId, 'POST', {
-          exchange: contract.exchange,
-          tradingsymbol: contract.tradingsymbol,
-          symboltoken: contract.symboltoken,
-          transactiontype: 'SELL',
-          producttype: 'CARRYFORWARD',
-          quantity: qty,
-          ordertype: 'MARKET'
-        });
-        const orderId = orderRes?.item?.response?.data?.orderid || orderRes?.item?.response?.orderid;
-        const brokerStatus = orderRes?.item?.response?.status;
-        const brokerError = orderRes?.item?.response?.error;
+    try {
+      // 1. Atomic DB state transition to EXIT_PENDING
+      if (this.activeTradeId) {
+        const updated = await Trade.findOneAndUpdate(
+          { _id: this.activeTradeId, status: 'IN_POSITION' },
+          { $set: { status: 'EXIT_PENDING' } },
+          { returnDocument: 'after' }
+        );
+        // If the DB record is not IN_POSITION, another replica has already started
+        // (or completed) this exit. Do NOT submit a second SELL order.
+        if (!updated) {
+          this.log('Trade already exiting or exited in database. Skipping duplicate exit.');
+          this.exitInProgress = false;
+          this.isExiting = false;
+          return;
+        }
+      }
+      this.state = 'EXIT_PENDING';
 
-        if (orderId) {
-          let handleOrderUpdate = null;
-          let fallbackTimer = null;
+      if (this.config.liveTradingConsent && contract) {
+        // 2. Pre-exit state check: verify open position on broker before submitting order
+        let brokerPositionOpen = true;
+        try {
+          const posRes = await callAngelApi('/angel/positions', this.userId);
+          const posList = Array.isArray(posRes?.data) ? posRes.data : [];
+          const held = posList.find(p => (contract.symboltoken && String(p.symboltoken) === String(contract.symboltoken)) || p.tradingsymbol === contract.tradingsymbol);
+          const netQty = held ? parseInt(held.netqty || '0', 10) : 0;
+          if (netQty <= 0) {
+            brokerPositionOpen = false;
+            this.log(`Broker position already zero (${contract.tradingsymbol} netQty: ${netQty}). Reconciling directly to CLOSED.`);
+            exitSuccess = true;
+          }
+        } catch (posErr) {
+          this.log(`Broker position check warning: ${posErr.message}. Proceeding with exit order.`);
+        }
 
-          const orderPromise = new Promise((resolve, reject) => {
-            handleOrderUpdate = (data, uid) => {
-              if (uid && uid !== String(this.userId)) return;
-              if (String(data.orderid) === String(orderId)) {
-                const status = (data.status || data.orderstatus || '').toLowerCase();
-                if (status === 'complete' || status === 'executed') {
-                  const execPrice = parseFloat(data.averageprice || data.price);
-                  resolve(execPrice > 0 ? execPrice : actualExitPx);
-                } else if (status === 'rejected' || status === 'cancelled') {
-                  reject(new Error(`Broker order was rejected or cancelled: ${data.text || status}`));
-                }
-              }
-            };
-
-            orderUpdateService.on('order:update', handleOrderUpdate);
-
-            fallbackTimer = setTimeout(async () => {
-              try {
-                console.log(`[${this.strategyName}] WS order confirmation timeout (5s) for ${orderId}. Checking orderbook fallback...`);
-                const ob = await callAngelApi('/angel/orderbook', this.userId);
-                const order = (ob?.data || []).find(o => String(o.orderid) === String(orderId));
-                if (order && (order.status === 'complete' || order.status === 'executed' || order.orderstatus === 'complete')) {
-                  const execPrice = parseFloat(order.averageprice || order.price);
-                  resolve(execPrice > 0 ? execPrice : actualExitPx);
-                } else if (order && (order.status === 'rejected' || order.status === 'cancelled' || order.orderstatus === 'rejected')) {
-                  reject(new Error(`Broker order was rejected or cancelled: ${order.text || order.status}`));
-                } else {
-                  reject(new Error('Order placed but confirmation timed out in orderbook fallback'));
-                }
-              } catch (err) {
-                reject(err);
-              }
-            }, 5000);
+        // 3. Submit SELL order only if position is still open on broker
+        if (brokerPositionOpen) {
+          const orderRes = await callAngelApi('/angel/orders/simple', this.userId, 'POST', {
+            exchange: contract.exchange,
+            tradingsymbol: contract.tradingsymbol,
+            symboltoken: contract.symboltoken,
+            transactiontype: 'SELL',
+            producttype: 'CARRYFORWARD',
+            quantity: qty,
+            ordertype: 'MARKET'
           });
 
-          try {
-            const confirmedPrice = await orderPromise;
-            actualExitPx = confirmedPrice;
-            exitSuccess = true;
-          } finally {
-            if (handleOrderUpdate) orderUpdateService.off('order:update', handleOrderUpdate);
-            if (fallbackTimer) clearTimeout(fallbackTimer);
-          }
-        } else if (brokerStatus === false && brokerError) {
-          const errStr = String(brokerError).toLowerCase();
-          if (errStr.includes('no holdings') || errStr.includes('position not found') || errStr.includes('insufficient quantity to sell') || errStr.includes('no open position')) {
-            this.log(`Rejection indicates position already closed: ${brokerError}. Cleaning up...`);
-            exitSuccess = true;
+          const orderId = orderRes?.item?.response?.data?.orderid || orderRes?.item?.response?.orderid;
+          const brokerStatus = orderRes?.item?.response?.status;
+          const brokerError = orderRes?.item?.response?.error;
+
+          if (orderId) {
+            if (this.activeTradeId) {
+              await Trade.findByIdAndUpdate(this.activeTradeId, { exitOrderId: orderId });
+            }
+
+            // Await WebSocket confirmation or fallback to orderbook reconciliation
+            let fillConfirmed = false;
+            for (let i = 0; i < 5; i++) {
+              await new Promise(r => setTimeout(r, 1000));
+              const ob = await callAngelApi('/angel/orderbook', this.userId);
+              const order = (ob?.data || []).find(o => String(o.orderid) === String(orderId));
+              if (order) {
+                const status = (order.status || order.orderstatus || '').toLowerCase();
+                if (status === 'complete' || status === 'executed') {
+                  const execPrice = parseFloat(order.averageprice || order.price);
+                  actualExitPx = execPrice > 0 ? execPrice : actualExitPx;
+                  fillConfirmed = true;
+                  exitSuccess = true;
+                  break;
+                } else if (status === 'rejected' || status === 'cancelled') {
+                  throw new Error(`Broker SELL order was rejected/cancelled: ${order.text || status}`);
+                }
+              }
+            }
+
+            if (!fillConfirmed) {
+              // Final check on positions
+              const posRes = await callAngelApi('/angel/positions', this.userId);
+              const posList = Array.isArray(posRes?.data) ? posRes.data : [];
+              const held = posList.find(p => (contract.symboltoken && String(p.symboltoken) === String(contract.symboltoken)) || p.tradingsymbol === contract.tradingsymbol);
+              const netQty = held ? parseInt(held.netqty || '0', 10) : 0;
+              if (netQty <= 0) {
+                exitSuccess = true;
+              } else {
+                throw new Error('SELL order placed but confirmation timed out in orderbook fallback');
+              }
+            }
+          } else if (brokerStatus === false && brokerError) {
+            const errStr = String(brokerError).toLowerCase();
+            if (errStr.includes('no holdings') || errStr.includes('position not found') || errStr.includes('insufficient quantity to sell') || errStr.includes('no open position')) {
+              this.log(`Rejection indicates position already closed: ${brokerError}. Cleaning up...`);
+              exitSuccess = true;
+            } else {
+              throw new Error(`Broker rejected exit order: ${brokerError}`);
+            }
           } else {
-            throw new Error(`Broker rejected order: ${brokerError}`);
+            throw new Error('SmartAPI returned empty response during exit order');
           }
-        } else {
-          throw new Error('SmartAPI returned empty or failed response during order placement');
         }
-      } catch (err) {
-        this.exitRetryCount++;
-        this.lastExitError = err.message;
-        this.log(`LIVE SELL failed: ${err.message}. Retries: ${this.exitRetryCount}`);
-        this.exitInProgress = false;
-        this.isExiting = false;
-        return;
+      } else {
+        exitSuccess = true;
       }
-    } else {
-      exitSuccess = true;
-    }
 
-    if (exitSuccess) {
-      this.log(`EXIT ${contract ? contract.tradingsymbol : ''} @ ₹${actualExitPx} (${exitReason})`);
+      if (exitSuccess) {
+        this.log(`EXIT ${contract ? contract.tradingsymbol : ''} @ ₹${actualExitPx} (${exitReason})`);
 
-      if (this.activeTradeId) {
-        try {
+        if (this.activeTradeId) {
           const trade = await Trade.findById(this.activeTradeId);
           if (trade) {
             const pnl = (actualExitPx - trade.buyPrice) * trade.qty;
+            const charges = 60;
             trade.exitPrice = actualExitPx;
             trade.exitReason = exitReason;
             trade.pnl = pnl;
+            trade.charges = charges;
+            trade.status = 'CLOSED';
+            trade.reconciled = true;
             await trade.save();
             this.lastCompletedTrade = trade.toObject();
           }
-        } catch (err) {
-          console.error(`[${this.strategyName}] Trade exit update DB error:`, err.message);
+        }
+
+        this.activeTradeId = null;
+        this.activeTradePremium = null;
+        this.entryPrice = null;
+        this.activeTradeContract = null;
+        this.activeTrailingSl = null;
+        this.stopLoss = null;
+        this.target = null;
+        this.rangeSide = null;
+        this.trend = 'NEUTRAL';
+
+        this.exitInProgress = false;
+        this.isExiting = false;
+        this.exitTriggered = false;
+        this.exitReasonStored = null;
+        this.exitRetryCount = 0;
+        this.lastExitAttemptTime = 0;
+        this.lastExitError = null;
+
+        if (this.monitorInterval) {
+          clearInterval(this.monitorInterval);
+          this.monitorInterval = null;
+        }
+
+        // Cooldown check
+        let cooldownMinutes = 0;
+        if (this.strategyName === '5minBreakout') {
+          cooldownMinutes = 1;
+        } else {
+          if (exitReason === 'SL') cooldownMinutes = 4;
+          else if (exitReason === 'Target' || exitReason === 'Trailing SL') cooldownMinutes = 2;
+        }
+
+        if (cooldownMinutes > 0) {
+          this.cooldownUntil = Date.now() + (cooldownMinutes * 60 * 1000);
+          this.state = 'COOLDOWN';
+          this.log(`Entering cooldown for ${cooldownMinutes} min`);
+        } else {
+          this.state = this.strategyName === '5minBreakout' ? 'WAITING' : 'SCANNING';
         }
       }
-
-      this.activeTradeId = null;
-      this.activeTradePremium = null;
-      this.entryPrice = null;
-      this.activeTradeContract = null;
-      this.activeTrailingSl = null;
-      this.stopLoss = null;
-      this.target = null;
-      this.rangeSide = null;
-      this.trend = 'NEUTRAL';
-
+    } catch (err) {
+      this.exitRetryCount++;
+      this.lastExitError = err.message;
+      this.log(`LIVE SELL failed: ${err.message}. Retries: ${this.exitRetryCount}`);
       this.exitInProgress = false;
       this.isExiting = false;
-      this.exitTriggered = false;
-      this.exitReasonStored = null;
-      this.exitRetryCount = 0;
-      this.lastExitAttemptTime = 0;
-      this.lastExitError = null;
-
-      if (this.monitorInterval) {
-        clearInterval(this.monitorInterval);
-        this.monitorInterval = null;
-      }
-
-      // Cooldown check
-      let cooldownMinutes = 0;
-      if (this.strategyName === '5minBreakout') {
-        cooldownMinutes = 1;
-      } else {
-        if (exitReason === 'SL') cooldownMinutes = 4;
-        else if (exitReason === 'Target' || exitReason === 'Trailing SL') cooldownMinutes = 2;
-      }
-
-      if (cooldownMinutes > 0) {
-        this.cooldownUntil = Date.now() + (cooldownMinutes * 60 * 1000);
-        this.state = 'COOLDOWN';
-        this.log(`Entering cooldown for ${cooldownMinutes} min`);
-      } else {
-        this.state = this.strategyName === '5minBreakout' ? 'WAITING' : 'SCANNING';
-      }
+    } finally {
+      await distributedLock.releaseLock(lockKey, ownerId);
     }
   }
 
@@ -1107,16 +1264,30 @@ class StrategyEngineManager {
     if (runner.isRunning) {
       throw new Error('Strategy is already running.');
     }
+
+    // Persist active strategy state in MongoDB for resilience and restart recovery
+    await Strategy.findOneAndUpdate(
+      { userId, name: strategyName },
+      { $set: { isActive: true, config: config || {}, lastStartedAt: new Date() } },
+      { upsert: true, returnDocument: 'after' }
+    );
+
     await runner.start(config, userId);
     return runner.getStatus();
   }
 
-  stopStrategy(userId, strategyName) {
+  async stopStrategy(userId, strategyName) {
     const key = `${userId}_${strategyName}`;
     const runner = this.getRunner(key);
     // Issue #9 FIX: stop() throws if a position is open. Surface the error
     // back to the caller (strategyController) so the API can return a 409.
     runner.stop();
+
+    await Strategy.findOneAndUpdate(
+      { userId, name: strategyName },
+      { $set: { isActive: false, lastStoppedAt: new Date() } }
+    );
+
     return runner.getStatus();
   }
 
@@ -1133,7 +1304,7 @@ class StrategyEngineManager {
     return runner.getStatus();
   }
 
-  stopAllStrategiesForUser(userId) {
+  async stopAllStrategiesForUser(userId) {
     const uid = String(userId);
     console.log(`[StrategyEngine] Stopping all running strategies for user: ${uid}`);
     for (const [key, runner] of this.runners.entries()) {
@@ -1144,6 +1315,15 @@ class StrategyEngineManager {
           console.error(`[StrategyEngine] Error force-stopping strategy ${key}:`, err.message);
         }
       }
+    }
+
+    try {
+      await Strategy.updateMany(
+        { userId: uid },
+        { $set: { isActive: false, lastStoppedAt: new Date() } }
+      );
+    } catch (err) {
+      console.error(`[StrategyEngine] Error updating Strategy.isActive on stopAll for user ${uid}:`, err.message);
     }
   }
 
@@ -1163,7 +1343,7 @@ class StrategyEngineManager {
       }
       
       // 3. Force stop all strategies cleanly for this user
-      this.stopAllStrategiesForUser(uid);
+      await this.stopAllStrategiesForUser(uid);
 
       // 4. Disconnect active smartStream connection for this user
       const smartStream = require('./smartStream');
@@ -1174,22 +1354,51 @@ class StrategyEngineManager {
       console.error('[StrategyEngine] Error handling session expiry:', err.message);
     }
   }
+
+  async autoBootAll() {
+    return autoBootBrokerStreams(true);
+  }
 }
 
-// Auto-boot smartStream connections for connected users on startup
+// Auto-boot smartStream connections and active strategies on startup
 const BrokerConnection = require('../models/BrokerConnection');
 const smartStream = require('./smartStream');
 
-async function autoBootBrokerStreams() {
+async function autoBootBrokerStreams(force = false) {
+  if (!force && process.env.NODE_ENV === 'test') {
+    return; // Avoid unmanaged timer in automated test runs
+  }
   try {
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    if (!force) {
+      await new Promise(resolve => setTimeout(resolve, 3000));
+    }
+    const mongoose = require('mongoose');
+    if (mongoose.connection.readyState !== 1) return;
+    
+    // 1. Auto-boot active broker streams
     const connected = await BrokerConnection.find({ sessionStatus: 'CONNECTED' });
     console.log(`[StrategyEngine] Auto-booting ${connected.length} active broker streams...`);
     for (const conn of connected) {
       smartStream.connect(conn.userId.toString());
     }
+
+    // 2. Auto-recover running strategies on startup
+    const activeStrategies = await Strategy.find({ isActive: true });
+    console.log(`[StrategyEngine] Auto-recovering ${activeStrategies.length} active strategies on startup...`);
+    for (const strat of activeStrategies) {
+      try {
+        const key = `${strat.userId}_${strat.name}`;
+        const runner = module.exports.getRunner(key);
+        if (!runner.isRunning) {
+          await runner.start(strat.config || {}, strat.userId.toString());
+          console.log(`[StrategyEngine] Successfully auto-recovered strategy '${strat.name}' for user ${strat.userId}`);
+        }
+      } catch (stratErr) {
+        console.error(`[StrategyEngine] Failed to auto-recover strategy '${strat.name}' for user ${strat.userId}:`, stratErr.message);
+      }
+    }
   } catch (err) {
-    console.error('[StrategyEngine] Error auto-booting broker streams:', err.message);
+    console.error('[StrategyEngine] Error during startup auto-boot:', err.message);
   }
 }
 

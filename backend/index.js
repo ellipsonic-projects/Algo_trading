@@ -14,31 +14,40 @@ const strategyRoutes = require('./routes/strategyRoutes');
 const chartRoutes = require('./routes/chartRoutes');
 const brokerRoutes = require('./routes/brokerRoutes');
 
+const csrfProtection = require('./middleware/csrfMiddleware');
+
 const app = express();
 
-// Issue #18 FIX: helmet sets secure HTTP headers (X-Content-Type-Options,
-// X-Frame-Options, Strict-Transport-Security, etc.) out of the box.
+// Security HTTP headers
 app.use(helmet());
 
-// Issue #18 FIX: explicit body-size cap prevents large-payload DoS.
-// Express 5 has a different internal default; be explicit to avoid surprises.
+// Explicit body-size cap to prevent large-payload DoS
 app.use(express.json({ limit: '100kb' }));
 app.use(cookieParser());
+
+const corsOrigins = (process.env.CORS_ORIGINS || process.env.CORS_ORIGIN || 'http://localhost:5173,http://localhost:3000')
+    .split(',')
+    .map(o => o.trim())
+    .filter(Boolean);
+
 app.use(cors({
-    origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : 'http://localhost:3000',
+    origin: corsOrigins,
     credentials: true
 }));
 
-// Issue #18 FIX: rate-limit on the login route — max 10 login attempts per
-// 15-minute window per IP. Prevents brute-force credential attacks.
-const loginLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 10,
+// Rate limiters for auth flows
+const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: process.env.NODE_ENV === 'test' ? 1000 : 15,
     standardHeaders: true,
     legacyHeaders: false,
-    message: { status: 'fail', message: 'Too many login attempts. Please try again in 15 minutes.' }
+    message: { status: 'fail', message: 'Too many attempts. Please try again in 15 minutes.' }
 });
-app.use('/api/v1/users/login', loginLimiter);
+app.use('/api/v1/users/login', authLimiter);
+app.use('/api/v1/users/register', authLimiter);
+
+// CSRF & Origin validation on mutating requests
+app.use(csrfProtection);
 
 // Route Middlewares
 app.use('/api/v1/users', authRoutes);
@@ -83,12 +92,18 @@ const port = process.env.PORT || 5000;
 // Issue #17 FIX: Do not start the HTTP server until MongoDB is connected.
 // Previously app.listen() was called synchronously while mongoose.connect() was
 // still pending, meaning early requests hit an unconnected database.
+const vaultService = require('./services/vaultService');
+
 async function startServer() {
     try {
         await mongoose.connect(process.env.MONGO_URI);
         console.log('DB connection successful!');
+
+        // Validate secret vault provider readiness before accepting traffic
+        await vaultService.validateVaultReady();
+        console.log('[VaultService] Master encryption key verified and ready.');
     } catch (err) {
-        console.error('DB connection error — cannot start server:', err);
+        console.error('Fatal startup error — cannot start server:', err.message);
         process.exit(1);
     }
 
@@ -103,9 +118,14 @@ async function startServer() {
         console.log(`[${signal}] Graceful shutdown initiated...`);
         server.close(async () => {
             console.log('HTTP server closed. Closing MongoDB connection...');
-            await mongoose.connection.close();
-            console.log('MongoDB connection closed. Exiting.');
-            process.exit(0);
+            try {
+                await mongoose.connection.close();
+                console.log('MongoDB connection closed. Exiting.');
+                process.exit(0);
+            } catch (closeErr) {
+                console.error('Error closing MongoDB connection:', closeErr);
+                process.exit(1);
+            }
         });
 
         // Force-exit if graceful shutdown takes longer than 10s
@@ -119,4 +139,8 @@ async function startServer() {
     process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 }
 
-startServer();
+if (require.main === module) {
+    startServer();
+}
+
+module.exports = app;

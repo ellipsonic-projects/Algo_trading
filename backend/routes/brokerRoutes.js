@@ -24,29 +24,53 @@ router.post('/test-connection', brokerConnectionLimiter, brokerController.testCo
 router.post('/disconnect', brokerController.disconnect);
 router.post('/revoke', brokerController.revoke);
 
-// Secure wildcard proxy to Python Angel One Wrapper service (Express 5 named wildcard)
-router.all('/{*path}', async (req, res) => {
+// Block raw order placement via proxy FIRST (before any wildcard catches it)
+// This must be declared before the generic GET wildcard to intercept all methods.
+router.all('/orders/{*path}', (req, res) => {
+    res.status(403).json({ status: 'fail', message: 'Direct raw order placement is disabled. Use validated trading endpoints.' });
+});
+
+// Explicitly authorized safe proxy routes (Market data, instruments, profile, orderbook)
+const ALLOWED_GET_PATHS = [
+    '/angel/profile',
+    '/angel/orderbook',
+    '/angel/trades',
+    '/angel/positions',
+    '/angel/margins',
+    '/market/index-ltp',
+    '/market/quote',
+    '/market/candle',
+    '/instruments/search'
+];
+
+router.get('/{*path}', async (req, res) => {
     try {
         const userId = req.user._id.toString();
-        // Extract original request path relative to /api/v1/broker/angel
-        const path = req.params[0] || req.path;
+        const rawPath = req.params[0] || req.path;
+        const normalizedPath = rawPath.startsWith('/') ? rawPath : `/${rawPath}`;
+
+        // Ensure only allowed GET paths can be accessed
+        const isAllowed = ALLOWED_GET_PATHS.some(allowed => 
+            normalizedPath === allowed || normalizedPath.startsWith(allowed + '?') || normalizedPath.startsWith(allowed + '/')
+        );
+
+        if (!isAllowed) {
+            return res.status(403).json({ status: 'fail', message: 'Forbidden: Endpoint not accessible via broker proxy' });
+        }
+
         const query = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
         const apiBase = process.env.ANGEL_ONE_API_BASE || 'http://localhost:8000';
-        const url = `${apiBase}${path}${query}`;
+        const url = `${apiBase}${normalizedPath}${query}`;
 
-        const internalSecret = process.env.ANGEL_ONE_INTERNAL_SECRET || '';
+        const internalSecret = process.env.INTERNAL_SERVICE_SECRET || process.env.ANGEL_ONE_INTERNAL_SECRET || '';
         const options = {
-            method: req.method,
+            method: 'GET',
             headers: {
                 'Content-Type': 'application/json',
                 'X-Internal-Token': internalSecret,
                 'X-User-Id': userId
             }
         };
-
-        if (['POST', 'PUT', 'PATCH'].includes(req.method) && req.body) {
-            options.body = JSON.stringify(req.body);
-        }
 
         const fetchRes = await fetch(url, options);
         res.status(fetchRes.status);

@@ -73,6 +73,22 @@ class VaultService {
         }
     }
 
+    /**
+     * Validates that the vault provider and master key can be accessed successfully.
+     * Call this during application startup to fail-fast if secrets cannot be decrypted.
+     */
+    async validateVaultReady() {
+        try {
+            const key = await this.getMasterKey();
+            if (!key || key.length !== 32) {
+                throw new Error('Retrieved master key is invalid or length is not 32 bytes (256 bits)');
+            }
+            return true;
+        } catch (err) {
+            throw new Error(`[VaultService] Startup validation failed: ${err.message}`);
+        }
+    }
+
     async getMasterKey() {
         return await this.adapter.getMasterKey();
     }

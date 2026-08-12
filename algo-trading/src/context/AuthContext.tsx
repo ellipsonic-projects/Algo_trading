@@ -101,11 +101,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     const logout = async () => {
+        const match = document.cookie.match(new RegExp('(^|;\\s*)XSRF-TOKEN=([^;]*)'));
+        const csrfToken = match ? decodeURIComponent(match[2]) : null;
+        const headers: Record<string, string> = {};
+        if (csrfToken) {
+            headers['X-XSRF-TOKEN'] = csrfToken;
+        }
+
         await fetch(`${API_BASE_USERS}/logout`, {
             method: 'POST',
+            headers,
             credentials: 'include'
         });
-        // Issue #8 FIX: No localStorage token to remove.
         setUser(null);
     };
 

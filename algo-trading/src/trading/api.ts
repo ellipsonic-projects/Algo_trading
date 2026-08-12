@@ -47,12 +47,23 @@ export async function apiGet<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+function getCsrfToken(): string | null {
+  const match = document.cookie.match(new RegExp('(^|;\\s*)XSRF-TOKEN=([^;]*)'));
+  return match ? decodeURIComponent(match[2]) : null;
+}
+
 export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   const url = getUrl(path);
+  const csrfToken = getCsrfToken();
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (csrfToken) {
+    headers['X-XSRF-TOKEN'] = csrfToken;
+  }
 
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body),
     credentials: 'include'
   });

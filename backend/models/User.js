@@ -7,11 +7,23 @@ const userSchema = new mongoose.Schema({
         required: true,
         unique: true,
         trim: true,
-        lowercase: true
+        lowercase: true,
+        match: [/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/, 'Please provide a valid email address']
     },
     password: {
         type: String,
         required: true
+    },
+    tokenVersion: {
+        type: Number,
+        default: 1
+    },
+    failedLoginAttempts: {
+        type: Number,
+        default: 0
+    },
+    lockUntil: {
+        type: Date
     }
 }, { timestamps: true });
 

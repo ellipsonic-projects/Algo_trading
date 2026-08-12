@@ -17,12 +17,18 @@ class SmartStreamPool extends EventEmitter {
     }
 
     const WebSocketImpl = globalThis.WebSocket || require('ws');
-    const internalSecret = process.env.ANGEL_ONE_INTERNAL_SECRET || '';
+    const internalSecret = process.env.INTERNAL_SERVICE_SECRET || process.env.ANGEL_ONE_INTERNAL_SECRET || '';
     const wsBase = process.env.ANGEL_ONE_WS_URL || 'ws://localhost:8000';
-    const wsUrl = `${wsBase}/ws/broker-stream?token=${encodeURIComponent(internalSecret)}&userId=${uid}`;
+    // Use clean path; pass authentication via WebSocket headers
+    const wsUrl = `${wsBase}/ws/broker-stream?userId=${encodeURIComponent(uid)}`;
 
     console.log(`[SmartStreamPool] Connecting private WebSocket for user ${uid}...`);
-    const ws = new WebSocketImpl(wsUrl);
+    const ws = new WebSocketImpl(wsUrl, {
+      headers: {
+        'X-Internal-Token': internalSecret,
+        'X-User-Id': uid
+      }
+    });
 
     this.connections.set(uid, ws);
 

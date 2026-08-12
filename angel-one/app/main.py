@@ -454,15 +454,16 @@ def index_ltp(underlying: str, user_id: str = Depends(require_user_id)) -> Dict[
 
 
 @app.get("/angel/orders", dependencies=[Depends(require_internal_token)])
-def list_orders(limit: int = 50) -> Dict[str, Any]:
-    # Order database store remains independent
-    attempts = store.list(limit=limit)
+def list_orders(limit: int = 50, user_id: str = Depends(require_user_id)) -> Dict[str, Any]:
+    # Order database store is strictly tenant-scoped
+    attempts = store.list(user_id=user_id, limit=limit)
     return {"items": [store.to_dict(a) for a in attempts]}
 
 
 @app.delete("/angel/orders", dependencies=[Depends(require_internal_token)])
-def clear_orders() -> Dict[str, Any]:
-    deleted = store.clear()
+def clear_orders(user_id: str = Depends(require_user_id)) -> Dict[str, Any]:
+    # Clear orders strictly for the authenticated tenant
+    deleted = store.clear(user_id=user_id)
     return {"deleted": deleted}
 
 
@@ -475,7 +476,7 @@ def place_order(req: PlaceOrderRequest, user_id: str = Depends(require_user_id))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Broker placement failed: {e}")
 
-    attempt = store.add(id=attempt_id, request=req.payload, response=response)
+    attempt = store.add(id=attempt_id, user_id=user_id, request=req.payload, response=response)
     return {"item": store.to_dict(attempt)}
 
 
@@ -542,24 +543,34 @@ def place_simple_order(req: SimpleOrderRequest, user_id: str = Depends(require_u
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Broker placement failed: {e}")
 
-    attempt = store.add(id=attempt_id, request=payload, response=response)
+    attempt = store.add(id=attempt_id, user_id=user_id, request=payload, response=response)
     return {"item": store.to_dict(attempt)}
 
 
 @app.websocket("/ws/broker-stream")
-async def websocket_broker_stream(websocket: WebSocket, token: str = "", userId: str = ""):
+async def websocket_broker_stream(
+    websocket: WebSocket,
+    userId: str = "",
+):
     """Secure private WebSocket endpoint streaming ticks and order events to Node.js backend."""
-    await websocket.accept()
+    # Authentication MUST come from headers — never accept a token in the query string
+    # because query strings appear in server access logs and browser history.
+    auth_header = websocket.headers.get("x-internal-token") or websocket.headers.get("x-internal-secret") or ""
+    uid_header = (websocket.headers.get("x-user-id") or userId or "").strip()
+
     secret = cfg.internal_api_secret
-    if not secret or token != secret:
+    if not secret or auth_header != secret:
         await websocket.close(code=4003, reason="Forbidden: invalid internal token")
         return
 
-    if not userId.strip():
+    if not uid_header:
         await websocket.close(code=4000, reason="Missing userId")
         return
 
-    client = session_manager.get_session(userId)
+    await websocket.accept()
+
+
+    client = session_manager.get_session(uid_header)
     if not client or not client.is_logged_in:
         await websocket.close(code=4001, reason="Broker session not active")
         return
@@ -570,7 +581,7 @@ async def websocket_broker_stream(websocket: WebSocket, token: str = "", userId:
     client_code = info.get("client_code")
     api_key = info.get("api_key")
     logger = logging.getLogger("uvicorn.error")
-    logger.info(f"[FastAPI WS] Accepted internal socket for user: {userId}")
+    logger.info(f"[FastAPI WS] Accepted internal socket for user: {uid_header}")
 
     loop = asyncio.get_running_loop()
     from app.services.websocket_manager import UserWebSocketConnection

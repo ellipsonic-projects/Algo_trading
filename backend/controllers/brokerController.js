@@ -3,7 +3,7 @@ const vaultService = require('../services/vaultService');
 const config = require('../config');
 
 const ANGEL_API_BASE = config.API.ANGEL_ONE_API_BASE;
-const ANGEL_ONE_INTERNAL_SECRET = process.env.ANGEL_ONE_INTERNAL_SECRET || '';
+const ANGEL_ONE_INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET || process.env.ANGEL_ONE_INTERNAL_SECRET || '';
 
 // Secure in-memory cache for short-lived session tokens (never persisted to DB)
 // userId -> { jwtToken, feedToken, clientCode, apiKey, updatedAt }

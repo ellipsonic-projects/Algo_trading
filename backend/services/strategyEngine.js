@@ -417,11 +417,15 @@ class SingleStrategyRunner {
           this.startMonitorLoop();
         } else {
           this.log(`Stale MongoDB trade ${trade.premium} found closed on broker. Reconciling to CLOSED in DB...`);
+          const { calculateCharges } = require('./chargesCalculator');
+          const chargesResult = calculateCharges(trade.buyPrice, trade.buyPrice, trade.qty);
           trade.status = 'CLOSED';
           trade.exitPrice = trade.buyPrice;
           trade.exitReason = 'RECOVERY_CLEANUP';
           trade.pnl = 0;
-          trade.charges = 60;
+          trade.charges = chargesResult.total;
+          trade.chargesBreakdown = chargesResult.breakdown;
+          trade.chargesVersion = chargesResult.version;
           trade.reconciled = true;
           await trade.save();
         }
@@ -1113,12 +1117,15 @@ class SingleStrategyRunner {
         if (this.activeTradeId) {
           const trade = await Trade.findById(this.activeTradeId);
           if (trade) {
+            const { calculateCharges } = require('./chargesCalculator');
+            const chargesResult = calculateCharges(trade.buyPrice, actualExitPx, trade.qty);
             const pnl = (actualExitPx - trade.buyPrice) * trade.qty;
-            const charges = 60;
             trade.exitPrice = actualExitPx;
             trade.exitReason = exitReason;
             trade.pnl = pnl;
-            trade.charges = charges;
+            trade.charges = chargesResult.total;
+            trade.chargesBreakdown = chargesResult.breakdown;
+            trade.chargesVersion = chargesResult.version;
             trade.status = 'CLOSED';
             trade.reconciled = true;
             await trade.save();

@@ -11,6 +11,7 @@ import {
 import { useAngelConnection } from '../../shared/angel/AngelConnectionProvider'
 import { apiGet, apiPost } from '../../trading'
 import { usePageTitle } from '../../hooks/usePageTitle'
+import { useAuth } from '../../context/AuthContext'
 
 type Underlying = 'SENSEX' | 'NIFTY' | 'BANKNIFTY' | 'CRUDEOILM'
 type Exchange = 'BFO' | 'NFO' | 'MCX'
@@ -50,36 +51,36 @@ function getSavedState<T>(key: string, fallback: T): T {
 }
 
 export default function ModifiedHeikenashiPage() {
-    usePageTitle('Modified Heikenashi')
-    const { connectStatus } = useAngelConnection()
+    usePageTitle('Modified Heikenashi');
+    const { connectStatus } = useAngelConnection();
+    const { user } = useAuth();
+    const [loadedUserId, setLoadedUserId] = useState<string | null>(null)
 
-    const [isRunning, setIsRunning] = useState<boolean>(() => getSavedState('mha_isRunning', false))
-    const [state, setState] = useState<StrategyState>(() => getSavedState('mha_state', 'STOPPED'))
+    const [isRunning, setIsRunning] = useState<boolean>(false)
+    const [state, setState] = useState<StrategyState>('STOPPED')
     const [message, setMessage] = useState<string>('')
     const [trend, setTrend] = useState<Trend>('NEUTRAL')
 
-    // Core Configuration
-    const [underlying, setUnderlying] = useState<Underlying>(() => getSavedState('mha_underlying', 'SENSEX'))
-    const [quantity, setQuantity] = useState<number>(() => getSavedState('mha_quantity', INDEX_CONFIG.SENSEX.qty))
-    const [baseTimeframe, setBaseTimeframe] = useState<string>(() => getSavedState('mha_baseTimeframe', 'FIVE_MINUTE'))
-    const [needConfirmation, setNeedConfirmation] = useState<boolean>(() => getSavedState('mha_needConfirmation', false))
-    const [confirmationTimeframe, setConfirmationTimeframe] = useState<string>(() => getSavedState('mha_confirmationTimeframe', 'FIFTEEN_MINUTE'))
+    const [underlying, setUnderlying] = useState<Underlying>('SENSEX')
+    const [exchange, setExchange] = useState<Exchange>('BFO')
+    const [quantity, setQuantity] = useState<number>(INDEX_CONFIG.SENSEX.qty)
+    const [baseTimeframe, setBaseTimeframe] = useState<string>('FIVE_MINUTE')
+    const [needConfirmation, setNeedConfirmation] = useState<boolean>(true)
+    const [confirmationTimeframe, setConfirmationTimeframe] = useState<string>('ONE_MINUTE')
 
-    // Strike Selection
-    const [strikeMode, setStrikeMode] = useState<StrikeMode>(() => getSavedState('mha_strikeMode', 'ATM'))
-    const [strikeDepth, setStrikeDepth] = useState<number>(() => getSavedState('mha_strikeDepth', 1))
-    const [premiumMin, setPremiumMin] = useState<number>(() => getSavedState('mha_premiumMin', 300))
-    const [premiumMax, setPremiumMax] = useState<number>(() => getSavedState('mha_premiumMax', 400))
+    const [strikeMode, setStrikeMode] = useState<StrikeMode>('ATM')
+    const [strikeDepth, setStrikeDepth] = useState<number>(1)
+    const [premiumMin, setPremiumMin] = useState<number>(200)
+    const [premiumMax, setPremiumMax] = useState<number>(300)
 
-    // Exit Strategy Configuration
-    const [exitStrategy, setExitStrategy] = useState<ExitStrategy>(() => getSavedState('mha_exitStrategy', 'CANDLES'))
-    const [targetPoints, setTargetPoints] = useState<number>(() => getSavedState('mha_targetPoints', 20))
-    const [slPoints, setSlPoints] = useState<number>(() => getSavedState('mha_slPoints', 30))
-    const [trailingStopPoints, setTrailingStopPoints] = useState<number>(() => getSavedState('mha_trailingStopPoints', 20))
-    const [initialSlPoints, setInitialSlPoints] = useState<number>(() => getSavedState('mha_initialSlPoints', 30))
-    const [finalTargetPoints, setFinalTargetPoints] = useState<number>(() => getSavedState('mha_finalTargetPoints', 100))
+    const [exitStrategy, setExitStrategy] = useState<ExitStrategy>('CANDLES')
+    const [targetPoints, setTargetPoints] = useState<number>(20)
+    const [slPoints, setSlPoints] = useState<number>(15)
+    const [trailingStopPoints, setTrailingStopPoints] = useState<number>(20)
+    const [initialSlPoints, setInitialSlPoints] = useState<number>(30)
+    const [finalTargetPoints, setFinalTargetPoints] = useState<number>(100)
 
-    const [liveTradingConsent, setLiveTradingConsent] = useState<boolean>(() => getSavedState('mha_liveTradingConsent', false))
+    const [liveTradingConsent, setLiveTradingConsent] = useState<boolean>(false)
 
     // Dynamic Live Monitor States from Backend Status
     const [monitoredPremiums, setMonitoredPremiums] = useState<{ ce: string, pe: string }>({ ce: '---', pe: '---' })
@@ -98,27 +99,63 @@ export default function ModifiedHeikenashiPage() {
     const [activeTrailingSl, setActiveTrailingSl] = useState<number | null>(null)
     const [isExiting, setIsExiting] = useState<boolean>(false)
 
-    // Local Storage Sync
+    // Load User Scoped Local Storage Config
     useEffect(() => {
-        localStorage.setItem('mha_isRunning', JSON.stringify(isRunning))
-        localStorage.setItem('mha_state', JSON.stringify(state))
-        localStorage.setItem('mha_underlying', JSON.stringify(underlying))
-        localStorage.setItem('mha_quantity', JSON.stringify(quantity))
-        localStorage.setItem('mha_baseTimeframe', JSON.stringify(baseTimeframe))
-        localStorage.setItem('mha_needConfirmation', JSON.stringify(needConfirmation))
-        localStorage.setItem('mha_confirmationTimeframe', JSON.stringify(confirmationTimeframe))
-        localStorage.setItem('mha_strikeMode', JSON.stringify(strikeMode))
-        localStorage.setItem('mha_strikeDepth', JSON.stringify(strikeDepth))
-        localStorage.setItem('mha_premiumMin', JSON.stringify(premiumMin))
-        localStorage.setItem('mha_premiumMax', JSON.stringify(premiumMax))
-        localStorage.setItem('mha_exitStrategy', JSON.stringify(exitStrategy))
-        localStorage.setItem('mha_targetPoints', JSON.stringify(targetPoints))
-        localStorage.setItem('mha_slPoints', JSON.stringify(slPoints))
-        localStorage.setItem('mha_trailingStopPoints', JSON.stringify(trailingStopPoints))
-        localStorage.setItem('mha_initialSlPoints', JSON.stringify(initialSlPoints))
-        localStorage.setItem('mha_finalTargetPoints', JSON.stringify(finalTargetPoints))
-        localStorage.setItem('mha_liveTradingConsent', JSON.stringify(liveTradingConsent))
-    }, [isRunning, state, underlying, quantity, baseTimeframe, needConfirmation, confirmationTimeframe, strikeMode, strikeDepth, premiumMin, premiumMax, exitStrategy, targetPoints, slPoints, trailingStopPoints, initialSlPoints, finalTargetPoints, liveTradingConsent])
+        if (user && user._id !== loadedUserId) {
+            const uid = user._id
+            setLoadedUserId(uid)
+            setIsRunning(getSavedState(`config_${uid}_mha_isRunning`, false))
+            setState(getSavedState(`config_${uid}_mha_state`, 'STOPPED'))
+            setUnderlying(getSavedState(`config_${uid}_mha_underlying`, 'SENSEX'))
+            setExchange(getSavedState(`config_${uid}_mha_exchange`, 'BFO'))
+            setQuantity(getSavedState(`config_${uid}_mha_quantity`, INDEX_CONFIG.SENSEX.qty))
+            setBaseTimeframe(getSavedState(`config_${uid}_mha_baseTimeframe`, 'FIVE_MINUTE'))
+            setNeedConfirmation(getSavedState(`config_${uid}_mha_needConfirmation`, true))
+            setConfirmationTimeframe(getSavedState(`config_${uid}_mha_confirmationTimeframe`, 'ONE_MINUTE'))
+            setLiveTradingConsent(getSavedState(`config_${uid}_mha_liveTradingConsent`, false))
+            setStrikeMode(getSavedState(`config_${uid}_mha_strikeMode`, 'ATM'))
+            setStrikeDepth(getSavedState(`config_${uid}_mha_strikeDepth`, 1))
+            setPremiumMin(getSavedState(`config_${uid}_mha_premiumMin`, 200))
+            setPremiumMax(getSavedState(`config_${uid}_mha_premiumMax`, 300))
+            setExitStrategy(getSavedState(`config_${uid}_mha_exitStrategy`, 'CANDLES'))
+            setTargetPoints(getSavedState(`config_${uid}_mha_targetPoints`, 20))
+            setSlPoints(getSavedState(`config_${uid}_mha_slPoints`, 15))
+            setTrailingStopPoints(getSavedState(`config_${uid}_mha_trailingStopPoints`, 20))
+            setInitialSlPoints(getSavedState(`config_${uid}_mha_initialSlPoints`, 30))
+            setFinalTargetPoints(getSavedState(`config_${uid}_mha_finalTargetPoints`, 100))
+        } else if (!user) {
+            // Clean up states on logout
+            setLoadedUserId(null)
+            setIsRunning(false)
+            setState('STOPPED')
+            setLiveTradingConsent(false)
+        }
+    }, [user, loadedUserId])
+
+    // Sync to User Scoped Local Storage Config
+    useEffect(() => {
+        if (!user || user._id !== loadedUserId) return
+        const uid = user._id
+        localStorage.setItem(`config_${uid}_mha_isRunning`, JSON.stringify(isRunning))
+        localStorage.setItem(`config_${uid}_mha_state`, JSON.stringify(state))
+        localStorage.setItem(`config_${uid}_mha_underlying`, JSON.stringify(underlying))
+        localStorage.setItem(`config_${uid}_mha_exchange`, JSON.stringify(exchange))
+        localStorage.setItem(`config_${uid}_mha_quantity`, JSON.stringify(quantity))
+        localStorage.setItem(`config_${uid}_mha_baseTimeframe`, JSON.stringify(baseTimeframe))
+        localStorage.setItem(`config_${uid}_mha_needConfirmation`, JSON.stringify(needConfirmation))
+        localStorage.setItem(`config_${uid}_mha_confirmationTimeframe`, JSON.stringify(confirmationTimeframe))
+        localStorage.setItem(`config_${uid}_mha_strikeMode`, JSON.stringify(strikeMode))
+        localStorage.setItem(`config_${uid}_mha_strikeDepth`, JSON.stringify(strikeDepth))
+        localStorage.setItem(`config_${uid}_mha_premiumMin`, JSON.stringify(premiumMin))
+        localStorage.setItem(`config_${uid}_mha_premiumMax`, JSON.stringify(premiumMax))
+        localStorage.setItem(`config_${uid}_mha_exitStrategy`, JSON.stringify(exitStrategy))
+        localStorage.setItem(`config_${uid}_mha_targetPoints`, JSON.stringify(targetPoints))
+        localStorage.setItem(`config_${uid}_mha_slPoints`, JSON.stringify(slPoints))
+        localStorage.setItem(`config_${uid}_mha_trailingStopPoints`, JSON.stringify(trailingStopPoints))
+        localStorage.setItem(`config_${uid}_mha_initialSlPoints`, JSON.stringify(initialSlPoints))
+        localStorage.setItem(`config_${uid}_mha_finalTargetPoints`, JSON.stringify(finalTargetPoints))
+        localStorage.setItem(`config_${uid}_mha_liveTradingConsent`, JSON.stringify(liveTradingConsent))
+    }, [user, loadedUserId, isRunning, state, underlying, exchange, quantity, baseTimeframe, needConfirmation, confirmationTimeframe, strikeMode, strikeDepth, premiumMin, premiumMax, exitStrategy, targetPoints, slPoints, trailingStopPoints, initialSlPoints, finalTargetPoints, liveTradingConsent])
 
     // Poll Strategy Status from Backend Engine
     useEffect(() => {

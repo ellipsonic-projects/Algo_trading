@@ -8,7 +8,13 @@ exports.recordTrade = async (req, res) => {
         // 1. Find strategy scoped to authenticated user
         const strategy = await Strategy.findOne({ name: strategyName, userId: req.user._id });
         if (!strategy) {
-            return res.status(404).json({ status: 'fail', message: 'Strategy not found' });
+            return res.status(404).json({
+                success: false,
+                error: {
+                    code: 'STRATEGY_NOT_FOUND',
+                    message: 'Strategy not found'
+                }
+            });
         }
 
         // 2. Create trade log with default IN_POSITION / ENTRY_PENDING status
@@ -29,7 +35,13 @@ exports.recordTrade = async (req, res) => {
             }
         });
     } catch (err) {
-        res.status(500).json({ status: 'error', message: err.message });
+        res.status(500).json({
+            success: false,
+            error: {
+                code: 'INTERNAL_SERVER_ERROR',
+                message: err.message
+            }
+        });
     }
 };
 
@@ -41,17 +53,26 @@ exports.updateTradeExit = async (req, res) => {
         // another user's trade by knowing its ObjectId.
         const trade = await Trade.findOne({ _id: tradeId, userId: req.user._id });
         if (!trade) {
-            return res.status(404).json({ status: 'fail', message: 'Trade not found' });
+            return res.status(404).json({
+                success: false,
+                error: {
+                    code: 'TRADE_NOT_FOUND',
+                    message: 'Trade not found'
+                }
+            });
         }
 
-        // Calculate PNL and estimated fee
+        // Calculate PNL and estimated fee using chargesCalculator
+        const { calculateCharges } = require('../services/chargesCalculator');
+        const chargesResult = calculateCharges(trade.buyPrice, exitPrice, trade.qty);
         const pnl = (exitPrice - trade.buyPrice) * trade.qty;
-        const charges = 60; // Rs. 60 flat brokerage + STT estimate
 
         trade.exitPrice = exitPrice;
         trade.exitReason = exitReason;
         trade.pnl = pnl;
-        trade.charges = charges;
+        trade.charges = chargesResult.total;
+        trade.chargesBreakdown = chargesResult.breakdown;
+        trade.chargesVersion = chargesResult.version;
         trade.status = 'CLOSED';
 
         await trade.save();
@@ -63,7 +84,13 @@ exports.updateTradeExit = async (req, res) => {
             }
         });
     } catch (err) {
-        res.status(500).json({ status: 'error', message: err.message });
+        res.status(500).json({
+            success: false,
+            error: {
+                code: 'INTERNAL_SERVER_ERROR',
+                message: err.message
+            }
+        });
     }
 };
 
@@ -73,7 +100,13 @@ exports.getLatestOpenTrade = async (req, res) => {
         const strategy = await Strategy.findOne({ name: strategyName, userId: req.user._id });
 
         if (!strategy) {
-            return res.status(404).json({ status: 'fail', message: 'Strategy not found' });
+            return res.status(404).json({
+                success: false,
+                error: {
+                    code: 'STRATEGY_NOT_FOUND',
+                    message: 'Strategy not found'
+                }
+            });
         }
 
         const trade = await Trade.findOne({
@@ -92,9 +125,16 @@ exports.getLatestOpenTrade = async (req, res) => {
             }
         });
     } catch (err) {
-        res.status(500).json({ status: 'error', message: err.message });
+        res.status(500).json({
+            success: false,
+            error: {
+                code: 'INTERNAL_SERVER_ERROR',
+                message: err.message
+            }
+        });
     }
 };
+
 exports.getStats = async (req, res) => {
     try {
         const mongoose = require('mongoose');
@@ -125,9 +165,16 @@ exports.getStats = async (req, res) => {
             }
         });
     } catch (err) {
-        res.status(500).json({ status: 'error', message: err.message });
+        res.status(500).json({
+            success: false,
+            error: {
+                code: 'INTERNAL_SERVER_ERROR',
+                message: err.message
+            }
+        });
     }
 };
+
 exports.getAllTrades = async (req, res) => {
     try {
         const { strategyId, startDate, endDate, page = 1, exitReason, timeFrom, timeTo } = req.query;
@@ -157,21 +204,44 @@ exports.getAllTrades = async (req, res) => {
         const timeToMinutes = parseTimeToMinutes(timeTo);
 
         if (timeFrom && timeFromMinutes === null) {
-            return res.status(400).json({ status: 'fail', message: 'Invalid timeFrom. Expected HH:mm' });
+            return res.status(400).json({
+                success: false,
+                error: {
+                    code: 'INVALID_INPUT_FORMAT',
+                    message: 'Invalid timeFrom. Expected HH:mm'
+                }
+            });
         }
         if (timeTo && timeToMinutes === null) {
-            return res.status(400).json({ status: 'fail', message: 'Invalid timeTo. Expected HH:mm' });
+            return res.status(400).json({
+                success: false,
+                error: {
+                    code: 'INVALID_INPUT_FORMAT',
+                    message: 'Invalid timeTo. Expected HH:mm'
+                }
+            });
         }
         if (timeFromMinutes !== null && timeToMinutes !== null && timeFromMinutes > timeToMinutes) {
-            return res.status(400).json({ status: 'fail', message: 'Invalid time range. timeFrom must be less than or equal to timeTo' });
+            return res.status(400).json({
+                success: false,
+                error: {
+                    code: 'INVALID_TIME_RANGE',
+                    message: 'Invalid time range. timeFrom must be less than or equal to timeTo'
+                }
+            });
         }
 
         if (strategyId) {
             const mongoose = require('mongoose');
-            // Issue #12 FIX: validate ObjectId format before constructing one — invalid
-            // IDs previously threw an unhandled exception returned as HTTP 500.
+            // Issue #12 FIX: validate ObjectId format before constructing one
             if (!mongoose.isValidObjectId(strategyId)) {
-                return res.status(400).json({ status: 'fail', message: 'Invalid strategyId format' });
+                return res.status(400).json({
+                    success: false,
+                    error: {
+                        code: 'INVALID_INPUT_FORMAT',
+                        message: 'Invalid strategyId format'
+                    }
+                });
             }
             query.strategyId = new mongoose.Types.ObjectId(strategyId);
         }
@@ -231,14 +301,14 @@ exports.getAllTrades = async (req, res) => {
             .skip((page - 1) * limit)
             .limit(parseInt(limit));
 
-        // Calculate analytics based on the SAME query used for filtering
         const analytics = await Trade.aggregate([
             { $match: query },
             {
                 $group: {
                     _id: null,
                     totalPnl: { $sum: '$pnl' },
-                    totalTrades: { $sum: 1 }
+                    totalTrades: { $sum: 1 },
+                    totalCharges: { $sum: '$charges' }
                 }
             }
         ]);
@@ -252,16 +322,13 @@ exports.getAllTrades = async (req, res) => {
 
         if (analytics.length > 0) {
             const totalPnl = analytics[0].totalPnl || 0;
-            // Assuming tax calculation is around Rs. 60 per trade (Brokerage + STT + other charges for options usually averages out here for small quantities)
-            // Or we could use a flat percentage. Let's use a standard Rs. 50 per executed trade (buy+sell) as an approximation 
-            // since actual taxes aren't stored in the DB row.
-            const estimatedTaxes = analytics[0].totalTrades * 60;
+            const estimatedTaxes = analytics[0].totalCharges || 0;
 
             stats = {
                 totalPnl: totalPnl,
                 totalTrades: analytics[0].totalTrades,
-                taxes: estimatedTaxes,
-                netPnl: totalPnl - estimatedTaxes
+                taxes: Math.round(estimatedTaxes * 100) / 100,
+                netPnl: Math.round((totalPnl - estimatedTaxes) * 100) / 100
             };
         }
 
@@ -278,6 +345,12 @@ exports.getAllTrades = async (req, res) => {
             }
         });
     } catch (err) {
-        res.status(500).json({ status: 'error', message: err.message });
+        res.status(500).json({
+            success: false,
+            error: {
+                code: 'INTERNAL_SERVER_ERROR',
+                message: err.message
+            }
+        });
     }
 };

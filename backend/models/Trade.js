@@ -42,6 +42,13 @@ const tradeSchema = new mongoose.Schema({
         type: Number,
         default: 0
     },
+    chargesBreakdown: {
+        type: mongoose.Schema.Types.Mixed,
+        default: {}
+    },
+    chargesVersion: {
+        type: String
+    },
     exitReason: {
         type: String,
         enum: ['Target', 'SL', 'Trailing SL', 'Strategy', 'HA_TREND_REVERSAL', 'Reversal', 'RECOVERY_CLEANUP', 'Manual', 'RiskKillSwitch', 'TimeoutReconciled']

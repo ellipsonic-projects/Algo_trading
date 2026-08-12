@@ -85,6 +85,10 @@ app.use((err, req, res, next) => {
     next(err);
 });
 
+// Centralized Global Error Handler
+const errorMiddleware = require('./middleware/errorMiddleware');
+app.use(errorMiddleware);
+
 const marketDataService = require('./services/marketDataService');
 
 const port = process.env.PORT || 5000;

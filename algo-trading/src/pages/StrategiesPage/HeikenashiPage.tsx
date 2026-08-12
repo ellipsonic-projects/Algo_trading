@@ -11,6 +11,7 @@ import {
 import { useAngelConnection } from '../../shared/angel/AngelConnectionProvider'
 import { apiGet, apiPost } from '../../trading'
 import { usePageTitle } from '../../hooks/usePageTitle'
+import { useAuth } from '../../context/AuthContext'
 
 type Underlying = 'SENSEX' | 'NIFTY' | 'BANKNIFTY' | 'CRUDEOILM'
 type Exchange = 'BFO' | 'NFO' | 'MCX'
@@ -52,30 +53,30 @@ function getSavedState<T>(key: string, fallback: T): T {
 export default function HeikenashiPage() {
     usePageTitle('Heikenashi')
     const { connectStatus } = useAngelConnection()
+    const { user } = useAuth()
+    const [loadedUserId, setLoadedUserId] = useState<string | null>(null)
 
-    const [isRunning, setIsRunning] = useState<boolean>(() => getSavedState('ha_isRunning', false))
-    const [state, setState] = useState<StrategyState>(() => getSavedState('ha_state', 'STOPPED'))
+    const [isRunning, setIsRunning] = useState<boolean>(false)
+    const [state, setState] = useState<StrategyState>('STOPPED')
     const [message, setMessage] = useState<string>('')
     const [trend, setTrend] = useState<Trend>('NEUTRAL')
 
-    // Core Configuration
-    const [underlying, setUnderlying] = useState<Underlying>(() => getSavedState('ha_underlying', 'SENSEX'))
-    const [quantity, setQuantity] = useState<number>(() => getSavedState('ha_quantity', INDEX_CONFIG.SENSEX.qty))
-    const [baseTimeframe, setBaseTimeframe] = useState<string>(() => getSavedState('ha_baseTimeframe', 'FIVE_MINUTE'))
-    const [needConfirmation, setNeedConfirmation] = useState<boolean>(() => getSavedState('ha_needConfirmation', false))
-    const [confirmationTimeframe, setConfirmationTimeframe] = useState<string>(() => getSavedState('ha_confirmationTimeframe', 'FIFTEEN_MINUTE'))
+    const [underlying, setUnderlying] = useState<Underlying>('SENSEX')
+    const [exchange, setExchange] = useState<Exchange>('BFO')
+    const [quantity, setQuantity] = useState<number>(INDEX_CONFIG.SENSEX.qty)
+    const [baseTimeframe, setBaseTimeframe] = useState<string>('FIVE_MINUTE')
+    const [needConfirmation, setNeedConfirmation] = useState<boolean>(true)
+    const [confirmationTimeframe, setConfirmationTimeframe] = useState<string>('ONE_MINUTE')
+    const [liveTradingConsent, setLiveTradingConsent] = useState<boolean>(false)
 
-    // Strike Selection
-    const [strikeMode, setStrikeMode] = useState<StrikeMode>(() => getSavedState('ha_strikeMode', 'ATM'))
-    const [strikeDepth, setStrikeDepth] = useState<number>(() => getSavedState('ha_strikeDepth', 1))
-    const [premiumMin, setPremiumMin] = useState<number>(() => getSavedState('ha_premiumMin', 300))
-    const [premiumMax, setPremiumMax] = useState<number>(() => getSavedState('ha_premiumMax', 400))
+    const [strikeMode, setStrikeMode] = useState<StrikeMode>('ATM')
+    const [strikeDepth, setStrikeDepth] = useState<number>(1)
+    const [premiumMin, setPremiumMin] = useState<number>(200)
+    const [premiumMax, setPremiumMax] = useState<number>(300)
 
-    // Exit Strategy Configuration
-    const [exitStrategy, setExitStrategy] = useState<ExitStrategy>(() => getSavedState('ha_exitStrategy', 'CANDLES'))
-    const [targetPoints, setTargetPoints] = useState<number>(() => getSavedState('ha_targetPoints', 20))
-    const [slPoints, setSlPoints] = useState<number>(() => getSavedState('ha_slPoints', 30))
-    const [liveTradingConsent, setLiveTradingConsent] = useState<boolean>(() => getSavedState('ha_liveTradingConsent', false))
+    const [exitStrategy, setExitStrategy] = useState<ExitStrategy>('CANDLES')
+    const [targetPoints, setTargetPoints] = useState<number>(20)
+    const [slPoints, setSlPoints] = useState<number>(15)
 
     // Dynamic Live Monitor States from Backend Status
     const [monitoredPremiums, setMonitoredPremiums] = useState<{ ce: string, pe: string }>({ ce: '---', pe: '---' })
@@ -93,24 +94,57 @@ export default function HeikenashiPage() {
     const [currentLtp, setCurrentLtp] = useState<number | null>(null)
     const [isExiting, setIsExiting] = useState<boolean>(false)
 
-    // Local Storage Sync
+    // Load User Scoped Local Storage Config
     useEffect(() => {
-        localStorage.setItem('ha_isRunning', JSON.stringify(isRunning))
-        localStorage.setItem('ha_state', JSON.stringify(state))
-        localStorage.setItem('ha_underlying', JSON.stringify(underlying))
-        localStorage.setItem('ha_quantity', JSON.stringify(quantity))
-        localStorage.setItem('ha_baseTimeframe', JSON.stringify(baseTimeframe))
-        localStorage.setItem('ha_needConfirmation', JSON.stringify(needConfirmation))
-        localStorage.setItem('ha_confirmationTimeframe', JSON.stringify(confirmationTimeframe))
-        localStorage.setItem('ha_strikeMode', JSON.stringify(strikeMode))
-        localStorage.setItem('ha_strikeDepth', JSON.stringify(strikeDepth))
-        localStorage.setItem('ha_premiumMin', JSON.stringify(premiumMin))
-        localStorage.setItem('ha_premiumMax', JSON.stringify(premiumMax))
-        localStorage.setItem('ha_exitStrategy', JSON.stringify(exitStrategy))
-        localStorage.setItem('ha_targetPoints', JSON.stringify(targetPoints))
-        localStorage.setItem('ha_slPoints', JSON.stringify(slPoints))
-        localStorage.setItem('ha_liveTradingConsent', JSON.stringify(liveTradingConsent))
-    }, [isRunning, state, underlying, quantity, baseTimeframe, needConfirmation, confirmationTimeframe, strikeMode, strikeDepth, premiumMin, premiumMax, exitStrategy, targetPoints, slPoints, liveTradingConsent])
+        if (user && user._id !== loadedUserId) {
+            const uid = user._id
+            setLoadedUserId(uid)
+            setIsRunning(getSavedState(`config_${uid}_ha_isRunning`, false))
+            setState(getSavedState(`config_${uid}_ha_state`, 'STOPPED'))
+            setUnderlying(getSavedState(`config_${uid}_ha_underlying`, 'SENSEX'))
+            setExchange(getSavedState(`config_${uid}_ha_exchange`, 'BFO'))
+            setQuantity(getSavedState(`config_${uid}_ha_quantity`, INDEX_CONFIG.SENSEX.qty))
+            setBaseTimeframe(getSavedState(`config_${uid}_ha_baseTimeframe`, 'FIVE_MINUTE'))
+            setNeedConfirmation(getSavedState(`config_${uid}_ha_needConfirmation`, true))
+            setConfirmationTimeframe(getSavedState(`config_${uid}_ha_confirmationTimeframe`, 'ONE_MINUTE'))
+            setLiveTradingConsent(getSavedState(`config_${uid}_ha_liveTradingConsent`, false))
+            setStrikeMode(getSavedState(`config_${uid}_ha_strikeMode`, 'ATM'))
+            setStrikeDepth(getSavedState(`config_${uid}_ha_strikeDepth`, 1))
+            setPremiumMin(getSavedState(`config_${uid}_ha_premiumMin`, 200))
+            setPremiumMax(getSavedState(`config_${uid}_ha_premiumMax`, 300))
+            setExitStrategy(getSavedState(`config_${uid}_ha_exitStrategy`, 'CANDLES'))
+            setTargetPoints(getSavedState(`config_${uid}_ha_targetPoints`, 20))
+            setSlPoints(getSavedState(`config_${uid}_ha_slPoints`, 15))
+        } else if (!user) {
+            // Clean up states on logout
+            setLoadedUserId(null)
+            setIsRunning(false)
+            setState('STOPPED')
+            setLiveTradingConsent(false)
+        }
+    }, [user, loadedUserId])
+
+    // Sync to User Scoped Local Storage Config
+    useEffect(() => {
+        if (!user || user._id !== loadedUserId) return
+        const uid = user._id
+        localStorage.setItem(`config_${uid}_ha_isRunning`, JSON.stringify(isRunning))
+        localStorage.setItem(`config_${uid}_ha_state`, JSON.stringify(state))
+        localStorage.setItem(`config_${uid}_ha_underlying`, JSON.stringify(underlying))
+        localStorage.setItem(`config_${uid}_ha_exchange`, JSON.stringify(exchange))
+        localStorage.setItem(`config_${uid}_ha_quantity`, JSON.stringify(quantity))
+        localStorage.setItem(`config_${uid}_ha_baseTimeframe`, JSON.stringify(baseTimeframe))
+        localStorage.setItem(`config_${uid}_ha_needConfirmation`, JSON.stringify(needConfirmation))
+        localStorage.setItem(`config_${uid}_ha_confirmationTimeframe`, JSON.stringify(confirmationTimeframe))
+        localStorage.setItem(`config_${uid}_ha_strikeMode`, JSON.stringify(strikeMode))
+        localStorage.setItem(`config_${uid}_ha_strikeDepth`, JSON.stringify(strikeDepth))
+        localStorage.setItem(`config_${uid}_ha_premiumMin`, JSON.stringify(premiumMin))
+        localStorage.setItem(`config_${uid}_ha_premiumMax`, JSON.stringify(premiumMax))
+        localStorage.setItem(`config_${uid}_ha_exitStrategy`, JSON.stringify(exitStrategy))
+        localStorage.setItem(`config_${uid}_ha_targetPoints`, JSON.stringify(targetPoints))
+        localStorage.setItem(`config_${uid}_ha_slPoints`, JSON.stringify(slPoints))
+        localStorage.setItem(`config_${uid}_ha_liveTradingConsent`, JSON.stringify(liveTradingConsent))
+    }, [user, loadedUserId, isRunning, state, underlying, exchange, quantity, baseTimeframe, needConfirmation, confirmationTimeframe, strikeMode, strikeDepth, premiumMin, premiumMax, exitStrategy, targetPoints, slPoints, liveTradingConsent])
 
     // Poll Strategy Status from Backend Engine
     useEffect(() => {

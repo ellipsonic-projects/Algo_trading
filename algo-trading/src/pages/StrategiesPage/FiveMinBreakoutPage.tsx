@@ -9,6 +9,7 @@ import {
 import { useAngelConnection } from '../../shared/angel/AngelConnectionProvider'
 import { apiGet, apiPost } from '../../trading'
 import { usePageTitle } from '../../hooks/usePageTitle'
+import { useAuth } from '../../context/AuthContext'
 
 type Underlying = 'SENSEX' | 'NIFTY' | 'BANKNIFTY'
 type Exchange = 'BSE' | 'NFO'
@@ -37,28 +38,30 @@ function getSavedState<T>(key: string, fallback: T): T {
 }
 
 export default function FiveMinBreakoutPage() {
-  usePageTitle('5 Min Breakout')
-  const { connectStatus } = useAngelConnection()
+  usePageTitle('5 Min Breakout');
+  const { connectStatus } = useAngelConnection();
+  const { user } = useAuth();
+  const [loadedUserId, setLoadedUserId] = useState<string | null>(null)
 
-  const [isRunning, setIsRunning] = useState<boolean>(() => getSavedState('fmb_isRunning', false))
-  const [state, setState] = useState<StrategyState>(() => getSavedState('fmb_state', 'STOPPED'))
+  const [isRunning, setIsRunning] = useState<boolean>(false)
+  const [state, setState] = useState<StrategyState>('STOPPED')
   const [message, setMessage] = useState<string>('')
 
-  const [lookback, setLookback] = useState<4 | 5>(() => getSavedState('fmb_lookback', 5))
-  const [underlying, setUnderlying] = useState<Underlying>(() => getSavedState('fmb_underlying', 'SENSEX'))
-  const [exchange, setExchange] = useState<Exchange>(() => getSavedState('fmb_exchange', 'BSE'))
-  const [quantity, setQuantity] = useState<number>(() => getSavedState('fmb_quantity', INDEX_CONFIG.SENSEX.qty))
-  const [liveTradingConsent, setLiveTradingConsent] = useState(() => getSavedState('fmb_liveTradingConsent', false))
+  const [lookback, setLookback] = useState<4 | 5>(5)
+  const [underlying, setUnderlying] = useState<Underlying>('SENSEX')
+  const [exchange, setExchange] = useState<Exchange>('BSE')
+  const [quantity, setQuantity] = useState<number>(INDEX_CONFIG.SENSEX.qty)
+  const [liveTradingConsent, setLiveTradingConsent] = useState(false)
 
-  const [targetPoints, setTargetPoints] = useState<number>(() => getSavedState('fmb_targetPoints', 20))
-  const [bufferPoints, setBufferPoints] = useState<number>(() => getSavedState('fmb_bufferPoints', 2))
-  const [maxRangeLimit, setMaxRangeLimit] = useState<number>(() => getSavedState('fmb_maxRangeLimit', 30))
+  const [targetPoints, setTargetPoints] = useState<number>(20)
+  const [bufferPoints, setBufferPoints] = useState<number>(2)
+  const [maxRangeLimit, setMaxRangeLimit] = useState<number>(30)
 
-  const [premiumMin] = useState<number>(() => getSavedState('fmb_premiumMin', 300))
-  const [premiumMax] = useState<number>(() => getSavedState('fmb_premiumMax', 400))
+  const [premiumMin, setPremiumMin] = useState<number>(300)
+  const [premiumMax, setPremiumMax] = useState<number>(400)
 
-  const [strikeMode] = useState<StrikeMode>(() => getSavedState('fmb_strikeMode', 'ATM'))
-  const [strikeDepth] = useState<number>(() => getSavedState('fmb_strikeDepth', 1))
+  const [strikeMode, setStrikeMode] = useState<StrikeMode>('ATM')
+  const [strikeDepth, setStrikeDepth] = useState<number>(1)
 
   // Live Monitor State from Backend
   const [monitoredPremiums, setMonitoredPremiums] = useState<{ ce: string, pe: string }>({ ce: '---', pe: '---' })
@@ -77,22 +80,53 @@ export default function FiveMinBreakoutPage() {
   const [activeTradeId, setActiveTradeId] = useState<string | null>(null)
   const [isExiting, setIsExiting] = useState(false)
 
+  // Load User Scoped Local Storage Config
   useEffect(() => {
-    localStorage.setItem('fmb_isRunning', JSON.stringify(isRunning))
-    localStorage.setItem('fmb_state', JSON.stringify(state))
-    localStorage.setItem('fmb_lookback', JSON.stringify(lookback))
-    localStorage.setItem('fmb_underlying', JSON.stringify(underlying))
-    localStorage.setItem('fmb_exchange', JSON.stringify(exchange))
-    localStorage.setItem('fmb_quantity', JSON.stringify(quantity))
-    localStorage.setItem('fmb_targetPoints', JSON.stringify(targetPoints))
-    localStorage.setItem('fmb_bufferPoints', JSON.stringify(bufferPoints))
-    localStorage.setItem('fmb_maxRangeLimit', JSON.stringify(maxRangeLimit))
-    localStorage.setItem('fmb_liveTradingConsent', JSON.stringify(liveTradingConsent))
-    localStorage.setItem('fmb_strikeMode', JSON.stringify(strikeMode))
-    localStorage.setItem('fmb_strikeDepth', JSON.stringify(strikeDepth))
-    localStorage.setItem('fmb_premiumMin', JSON.stringify(premiumMin))
-    localStorage.setItem('fmb_premiumMax', JSON.stringify(premiumMax))
-  }, [isRunning, state, lookback, underlying, exchange, quantity, targetPoints, bufferPoints, maxRangeLimit, liveTradingConsent, strikeMode, strikeDepth, premiumMin, premiumMax])
+    if (user && user._id !== loadedUserId) {
+      const uid = user._id
+      setLoadedUserId(uid)
+      setIsRunning(getSavedState(`config_${uid}_fmb_isRunning`, false))
+      setState(getSavedState(`config_${uid}_fmb_state`, 'STOPPED'))
+      setLookback(getSavedState(`config_${uid}_fmb_lookback`, 5))
+      setUnderlying(getSavedState(`config_${uid}_fmb_underlying`, 'SENSEX'))
+      setExchange(getSavedState(`config_${uid}_fmb_exchange`, 'BSE'))
+      setQuantity(getSavedState(`config_${uid}_fmb_quantity`, INDEX_CONFIG.SENSEX.qty))
+      setLiveTradingConsent(getSavedState(`config_${uid}_fmb_liveTradingConsent`, false))
+      setTargetPoints(getSavedState(`config_${uid}_fmb_targetPoints`, 20))
+      setBufferPoints(getSavedState(`config_${uid}_fmb_bufferPoints`, 2))
+      setMaxRangeLimit(getSavedState(`config_${uid}_fmb_maxRangeLimit`, 30))
+      setPremiumMin(getSavedState(`config_${uid}_fmb_premiumMin`, 300))
+      setPremiumMax(getSavedState(`config_${uid}_fmb_premiumMax`, 400))
+      setStrikeMode(getSavedState(`config_${uid}_fmb_strikeMode`, 'ATM'))
+      setStrikeDepth(getSavedState(`config_${uid}_fmb_strikeDepth`, 1))
+    } else if (!user) {
+      // Clean up states on logout
+      setLoadedUserId(null)
+      setIsRunning(false)
+      setState('STOPPED')
+      setLiveTradingConsent(false)
+    }
+  }, [user, loadedUserId])
+
+  // Sync to User Scoped Local Storage Config
+  useEffect(() => {
+    if (!user || user._id !== loadedUserId) return
+    const uid = user._id
+    localStorage.setItem(`config_${uid}_fmb_isRunning`, JSON.stringify(isRunning))
+    localStorage.setItem(`config_${uid}_fmb_state`, JSON.stringify(state))
+    localStorage.setItem(`config_${uid}_fmb_lookback`, JSON.stringify(lookback))
+    localStorage.setItem(`config_${uid}_fmb_underlying`, JSON.stringify(underlying))
+    localStorage.setItem(`config_${uid}_fmb_exchange`, JSON.stringify(exchange))
+    localStorage.setItem(`config_${uid}_fmb_quantity`, JSON.stringify(quantity))
+    localStorage.setItem(`config_${uid}_fmb_targetPoints`, JSON.stringify(targetPoints))
+    localStorage.setItem(`config_${uid}_fmb_bufferPoints`, JSON.stringify(bufferPoints))
+    localStorage.setItem(`config_${uid}_fmb_maxRangeLimit`, JSON.stringify(maxRangeLimit))
+    localStorage.setItem(`config_${uid}_fmb_liveTradingConsent`, JSON.stringify(liveTradingConsent))
+    localStorage.setItem(`config_${uid}_fmb_strikeMode`, JSON.stringify(strikeMode))
+    localStorage.setItem(`config_${uid}_fmb_strikeDepth`, JSON.stringify(strikeDepth))
+    localStorage.setItem(`config_${uid}_fmb_premiumMin`, JSON.stringify(premiumMin))
+    localStorage.setItem(`config_${uid}_fmb_premiumMax`, JSON.stringify(premiumMax))
+  }, [user, loadedUserId, isRunning, state, lookback, underlying, exchange, quantity, targetPoints, bufferPoints, maxRangeLimit, liveTradingConsent, strikeMode, strikeDepth, premiumMin, premiumMax])
 
   // Poll Backend Status
   useEffect(() => {

@@ -1,37 +1,6 @@
-const { computeEMA, computeJMA } = require('./heikenAshi');
+const { computeHeikenAshi: computeModifiedHeikenAshi, computeEMA, computeJMA } = require('../indicators');
 const strategyStats = require('../../services/strategyStats');
 
-function computeModifiedHeikenAshi(candles) {
-    if (!Array.isArray(candles) || candles.length === 0) return [];
-
-    const haCandles = [];
-
-    for (let i = 0; i < candles.length; i++) {
-        const c = candles[i];
-        const haClose = (c.open + c.high + c.low + c.close) / 4;
-
-        let haOpen;
-        if (i === 0) {
-            haOpen = (c.open + c.close) / 2;
-        } else {
-            const prevHa = haCandles[i - 1];
-            haOpen = (prevHa.open + prevHa.close) / 2;
-        }
-
-        const haHigh = Math.max(c.high, haOpen, haClose);
-        const haLow = Math.min(c.low, haOpen, haClose);
-
-        haCandles.push({
-            time: c.time,
-            open: haOpen,
-            high: haHigh,
-            low: haLow,
-            close: haClose,
-        });
-    }
-
-    return haCandles;
-}
 
 function analyzeModifiedHeikenAshiStrategy(haCandles, emaPeriod = 20, jmaLength = 7) {
     if (!Array.isArray(haCandles) || haCandles.length < 2) {

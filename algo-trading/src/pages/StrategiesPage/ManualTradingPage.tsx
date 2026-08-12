@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Plus,
   History,
   BarChart2,
   ArrowRightLeft,
   Wallet,
-  Activity
+  Activity,
+  Lock
 } from 'lucide-react';
 
 import { usePageTitle } from '../../hooks/usePageTitle';
@@ -22,6 +22,18 @@ type IndexPriceData = {
   ltp: number;
 };
 
+type TradeData = {
+  _id: string;
+  premium: string;
+  index: string;
+  qty: number;
+  buyPrice: number;
+  exitPrice?: number;
+  status: string;
+  exitReason?: string;
+  createdAt: string;
+};
+
 const ManualTradingPage: React.FC = () => {
   usePageTitle('Manual Trading');
   const { connectStatus } = useAngelConnection();
@@ -32,6 +44,7 @@ const ManualTradingPage: React.FC = () => {
     'SENSEX': 0,
     'BANK NIFTY': 0
   });
+  const [recentTrades, setRecentTrades] = useState<TradeData[]>([]);
 
   // Fetch live account margins
   useEffect(() => {
@@ -99,6 +112,29 @@ const ManualTradingPage: React.FC = () => {
     };
   }, [connectStatus]);
 
+  // Fetch recent trades from backend
+  useEffect(() => {
+    let active = true;
+    const fetchTrades = async () => {
+      try {
+        const response = await apiGet<any>('/trades?limit=5');
+        if (!active) return;
+        if (response && response.status === 'success' && response.data?.trades) {
+          setRecentTrades(response.data.trades);
+        }
+      } catch (err) {
+        console.error('Failed to fetch recent trades:', err);
+      }
+    };
+
+    fetchTrades();
+    const interval = setInterval(fetchTrades, 10000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, []);
+
   const formatRupees = (val: number) => {
     return `₹${val.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   };
@@ -112,13 +148,25 @@ const ManualTradingPage: React.FC = () => {
           <p className="text-[10px] font-medium text-[#787B86]">Direct Equity & Options Order Placement</p>
         </div>
         <div className="flex items-center gap-2">
-          <button className="flex items-center gap-1.5 px-3 py-1.5 bg-[#0052FF] hover:bg-[#0047D0] text-white text-xs font-semibold rounded shadow-sm transition-colors">
-            <Plus className="w-3.5 h-3.5" />
-            Place Order
-          </button>
-          <button className="flex items-center gap-1.5 px-3 py-1.5 bg-[#F0F3FA] hover:bg-[#E0E3EB] border border-[#E0E3EB] text-[#434651] text-xs font-semibold rounded transition-colors">
+          <div className="relative group">
+            <button 
+              disabled
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#90A4AE] text-white text-xs font-semibold rounded shadow-sm cursor-not-allowed opacity-75"
+              title="Manual order entry is locked for security"
+            >
+              <Lock className="w-3 h-3" />
+              Place Order (Locked)
+            </button>
+            <div className="absolute right-0 top-full mt-1 hidden group-hover:block bg-[#1E222D] text-white text-[9px] font-bold p-1.5 rounded shadow-lg whitespace-nowrap z-55">
+              Locked to prevent interference with running strategies
+            </div>
+          </div>
+          <button 
+            onClick={() => window.location.href = '/trades'}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#F0F3FA] hover:bg-[#E0E3EB] border border-[#E0E3EB] text-[#434651] text-xs font-semibold rounded transition-colors"
+          >
             <History className="w-3.5 h-3.5" />
-            Order Book
+            Order Ledger
           </button>
         </div>
       </div>
@@ -129,7 +177,7 @@ const ManualTradingPage: React.FC = () => {
           <div className="bg-white rounded border border-[#E0E3EB] shadow-sm overflow-hidden">
             <div className="px-4 py-3 border-b border-[#E0E3EB] flex items-center justify-between bg-[#F8F9FA]">
               <h3 className="text-xs font-bold uppercase tracking-wider text-[#1E222D]">Spot Watchlist</h3>
-              <button className="text-xs font-semibold text-[#0052FF] hover:underline">Manage List</button>
+              <span className="text-[10px] font-semibold text-[#787B86]">LTP via Broker Stream</span>
             </div>
             <div className="divide-y divide-[#E0E3EB]">
               {['NIFTY 50', 'SENSEX', 'BANK NIFTY'].map((idx) => (
@@ -157,7 +205,7 @@ const ManualTradingPage: React.FC = () => {
               ))}
             </div>
             <div className="px-4 py-2.5 bg-[#F8F9FA] border-t border-[#E0E3EB] text-center">
-              <button className="text-[10px] font-bold uppercase text-[#787B86] hover:text-[#0052FF] transition-colors">View All Market Instruments</button>
+              <span className="text-[10px] font-bold uppercase text-[#787B86]">Direct Broker Feed Enabled</span>
             </div>
           </div>
         </div>
@@ -192,22 +240,37 @@ const ManualTradingPage: React.FC = () => {
           </div>
 
           <div className="bg-white p-4 rounded border border-[#E0E3EB] shadow-sm">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-[#1E222D] mb-3">Order Stream Log</h3>
-            <div className="space-y-2">
-              {[1, 2].map(i => (
-                <div key={i} className="flex gap-3 p-2.5 rounded bg-[#F8F9FA] border border-[#E0E3EB] hover:border-[#0052FF] transition-colors">
-                  <div className="w-7 h-7 bg-[#F0F3FA] rounded flex items-center justify-center flex-shrink-0">
-                    <ArrowRightLeft className="w-3.5 h-3.5 text-[#787B86]" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between">
-                      <p className="text-xs font-bold text-[#1E222D]">NIFTY JUN PE</p>
-                      <span className="text-[10px] font-bold text-[#F23645]">SELL</span>
+            <h3 className="text-xs font-bold uppercase tracking-wider text-[#1E222D] mb-3">Live Execution Stream</h3>
+            <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
+              {recentTrades.length === 0 ? (
+                <p className="text-[10px] font-medium text-[#787B86] text-center py-4">No recent trade executions</p>
+              ) : (
+                recentTrades.map(trade => (
+                  <div key={trade._id} className="flex gap-3 p-2.5 rounded bg-[#F8F9FA] border border-[#E0E3EB] hover:border-[#0052FF] transition-colors">
+                    <div className="w-7 h-7 bg-[#F0F3FA] rounded flex items-center justify-center flex-shrink-0">
+                      <ArrowRightLeft className="w-3.5 h-3.5 text-[#787B86]" />
                     </div>
-                    <p className="text-[10px] text-[#787B86] font-medium uppercase mt-0.5">20 JUN • ₹145.20</p>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between">
+                        <p className="text-[11px] font-bold text-[#1E222D] truncate" title={trade.premium}>{trade.premium}</p>
+                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-sm ${
+                          trade.status === 'CLOSED' ? 'bg-[#E8F5E9] text-[#2E7D32]' :
+                          trade.status === 'REJECTED' ? 'bg-[#FFEBEE] text-[#C62828]' :
+                          'bg-[#E3F2FD] text-[#1565C0]'
+                        }`}>
+                          {trade.status}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between mt-1 text-[9px] text-[#787B86] font-medium">
+                        <span>Qty: {trade.qty} @ ₹{trade.buyPrice}</span>
+                        <span>
+                          {trade.status === 'CLOSED' && trade.exitPrice ? `Exit: ₹${trade.exitPrice}` : ''}
+                        </span>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))
+              )}
             </div>
           </div>
         </div>
@@ -217,4 +280,3 @@ const ManualTradingPage: React.FC = () => {
 };
 
 export default ManualTradingPage;
-
